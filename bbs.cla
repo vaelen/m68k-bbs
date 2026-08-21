@@ -1,0 +1,48 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// 68kBBS: a simple BBS for System 6/7 68k Macs.
+// Current state: application shell -- one log window, File > Quit.
+
+app BBS {
+    name: "68kBBS"
+    version: "0.1"
+    author: "Andrew C. Young"
+    about: "A simple BBS for classic Macs."
+    id: "68BB"
+}
+
+window Main {
+    title: "68kBBS Log"
+    size: 480, 300
+    resizable: min(300, 150)
+
+    textview LogView { fill: both; scrollbar: both }
+}
+
+menu File {
+    item Quit "Quit" key "Q"
+}
+
+menu Edit { standard edit }
+
+// Every log(...) call lands here (after reaching the diagnostic stream)
+// and is appended to the log window.
+// ponytail: rebuilds the whole textview text per line; fine until the
+// 32,000-byte TextEdit cap nears -- trim oldest lines then.
+on App.log(line: string) {
+    var m: Main = Main.front
+    var t: text
+    if m == nil { return }
+    t = m.LogView.text + line + "\n"
+    m.LogView.text = t
+}
+
+on App.launch {
+    open Main
+    log("68kBBS starting up.")
+}
+
+extend File {
+    on Quit.select { quit }
+}
