@@ -1,0 +1,106 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// Modem result-code scanner: a char-at-a-time state machine that finds
+// "\r\nCONNECT <digits>\r\n" and "\r\nNO CARRIER\r\n" in the received
+// stream. State lives in globals, so a result code split across
+// received() chunks still matches. Note: in Clarus source, \n is CR
+// (13); LF is \x0A.
+//
+// The including program must define `connected()` and `disconnected()`;
+// feedChar calls them when a full result code has been matched.
+
+const CR: char = '\x0D'
+const LF: char = '\x0A'
+
+const connectLit:   string = "CONNECT "
+const noCarrierLit: string = "NO CARRIER\x0D\x0A"
+
+const sIdle:    int = 0    // scanning for CR
+const sCr:      int = 1    // seen CR, want LF
+const sLead:    int = 2    // seen CRLF, want 'C' or 'N'
+const sConn:    int = 3    // matching "CONNECT " (connectLit[matchIdx])
+const sDig1:    int = 4    // want first baud digit
+const sDigMore: int = 5    // more digits, or CR to end
+const sConnEnd: int = 6    // seen CR after digits, want LF
+const sNoCarr:  int = 7    // matching "NO CARRIER\r\n" (noCarrierLit[matchIdx])
+
+var matchState: int = 0
+var matchIdx: int = 0
+
+func feedChar(c: char) {
+    switch matchState {
+    case sIdle {
+        if c == CR { matchState = sCr }
+    }
+    case sCr {
+        if c == LF {
+            matchState = sLead
+        } else if c != CR {       // another CR stays in sCr
+            matchState = sIdle
+        }
+    }
+    case sLead {
+        if c == 'C' {
+            matchState = sConn
+            matchIdx = 1
+        } else if c == 'N' {
+            matchState = sNoCarr
+            matchIdx = 1
+        } else if c == CR {
+            matchState = sCr
+        } else {
+            matchState = sIdle
+        }
+    }
+    case sConn {
+        if c == connectLit[matchIdx] {
+            matchIdx = matchIdx + 1
+            if matchIdx == connectLit.length { matchState = sDig1 }
+        } else if c == CR {
+            matchState = sCr
+        } else {
+            matchState = sIdle
+        }
+    }
+    case sDig1 {
+        if c >= '0' and c <= '9' {
+            matchState = sDigMore
+        } else if c == CR {
+            matchState = sCr
+        } else {
+            matchState = sIdle
+        }
+    }
+    case sDigMore {
+        if c == CR {
+            matchState = sConnEnd
+        } else if c < '0' or c > '9' {   // digits stay here
+            matchState = sIdle
+        }
+    }
+    case sConnEnd {
+        if c == LF {
+            matchState = sLead   // this CRLF can lead the next result code
+            connected()
+        } else if c == CR {
+            matchState = sCr
+        } else {
+            matchState = sIdle
+        }
+    }
+    case sNoCarr {
+        if c == noCarrierLit[matchIdx] {
+            matchIdx = matchIdx + 1
+            if matchIdx == noCarrierLit.length {
+                matchState = sLead
+                disconnected()
+            }
+        } else if c == CR {
+            matchState = sCr
+        } else {
+            matchState = sIdle
+        }
+    }
+    }
+}

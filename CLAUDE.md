@@ -64,6 +64,18 @@ client with `nc localhost 1234` while the emulator runs.
 The workspace is `snow/MacII.snoww` (plain JSON; SCSI ID 1 is free for a
 build disk).
 
+## Modem emulator
+
+`simple-modem-emulator/` is a tiny C TCP bridge that makes a telnet
+client look like a Hayes modem to the emulated serial port
+(`telnet → :2323 → modem → :1234 → Snow`). Andrew usually has it running
+on port 2323. On caller connect it sends `\r\nCONNECT 57600\r\n` to the
+serial side; on caller disconnect, `\r\nNO CARRIER\r\n` — exactly what
+`scanner.cla` watches for. It also honors `+++`/`ATH` (hang up) and `ATO`
+from the Mac side, replying `OK`/`CONNECT` in Hayes verbose framing. One
+call at a time. So: test the BBS with `telnet localhost 2323` rather than
+raw `nc` to port 1234. See `simple-modem-emulator/README.md`.
+
 ## Getting a build into the emulator
 
 `snow/BBSHD.hda` is a persistent 5 MB device image ("BBS HD"), attached at

@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 // 68kBBS: a simple BBS for System 6/7 68k Macs.
-// Current state: application shell -- one log window, File > Quit.
+// Current state: log window, File > Quit; modem port data mirrored
+// into the log (read-only, nothing written back yet).
+
+include "scanner.cla"
 
 app BBS {
     name: "68kBBS"
@@ -26,21 +29,67 @@ menu File {
 
 menu Edit { standard edit }
 
+var modem: connection
+var isConnected: bool = false
+
+// Called by scanner.cla's feedChar on a full "\r\nCONNECT <n>\r\n".
+func connected() {
+    isConnected = true
+    log("Caller connected.")
+    modem.send("Welcome to 68kBBS!\x0D\x0A")
+}
+
+// Called by scanner.cla's feedChar on a full "\r\nNO CARRIER\r\n".
+func disconnected() {
+    isConnected = false
+    log("Caller disconnected.")
+}
+
+// Append text to the log window, dropping LF (0x0A) -- the Mac newline
+// is CR, so CRLF/LF input would otherwise litter the view with boxes.
+// ponytail: rebuilds the whole textview text per append; fine until the
+// 32,000-byte TextEdit cap nears -- trim oldest lines then.
+func appendLog(chunk: text) {
+    var m: Main = Main.front
+    var filtered: text
+    var t: text
+    var i: int = 0
+    if m == nil { return }
+    while i < chunk.length {
+        if chunk[i] != '\x0A' { filtered.append(chunk[i]) }
+        i = i + 1
+    }
+    t = m.LogView.text + filtered
+    m.LogView.text = t
+}
+
 // Every log(...) call lands here (after reaching the diagnostic stream)
 // and is appended to the log window.
-// ponytail: rebuilds the whole textview text per line; fine until the
-// 32,000-byte TextEdit cap nears -- trim oldest lines then.
 on App.log(line: string) {
-    var m: Main = Main.front
-    var t: text
-    if m == nil { return }
-    t = m.LogView.text + line + "\n"
-    m.LogView.text = t
+    appendLog(line + "\n")
 }
 
 on App.launch {
     open Main
     log("68kBBS starting up.")
+    modem.open(serial "modem:9600")
+}
+
+on modem.opened {
+    log("Modem port open.")
+}
+
+on modem.received(data: text) {
+    var i: int = 0
+    appendLog(data)
+    while i < data.length {
+        feedChar(data[i])
+        i = i + 1
+    }
+}
+
+on modem.failed(err: error) {
+    log("Modem error: " + err.message)
 }
 
 extend File {
