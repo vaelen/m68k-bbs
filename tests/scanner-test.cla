@@ -1,7 +1,8 @@
 // Copyright 2026, Andrew C. Young <andrew@vaelen.org>
 // SPDX-License-Identifier: MIT
 
-// CLI self-check for the modem result-code scanner. Run on the host:
+// CLI self-check for the modem result-code scanner/filter. Run on the
+// host:
 //   ~/repos/clarus/scripts/clarus-run.sh tests/scanner-test.cla
 // Exits 0 on pass, 1 on the first failure.
 
@@ -9,11 +10,13 @@ include "../scanner.cla"
 
 var failures: int = 0
 var isConnected: bool = false
+var released: text
 
-// Stubs for the callbacks scanner.cla requires (the app's versions also
-// talk to the modem).
+// Callbacks scanner.cla requires. The app's versions also talk to the
+// modem; here we just record what the scanner does.
 func connected() { isConnected = true }
 func disconnected() { isConnected = false }
+func dataChar(c: char) { released.append(c) }
 
 func feedString(s: string) {
     var i: int = 0
@@ -32,38 +35,59 @@ func expect(cond: bool, name: string) {
     }
 }
 
+func expectReleased(want: string, name: string) {
+    expect(released == want, name)
+    released = ""
+}
+
 on App.startCLI(args: list of string) {
-    // 1. CONNECT split across three chunks
+    // 1. CONNECT split across three chunks; body suppressed from data
     feedString("\x0D\x0ACONN")
     feedString("ECT 96")
     expect(not isConnected, "no fire before final CRLF")
     feedString("00\x0D\x0A")
     expect(isConnected, "CONNECT split across chunks")
+    expectReleased("\x0D\x0A", "CONNECT body suppressed, lead CRLF released")
 
-    // 2. NO CARRIER split across chunks
+    // 2. NO CARRIER split across chunks; body (incl. trailing CRLF) suppressed
     feedString("some session data\x0D\x0ANO CAR")
     expect(isConnected, "still connected mid-match")
     feedString("RIER\x0D\x0A")
     expect(not isConnected, "NO CARRIER split across chunks")
+    expectReleased("some session data\x0D\x0A", "NO CARRIER fully suppressed")
 
-    // 3. CONNECT with no digits must not fire
+    // 3. CONNECT with no digits: no fire, all bytes replayed as data
     feedString("\x0D\x0ACONNECT\x0D\x0A")
     expect(not isConnected, "CONNECT without digits ignored")
+    expectReleased("\x0D\x0ACONNECT\x0D\x0A", "failed candidate replayed")
 
     // 4. mid-line result text must not fire (no leading CRLF)
     feedString("say NO CARRIER out loud\x0D\x0A")
     feedString("CONNECT 1200\x0D\x0A")   // leading CRLF came from prev line
     expect(isConnected, "trailing CRLF of one line leads the next")
+    expectReleased("say NO CARRIER out loud\x0D\x0A", "mid-line text released")
 
     // 5. back-to-back: CONNECT's closing CRLF leads NO CARRIER
     feedString("\x0D\x0ANO CARRIER\x0D\x0ACONNECT 2400\x0D\x0A")
     expect(isConnected, "NO CARRIER then CONNECT chained")
     feedString("NO CARRIER\x0D\x0A")
     expect(not isConnected, "chained NO CARRIER")
+    expectReleased("\x0D\x0A", "chained codes all suppressed")
 
     // 6. false start then real match
     feedString("\x0D\x0ACONNE\x0D\x0ACONNECT 300\x0D\x0A")
     expect(isConnected, "partial CONNECT then real one")
+    expectReleased("\x0D\x0ACONNE\x0D\x0A", "false start replayed, real match suppressed")
+
+    // 7. a caller line starting with 'N' is held then fully replayed
+    feedString("\x0D\x0ANo thanks\x0D\x0A")
+    expect(isConnected, "ordinary N-line does not disconnect")
+    expectReleased("\x0D\x0ANo thanks\x0D\x0A", "N-line fully replayed")
+
+    // 8. absurdly long digit run overflows the hold and is replayed
+    feedString("\x0D\x0ACONNECT 12345678901234567890123456789012\x0D\x0A")
+    expectReleased("\x0D\x0ACONNECT 12345678901234567890123456789012\x0D\x0A",
+        "overlong baud replayed as data")
 
     if failures > 0 {
         log("scanner-test: FAILED")

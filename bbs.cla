@@ -32,9 +32,60 @@ menu Edit { standard edit }
 var modem: connection
 var isConnected: bool = false
 
+// --- Session state ----------------------------------------------------
+
+enum InputMode { Line, Character }
+
+record User {
+    name:          string(31)
+    authenticated: bool
+    screen:        string(31) = "login"
+    mode:          InputMode          // defaults to Line
+    buffer:        string(255)
+}
+
+var user: User
+
+// Collect connected-caller input, one char at a time. Called by
+// scanner.cla with every byte it releases as ordinary data (result-code
+// bytes are filtered out). Line mode buffers until CR (LF is dropped,
+// so CRLF terminals work); Character mode forwards each char
+// immediately. Data arriving with no caller connected is dropped.
+func dataChar(c: char) {
+    var single: string(1)
+    if not isConnected { return }
+    if user.mode == Character {
+        single = single + c
+        processInput(single)
+        return
+    }
+    if c == CR {
+        processInput(user.buffer)
+        user.buffer = ""
+        return
+    }
+    if c == LF { return }
+    user.buffer = user.buffer + c
+}
+
+// Act on one completed input (a line, or a single char in Character
+// mode) according to the screen the user is on.
+func processInput(input: string) {
+    switch user.screen {
+    case "login" {
+        // TODO: real login flow; just trace for now
+        log("login input: " + input)
+    }
+    else {
+        log("input on unknown screen '" + user.screen + "': " + input)
+    }
+    }
+}
+
 // Called by scanner.cla's feedChar on a full "\r\nCONNECT <n>\r\n".
 func connected() {
     isConnected = true
+    user = new User          // fresh session: login screen, Line mode
     log("Caller connected.")
     modem.send("Welcome to 68kBBS!\x0D\x0A")
 }

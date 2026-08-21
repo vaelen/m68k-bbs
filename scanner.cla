@@ -1,14 +1,23 @@
 // Copyright 2026, Andrew C. Young <andrew@vaelen.org>
 // SPDX-License-Identifier: MIT
 
-// Modem result-code scanner: a char-at-a-time state machine that finds
-// "\r\nCONNECT <digits>\r\n" and "\r\nNO CARRIER\r\n" in the received
-// stream. State lives in globals, so a result code split across
-// received() chunks still matches. Note: in Clarus source, \n is CR
-// (13); LF is \x0A.
+// Modem result-code scanner/filter: a char-at-a-time state machine that
+// finds "\r\nCONNECT <digits>\r\n" and "\r\nNO CARRIER\r\n" in the
+// received stream. State lives in globals, so a result code split
+// across received() chunks still matches.
 //
-// The including program must define `connected()` and `disconnected()`;
-// feedChar calls them when a full result code has been matched.
+// The scanner is also the data path: every byte that is not part of a
+// matched result code is released to `dataChar(c)`. Bytes that might be
+// a result-code body (from the 'C'/'N' after a CRLF onward) are held in
+// `pending`; a completed match discards them, a mismatch replays them
+// to dataChar as ordinary data. CR/LF are always released immediately —
+// holding them would delay line processing by a keystroke — so the one
+// artifact of an in-band hang-up is a single empty line just before
+// disconnected() fires.
+//
+// The including program must define `connected()`, `disconnected()`,
+// and `dataChar(c: char)`. Note: in Clarus source, \n is CR (13); LF
+// is \x0A.
 
 const CR: char = '\x0D'
 const LF: char = '\x0A'
@@ -27,13 +36,39 @@ const sNoCarr:  int = 7    // matching "NO CARRIER\r\n" (noCarrierLit[matchIdx])
 
 var matchState: int = 0
 var matchIdx: int = 0
+var pending: string(31)
+
+// Replay held bytes as ordinary data (straight to dataChar -- they must
+// not re-enter the scanner).
+func flushPending() {
+    var i: int = 0
+    while i < pending.length {
+        dataChar(pending[i])
+        i = i + 1
+    }
+    pending = ""
+}
+
+// A candidate failed at byte c: release the held bytes, release c, and
+// restart -- c itself may begin a new CRLF lead-in.
+func scanMismatch(c: char) {
+    flushPending()
+    dataChar(c)
+    if c == CR {
+        matchState = sCr
+    } else {
+        matchState = sIdle
+    }
+}
 
 func feedChar(c: char) {
     switch matchState {
     case sIdle {
+        dataChar(c)
         if c == CR { matchState = sCr }
     }
     case sCr {
+        dataChar(c)
         if c == LF {
             matchState = sLead
         } else if c != CR {       // another CR stays in sCr
@@ -44,62 +79,69 @@ func feedChar(c: char) {
         if c == 'C' {
             matchState = sConn
             matchIdx = 1
+            pending = "C"
         } else if c == 'N' {
             matchState = sNoCarr
             matchIdx = 1
-        } else if c == CR {
-            matchState = sCr
+            pending = "N"
         } else {
-            matchState = sIdle
+            dataChar(c)
+            if c == CR {
+                matchState = sCr
+            } else {
+                matchState = sIdle
+            }
         }
     }
     case sConn {
         if c == connectLit[matchIdx] {
+            pending = pending + c
             matchIdx = matchIdx + 1
             if matchIdx == connectLit.length { matchState = sDig1 }
-        } else if c == CR {
-            matchState = sCr
         } else {
-            matchState = sIdle
+            scanMismatch(c)
         }
     }
     case sDig1 {
         if c >= '0' and c <= '9' {
+            pending = pending + c
             matchState = sDigMore
-        } else if c == CR {
-            matchState = sCr
         } else {
-            matchState = sIdle
+            scanMismatch(c)
         }
     }
     case sDigMore {
-        if c == CR {
+        if pending.length >= 30 {         // absurdly long "baud": not a code
+            scanMismatch(c)
+        } else if c == CR {
+            pending = pending + c
             matchState = sConnEnd
-        } else if c < '0' or c > '9' {   // digits stay here
-            matchState = sIdle
+        } else if c >= '0' and c <= '9' {
+            pending = pending + c
+        } else {
+            scanMismatch(c)
         }
     }
     case sConnEnd {
         if c == LF {
+            pending = ""
             matchState = sLead   // this CRLF can lead the next result code
             connected()
-        } else if c == CR {
-            matchState = sCr
         } else {
-            matchState = sIdle
+            scanMismatch(c)
         }
     }
     case sNoCarr {
         if c == noCarrierLit[matchIdx] {
+            pending = pending + c
             matchIdx = matchIdx + 1
             if matchIdx == noCarrierLit.length {
+                pending = ""
                 matchState = sLead
                 disconnected()
             }
-        } else if c == CR {
-            matchState = sCr
         } else {
-            matchState = sIdle
+            scanMismatch(c)
         }
     }
     }
