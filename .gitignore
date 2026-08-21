@@ -1,4 +1,5 @@
-clarus
 clarus-src
 snow
-clarus-language-reference.md
+docs/clarus-language-reference.md
+docs/snow-hdd-howto.md
+bin
