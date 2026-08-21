@@ -19,9 +19,9 @@
 #include <unistd.h>
 
 #define GUARD_MS 1000           // Hayes S12 guard time, default 50 x 20ms = 1s
-#define CONNECT_MSG "CONNECT 57600\r"
-#define NO_CARRIER_MSG "NO CARRIER\r"
-#define OK_MSG "OK\r"
+#define CONNECT_MSG "\r\nCONNECT 57600\r\n"
+#define NO_CARRIER_MSG "\r\nNO CARRIER\r\n"
+#define OK_MSG "\r\nOK\r\n"
 
 static int local = -1, remote = -1;     // local = "serial port", remote = caller
 static int cmd_mode = 0;                // 0 = data (online), 1 = command

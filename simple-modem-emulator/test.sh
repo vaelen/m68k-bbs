@@ -18,25 +18,25 @@ try:
     # 1. call comes in, local accepts -> CONNECT to local, data flows both ways
     caller = socket.create_connection(("127.0.0.1", 2324))
     local, _ = ser.accept()
-    assert rd(local) == b"CONNECT 57600\r"
+    assert rd(local) == b"\r\nCONNECT 57600\r\n"
     caller.sendall(b"hello"); assert rd(local) == b"hello"
     local.sendall(b"world"); assert rd(caller) == b"world"
     # 2. "+++" without guard time is plain data
     local.sendall(b"a+++b"); x = rd(caller); assert x == b"a+++b", x
     # 3. escape: quiet, +++, quiet -> OK, not forwarded; then ATO -> CONNECT
     time.sleep(1.1); local.sendall(b"+++")
-    assert rd(local) == b"OK\r"; assert rd(caller) == b""
-    local.sendall(b"ATO\r"); assert rd(local) == b"CONNECT 57600\r"
+    assert rd(local) == b"\r\nOK\r\n"; assert rd(caller) == b""
+    local.sendall(b"ATO\r"); assert rd(local) == b"\r\nCONNECT 57600\r\n"
     local.sendall(b"more"); assert rd(caller) == b"more"
     # 4. escape then ATH0 -> NO CARRIER, both sides closed
-    time.sleep(1.1); local.sendall(b"+++"); assert rd(local) == b"OK\r"
-    local.sendall(b"ATH0\r"); assert rd(local) == b"NO CARRIER\r"
+    time.sleep(1.1); local.sendall(b"+++"); assert rd(local) == b"\r\nOK\r\n"
+    local.sendall(b"ATH0\r"); assert rd(local) == b"\r\nNO CARRIER\r\n"
     assert rd(local) == b"" and rd(caller) == b""
     local.close(); caller.close()
     # 5. caller hangs up -> NO CARRIER, local closed
     caller = socket.create_connection(("127.0.0.1", 2324))
-    local, _ = ser.accept(); assert rd(local) == b"CONNECT 57600\r"
-    caller.close(); assert rd(local) == b"NO CARRIER\r"; assert rd(local) == b""
+    local, _ = ser.accept(); assert rd(local) == b"\r\nCONNECT 57600\r\n"
+    caller.close(); assert rd(local) == b"\r\nNO CARRIER\r\n"; assert rd(local) == b""
     local.close()
     # 6. local closes -> caller dropped
     caller = socket.create_connection(("127.0.0.1", 2324))
