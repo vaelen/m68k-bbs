@@ -18,7 +18,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#define GUARD_MS 1000           // Hayes S12 guard time, default 50 x 20ms = 1s
+#define GUARD_MS 500            // Hayes S12 guard time, 25 x 20ms = 0.5s
 #define CONNECT_MSG "\r\nCONNECT 57600\r\n"
 #define NO_CARRIER_MSG "\r\nNO CARRIER\r\n"
 #define OK_MSG "\r\nOK\r\n"
