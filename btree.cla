@@ -1,0 +1,311 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// File-based B-tree, vDB v2 on-disk format (docs/vdb-clarus.md).
+// Keys and values are int (i32, big-endian on disk). Standalone and
+// reusable: includes nothing, knows nothing about vDB.
+//
+// The handle is the filehandle itself; there is no in-memory tree
+// state. Every operation reads the header and root pages it needs and
+// writes changes back immediately, so the file is always current.
+// Close with f.close().
+//
+// Current implementation (same practical limitation as libvdb): the
+// root is a single leaf page. An insert that would not fit the leaf's
+// 505-byte entry budget fails. Internal and overflow pages are
+// reserved for the growth path.
+
+const btPageSize: int = 512
+const btLeafHeaderSize: int = 7    // page_type(1) + key_count(2) + next_leaf(4)
+const btLeafBudget: int = 505     // btPageSize - btLeafHeaderSize
+
+const btPtInternal: int = 2
+const btPtLeaf: int = 3
+const btPtOverflow: int = 4
+
+// --- Page construction helpers ---------------------------------------
+
+func btZeroFill(t: text) {
+    while t.length < btPageSize {
+        t.append(char(0))
+    }
+}
+
+func btAppendInt(t: text, v: int) {
+    var p: int = t.length
+    t.append("\x00\x00\x00\x00")
+    t.setIntAt(p, v)
+}
+
+func btAppendWord(t: text, v: int) {
+    var p: int = t.length
+    t.append("\x00\x00")
+    t.setWordAt(p, v)
+}
+
+// A brand-new entry: key, one value, no overflow page.
+func btAppendNewEntry(t: text, key: int, value: int) {
+    btAppendInt(t, key)
+    btAppendWord(t, 1)
+    btAppendInt(t, value)
+    btAppendInt(t, 0)
+}
+
+// --- Open / create ----------------------------------------------------
+
+// Reads and validates the header page; returns the root page number,
+// or -1 if the file is not a v2 B-tree (or cannot be read).
+func btRootPage(f: filehandle): int {
+    var hdr: text
+    if not f.readAt(0, btPageSize, hdr) { return -1 }
+    if hdr.length < 20 { return -1 }
+    if hdr[0] != 'B' or hdr[1] != 'T' or hdr[2] != 'R' or hdr[3] != 'E' { return -1 }
+    if hdr.wordAt(4) != 2 { return -1 }
+    return hdr.intAt(8)
+}
+
+// Create-or-truncate a B-tree file: header page + empty root leaf.
+// Returns the open handle, or nil (see lastError).
+func btCreate(path: string, ftype: string, fcreator: string): filehandle {
+    var f: filehandle
+    var hdr: text
+    var leaf: text
+    f = file.create(path, ftype, fcreator)
+    if f == nil { return nil }
+    hdr.append("BTRE")
+    btAppendWord(hdr, 2)      // version
+    btAppendWord(hdr, 61)     // order (informational)
+    btAppendInt(hdr, 1)       // root_page
+    btAppendInt(hdr, 0)       // next_free_page
+    btAppendInt(hdr, 2)       // page_count
+    btZeroFill(hdr)
+    leaf.append(char(btPtLeaf))
+    btZeroFill(leaf)
+    if not f.writeAt(0, hdr) {
+        f.close()
+        return nil
+    }
+    if not f.writeAt(btPageSize, leaf) {
+        f.close()
+        return nil
+    }
+    if not f.flush() {
+        f.close()
+        return nil
+    }
+    return f
+}
+
+// Open an existing B-tree file, validating magic and version.
+// Returns nil if the file is missing or not a v2 B-tree.
+func btOpen(path: string): filehandle {
+    var f: filehandle = file.open(path)
+    if f == nil { return nil }
+    if btRootPage(f) < 0 {
+        f.close()
+        return nil
+    }
+    return f
+}
+
+// --- Internal leaf I/O ------------------------------------------------
+
+func btReadLeaf(f: filehandle, pageNum: int, page: text): bool {
+    if not f.readAt(pageNum * btPageSize, btPageSize, page) { return false }
+    if page.length != btPageSize { return false }
+    if int(page[0]) != btPtLeaf { return false }
+    return true
+}
+
+// Reassemble a leaf from its old header (page_type + next_leaf kept)
+// and a rebuilt entries region; fails if the entries exceed the page.
+func btWriteLeaf(f: filehandle, pageNum: int, oldPage: text, entries: text, keyCount: int): bool {
+    var page: text
+    if entries.length > btLeafBudget { return false }
+    page.append(oldPage.textAt(0, btLeafHeaderSize))
+    page.append(entries)
+    btZeroFill(page)
+    page.setWordAt(1, keyCount)
+    return f.writeAt(pageNum * btPageSize, page)
+}
+
+// --- Operations -------------------------------------------------------
+
+// Insert a key/value pair. Duplicate keys collect multiple values on
+// one entry; duplicate values under a key are allowed. Fails if the
+// tree file is invalid, on I/O error, or if the leaf page is full.
+func btInsert(f: filehandle, key: int, value: int): bool {
+    var page: text
+    var out: text
+    var root: int
+    var n: int
+    var off: int
+    var i: int = 0
+    var k: int
+    var vc: int
+    var esz: int
+    var epos: int
+    var added: bool = false
+    var merged: bool = false
+    root = btRootPage(f)
+    if root < 0 { return false }
+    if not btReadLeaf(f, root, page) { return false }
+    n = page.wordAt(1)
+    off = btLeafHeaderSize
+    while i < n {
+        k = page.intAt(off)
+        vc = page.wordAt(off + 4)
+        esz = 10 + vc * 4
+        if not added and not merged and key < k {
+            btAppendNewEntry(out, key, value)
+            added = true
+        }
+        if k == key {
+            // copy the entry with the new value appended
+            epos = out.length
+            out.append(page.textAt(off, 6 + vc * 4))
+            out.setWordAt(epos + 4, vc + 1)
+            btAppendInt(out, value)
+            out.append(page.textAt(off + 6 + vc * 4, 4))
+            merged = true
+        } else {
+            out.append(page.textAt(off, esz))
+        }
+        off = off + esz
+        i = i + 1
+    }
+    if not added and not merged {
+        btAppendNewEntry(out, key, value)
+        added = true
+    }
+    if added { n = n + 1 }
+    return btWriteLeaf(f, root, page, out, n)
+}
+
+// Find all values for a key; fills `values` (cleared first).
+// Returns true if the key exists.
+func btFind(f: filehandle, key: int, values: list of int): bool {
+    var page: text
+    var root: int
+    var n: int
+    var off: int
+    var i: int = 0
+    var k: int
+    var vc: int
+    var j: int
+    values.clear()
+    root = btRootPage(f)
+    if root < 0 { return false }
+    if not btReadLeaf(f, root, page) { return false }
+    n = page.wordAt(1)
+    off = btLeafHeaderSize
+    while i < n {
+        k = page.intAt(off)
+        vc = page.wordAt(off + 4)
+        if k == key {
+            j = 0
+            while j < vc {
+                values.add(page.intAt(off + 6 + j * 4))
+                j = j + 1
+            }
+            return true
+        }
+        if k > key { return false }    // entries are sorted
+        off = off + 10 + vc * 4
+        i = i + 1
+    }
+    return false
+}
+
+// Shared removal walk. valueOnly: remove the first occurrence of
+// `value` under `key` (dropping the entry if it was the last value);
+// otherwise remove the whole entry. Returns false if nothing matched.
+func btRemove(f: filehandle, key: int, value: int, valueOnly: bool): bool {
+    var page: text
+    var out: text
+    var root: int
+    var n: int
+    var off: int
+    var i: int = 0
+    var k: int
+    var vc: int
+    var esz: int
+    var j: int
+    var hit: int
+    var drops: int = 0
+    var found: bool = false
+    root = btRootPage(f)
+    if root < 0 { return false }
+    if not btReadLeaf(f, root, page) { return false }
+    n = page.wordAt(1)
+    off = btLeafHeaderSize
+    while i < n {
+        k = page.intAt(off)
+        vc = page.wordAt(off + 4)
+        esz = 10 + vc * 4
+        if k != key {
+            out.append(page.textAt(off, esz))
+        } else {
+            if not valueOnly {
+                found = true
+                drops = drops + 1
+            } else {
+                hit = -1
+                j = 0
+                while j < vc {
+                    if hit < 0 and page.intAt(off + 6 + j * 4) == value { hit = j }
+                    j = j + 1
+                }
+                if hit < 0 {
+                    out.append(page.textAt(off, esz))
+                } else {
+                    found = true
+                    if vc == 1 {
+                        drops = drops + 1
+                    } else {
+                        btAppendInt(out, k)
+                        btAppendWord(out, vc - 1)
+                        j = 0
+                        while j < vc {
+                            if j != hit { btAppendInt(out, page.intAt(off + 6 + j * 4)) }
+                            j = j + 1
+                        }
+                        out.append(page.textAt(off + 6 + vc * 4, 4))
+                    }
+                }
+            }
+        }
+        off = off + esz
+        i = i + 1
+    }
+    if not found { return false }
+    return btWriteLeaf(f, root, page, out, n - drops)
+}
+
+// Delete a key and all its values.
+func btDelete(f: filehandle, key: int): bool {
+    return btRemove(f, key, 0, false)
+}
+
+// Delete one key/value pair (the first occurrence of value).
+func btDeleteValue(f: filehandle, key: int, value: int): bool {
+    return btRemove(f, key, value, true)
+}
+
+// --- Keys -------------------------------------------------------------
+
+// Case-insensitive string key: CRC-16/KERMIT of the lowercased bytes
+// (ASCII A-Z only; high MacRoman bytes pass through unchanged).
+// Collisions are possible -- callers verify the field after lookup.
+func stringKey(s: string): int {
+    var t: text
+    var i: int = 0
+    var c: char
+    while i < s.length {
+        c = s[i]
+        if c >= 'A' and c <= 'Z' { c = char(int(c) + 32) }
+        t.append(c)
+        i = i + 1
+    }
+    return t.crc16(0, 0, t.length)
+}

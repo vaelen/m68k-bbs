@@ -10,6 +10,7 @@ for t in tests/*.cla; do
     echo "== $t"
     bin/clarusc emit --rtdir vendor/runtime/clarus/ -o "$WORK/main.c" "$t"
     cc -O1 -I vendor/runtime/host -o "$WORK/prog" "$WORK/main.c" vendor/runtime/host/rt.c
-    "$WORK/prog"
+    # run from the scratch dir so tests that create files stay out of the repo
+    (cd "$WORK" && ./prog)
 done
 echo "all test suites passed"

@@ -1,0 +1,117 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for the file-based B-tree (btree.cla, vDB v2 format).
+// Run by scripts/test.sh, which executes from a scratch directory --
+// the tree files created here land there and are cleaned up with it.
+// Exits 0 on pass, 1 on the first failure.
+
+include "../btree.cla"
+
+var failures: int = 0
+var vals: list of int
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+func expectVals(f: filehandle, key: int, a: int, b: int, count: int, name: string) {
+    var ok: bool = btFind(f, key, vals)
+    if count == 0 {
+        expect(not ok and vals.count == 0, name)
+        return
+    }
+    ok = ok and vals.count == count
+    if ok and count >= 1 { ok = vals[0] == a }
+    if ok and count >= 2 { ok = vals[1] == b }
+    expect(ok, name)
+}
+
+on App.startCLI(args: list of string) {
+    var f: filehandle
+    var g: filehandle
+    var i: int
+    var okAll: bool
+
+    // 1. create: two pages on disk, find on empty tree misses
+    f = btCreate("bt-test.idx", "VDBi", "68BB")
+    expect(f != nil, "create returns a handle")
+    expect(f.size() == 1024, "fresh tree is header + root leaf")
+    expectVals(f, 100, 0, 0, 0, "empty tree finds nothing")
+
+    // 2. insert and find, multiple values per key
+    expect(btInsert(f, 100, 200), "insert 100->200")
+    expectVals(f, 100, 200, 0, 1, "find single value")
+    expect(btInsert(f, 100, 201), "insert 100->201")
+    expectVals(f, 100, 200, 201, 2, "find both values in order")
+
+    // 3. keys kept sorted: insert below, above, between
+    expect(btInsert(f, 150, 300), "insert 150->300")
+    expect(btInsert(f, 50, 1), "insert 50->1")
+    expect(btInsert(f, 120, 5), "insert 120->5")
+    expectVals(f, 50, 1, 0, 1, "find lowest key")
+    expectVals(f, 120, 5, 0, 1, "find middle key")
+    expectVals(f, 150, 300, 0, 1, "find highest key")
+    expectVals(f, 99, 0, 0, 0, "missing key between entries")
+
+    // 4. persistence across close/reopen
+    f.close()
+    f = btOpen("bt-test.idx")
+    expect(f != nil, "reopen succeeds")
+    expectVals(f, 100, 200, 201, 2, "values survive reopen")
+
+    // 5. deleting one value keeps the rest; last value drops the key
+    expect(btDeleteValue(f, 100, 200), "delete value 200")
+    expectVals(f, 100, 201, 0, 1, "other value remains")
+    expect(btDeleteValue(f, 100, 201), "delete last value")
+    expectVals(f, 100, 0, 0, 0, "key gone after last value")
+    expect(not btDeleteValue(f, 100, 201), "delete on missing key fails")
+    expect(not btDeleteValue(f, 150, 999), "delete of absent value fails")
+    expectVals(f, 150, 300, 0, 1, "absent-value delete left entry alone")
+
+    // 6. whole-key delete
+    expect(btDelete(f, 150), "delete key 150")
+    expectVals(f, 150, 0, 0, 0, "key 150 gone")
+    expect(not btDelete(f, 150), "second delete fails")
+    expectVals(f, 50, 1, 0, 1, "neighbor key intact")
+    f.close()
+
+    // 7. opening a non-B-tree file fails cleanly
+    g = file.create("bt-test.junk", "TEXT", "68BB")
+    g.writeAt(0, "this is not a btree, not even close")
+    g.close()
+    expect(btOpen("bt-test.junk") == nil, "open rejects a non-btree file")
+    expect(btOpen("bt-test.missing") == nil, "open rejects a missing file")
+
+    // 8. page budget: a new single-value entry is 14 bytes, so a
+    //    505-byte leaf holds 36 entries; the 37th insert must fail.
+    f = btCreate("bt-test2.idx", "VDBi", "68BB")
+    okAll = true
+    i = 1
+    while i <= 36 {
+        if not btInsert(f, i, i * 10) { okAll = false }
+        i = i + 1
+    }
+    expect(okAll, "36 entries fit the leaf")
+    expect(not btInsert(f, 37, 370), "37th entry fails: page full")
+    expectVals(f, 36, 360, 0, 1, "full page still readable")
+    expectVals(f, 1, 10, 0, 1, "first entry still readable")
+    f.close()
+
+    // 9. stringKey: case-insensitive CRC-16/KERMIT
+    expect(stringKey("alice") == stringKey("ALICE"), "stringKey case-insensitive")
+    expect(stringKey("alice") != stringKey("bob"), "different strings differ")
+    expect(stringKey("123456789") == 0x2189, "KERMIT check value")
+
+    if failures > 0 {
+        log("btree-test: FAILED")
+        quit 1
+    }
+    log("btree-test: all passed")
+    quit
+}
