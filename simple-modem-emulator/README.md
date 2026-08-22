@@ -44,18 +44,18 @@ Then point a telnet client at `listen_port`.
 
 Only what is needed to hang up on a caller from the computer side:
 
-| Input (from serial port)            | Effect                                         |
-|-------------------------------------|------------------------------------------------|
-| `+++` (1 s of silence before/after) | Enter command mode, reply `\r\nOK\r\n`. Not forwarded.|
-| `ATH` / `ATH0`                      | Hang up: `\r\nNO CARRIER\r\n`, close both connections.|
-| `ATO`                               | Back to data mode, reply `\r\nCONNECT 57600\r\n`.     |
-| any other `AT…`                     | `\r\nOK\r\n`                                          |
+| Input (from serial port)              | Effect                                         |
+|---------------------------------------|------------------------------------------------|
+| `+++` (0.5 s of silence before/after) | Enter command mode, reply `\r\nOK\r\n`. Not forwarded.|
+| `ATH` / `ATH0`                        | Hang up: `\r\nNO CARRIER\r\n`, close both connections.|
+| `ATO`                                 | Back to data mode, reply `\r\nCONNECT 57600\r\n`.     |
+| any other `AT…`                       | `\r\nOK\r\n`                                          |
 
 Result codes use the Hayes verbose (`ATV1`) framing, `<CR><LF>text<CR><LF>`.
 Everything else about a real modem — `RING`, `ATA`, dialing, echo, S
 registers, numeric result codes — is deliberately absent. The guard time
-is the Hayes default (`GUARD_MS` in `modem.c`). Data from the caller that
-arrives while in command mode is discarded.
+is 0.5 s, half the Hayes default (`GUARD_MS` in `modem.c`). Data from the
+caller that arrives while in command mode is discarded.
 
 ## Test
 
