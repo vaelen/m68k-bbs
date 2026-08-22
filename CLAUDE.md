@@ -35,21 +35,32 @@ Key points:
 
 ## Compiler
 
-The compiler is `clarusc` (self-hosted, in `clarus-src/clarusc/`), linked
-at `bin/clarusc` (→ `clarus-src/build-run/clarusc`, the bootstrap the
-wrapper scripts build and cache):
+The compiler is `clarusc` (self-hosted, in `clarus-src/clarusc/`). This
+project uses a **fully pinned toolchain**, so work here continues even
+while the compiler repo is mid-change:
+
+- `bin/clarusc` — pinned copy of a known-good compiler build
+- `vendor/runtime/`, `vendor/toolbox/` — matching snapshot of the
+  runtime `.cla` sources, host C runtime, and toolbox catalog
+
+Refresh the pin deliberately (all pieces together — a pinned binary with
+a newer runtime can mismatch):
+`cp clarus-src/build-run/clarusc bin/clarusc && cp clarus-src/runtime/clarus/*.cla vendor/runtime/clarus/ && cp clarus-src/runtime/host/rt* vendor/runtime/host/ && cp clarus-src/toolbox/*.cla vendor/toolbox/`
 
 ```sh
-bin/clarusc bbs.cla                   # check only
-# Native 68k Mac app (MacBinary): output at clarus-src/build-68k/68kBBS/68kBBS.bin
-~/repos/clarus/scripts/build-68k.sh bbs.cla
-
-# Run on the host (CLI lane, for logic testing)
-~/repos/clarus/scripts/clarus-run.sh bbs.cla [-- args...]
+bin/clarusc bbs.cla   # check only
+scripts/build.sh      # 68k Mac app -> build/68kBBS.bin (MacBinary)
+scripts/test.sh       # run every tests/*.cla on the host lane
+scripts/deploy.sh     # build + refresh snow/BBSHD.hda + restart Snow
 ```
 
-(The old `./clarus` symlink to the frozen Go host compiler was removed —
-that binary predates `app` sections and `App.log`; don't resurrect it.)
+Toolbox includes come from the snapshot too
+(`include "vendor/toolbox/osutils.cla"`). The live-repo wrapper scripts
+(`clarus-src/scripts/build-68k.sh`, `clarus-run.sh`) still work but
+bootstrap the live compiler — only reach for them when testing new
+compiler features. (The old `./clarus` symlink to the frozen Go host
+compiler was removed — it predates `app` sections and `App.log`; don't
+resurrect it.)
 
 For host-side serial testing, the host lane maps the modem port via env:
 `CLARUS_SERIAL_MODEM=listen:PORT` (or `connect:HOST:PORT`).
@@ -80,16 +91,9 @@ raw `nc` to port 1234. See `simple-modem-emulator/README.md`.
 
 `snow/BBSHD.hda` is a persistent 5 MB device image ("BBS HD"), attached at
 SCSI ID 1 in `MacII.snoww`. It is **reused every time** — don't recreate
-it, just update the app on it with hfsutils (which understands the
-partitioned `.hda` directly):
-
-```sh
-export HOME=some-scratch-dir         # keep hfsutils' ~/.hcwd isolated
-hmount snow/BBSHD.hda
-hdel :68kBBS                          # ignore failure if not present
-hcopy -m ~/repos/clarus/build-68k/68kBBS/68kBBS.bin :
-humount
-```
+it. `scripts/deploy.sh` does the whole cycle (build, quit Snow, refresh
+the app on the image with hfsutils, restart Snow); the manual steps, if
+needed, are in its source and `docs/snow-hdd-howto.md`.
 
 Rules: only touch the image while Snow is NOT running; quit Snow cleanly
 (`osascript -e 'quit app "Snow"'`), never `kill`, or the HFS structures

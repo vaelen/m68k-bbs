@@ -1,0 +1,862 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// text.cla: the ported Text family (Plan 5b "Stage B/D" Task 9, runtime-
+// migration-wave1). Replaces runtime/host/rt_core.inc's rt_text_*
+// functions (struct rt_text ~:259, functions ~:266-479) for every emitted
+// program -- like str.cla (Task 8), this module is UNCONDITIONAL: main.cla's
+// manifest always includes it, spliced AFTER str.cla (head-splice order:
+// declare-before-use across runtime modules), and cpTextPorted (cprint.cla)
+// is set true unconditionally alongside that, same convention cpStrPorted
+// established. Ported EXACTLY against rt_core.inc:266-479, function by
+// function; each function's doc comment below cites its own line range.
+//
+// Text layout (Ch3, rt_core.inc:259): `struct rt_text { int32_t rc; Handle
+// h; int32_t len; int32_t cap; }` -- a fixed-size box (never relocated: it's
+// obtained via NewPtr in rt_text_new) holding an rc, a relocatable data
+// Handle, and the current length/capacity of that Handle's block. RtText
+// (below) is an `overlay record` view of that exact layout (Ch13: Overlay
+// Records) -- rt.c carries a byte-for-byte layout guard (see the
+// rt_text_layout_check typedef in rt_core.inc, right after struct rt_text's
+// own definition) so this overlay and the real C struct can never drift.
+//
+// RC boundary (Plan 5c wave2a Task 2 update -- rc is now Clarus-owned for
+// text): birth (rtTextNew, below) constructs the WHOLE box itself, via
+// TextNewPtr + overlay pokes, instead of delegating to C; rtTextRetain/
+// rtTextRelease do the rc arithmetic and the rc==0 dispose sequence here
+// too, calling TextRcCheck (a Task 1 waist extern) only on the cold
+// over-release path (`rc <= 0`), never unconditionally the way the C
+// reference's rt_rc_check call does -- Plan 5c's own design decision
+// ("rc guard as cold-path extern," see the wave2a plan doc). cprint.cla's
+// cpTextArcPorted flag (unconditional true) redirects every text ARC
+// emission site to clar_fn_rtTextRetain/clar_fn_rtTextRelease: the
+// IRetain/IRelease/ITextFreeVar intrinsics, cpEmitRetain/cpEmitRelease's
+// own KText arms (including the KText-element case inside the list/map
+// release walks), fpRetainVal/fpReleaseVal's KText dispatch, and
+// fpNewTmp's own tracked-temp release composition. The C originals
+// (rt_text_new/rt_text_retain/rt_text_release, rt_core.inc) remain,
+// forever, as the frozen Go compiler's own backend and the differential-
+// testing oracle -- never called by cprint's emitted C once
+// cpTextArcPorted is set. The two UI call sites (IUiGetTextviewText's bare
+// rt_text_new(), fpUiEditStmt) stay C for an unrelated reason -- a
+// deliberate Ch10/mac-target-4c exclusion, not an RC one -- untouched by
+// this task.
+//
+// Relocation discipline: `h` is a Handle -- SetHandleSize (the growth
+// primitive) can move the block it points to, and on a real Memory Manager
+// a call to SetHandleSize can even move OTHER relocatable blocks via heap
+// compaction. Every function here re-derives ANY Handle-backed master
+// pointer it holds (via TextHandleDeref) AFTER a call that can
+// allocate/move memory (rtTextGrow itself, or a call to it) -- never
+// caches a dereferenced pointer across such a call. The paranoid allocator
+// (CLARUS_MEM_PARANOID) catches violations of this rule in the leak-gated
+// test runs. rtTextConcat/rtTextConcatSl's own scratch buffers are
+// TextNewPtr blocks (non-relocatable, matching the C reference's own
+// NewPtr choice for the identical scratch role -- review round 1's fix, an
+// earlier draft used a relocatable TextNewHandle scratch here and needed
+// its own re-derive-after-grow step; TextNewPtr needs none).
+//
+// Behavior contract (brief): Text has no 255-byte cap -- it grows (via
+// rtTextGrow, porting rt_core_grow's amortized-doubling policy,
+// rt_core.inc:246-255) rather than clamping. rtTextToBytes clamps to the
+// destination buffer's capacity and calls rtSetLastErr(1, "string
+// truncated") on truncation (matching rt_core.inc:390's rt_set_lasterr
+// call) -- the only text function with that clamp-and-report shape, since
+// every other copy INTO a text (store/storeText/concat/concatSl/fromBytes/
+// append*) targets the growable side and never truncates. rtTextIndex/
+// rtTextSetIndex/rtTextSlice are STRICT: out-of-range panics (matching
+// rtStrIndex/rtStrSlice's own str.cla contract), never clamps.
+//
+// TextHandleDeref/TextSetHandleSize/TextBlockMoveData/TextNewPtr/
+// TextDisposePtr/TextNewHandle/TextDisposeHandle/TextRcCheck are text.cla's
+// OWN extern names, distinct from the public HandleDeref/BlockMoveData/
+// NewPtr names ser.cla (conditional) and any user program might also
+// declare -- same collision hazard str.cla's own header comment documents
+// (checkFuncSig -> scopeDeclare keys purely on name, no signature
+// comparison), and the same fix: distinct Text-prefixed names sidestep it.
+// Each is backed by an rt_ext_Text* wrapper in BOTH
+// runtime/host/rt_ext_host.inc and runtime/mac/rt_ext_mac.inc,
+// delegating to the same underlying primitives the generic/Str/Ser
+// wrappers already call. TextSetLastErr/TextPanic, text.cla's own former
+// externs for this same reason, are gone as of Plan native-5d Task 3: text
+// calls core.cla's rtSetLastErr/rtPanic directly now (declare-before-use,
+// core.cla is spliced first) -- a plain intra-Clarus call, no extern/
+// name-collision hazard to sidestep at all.
+// Task 9 (native-5d): trap/inline clauses on every waist extern below --
+// cprint ignores clauses entirely (Task 2's own proof), so this is a
+// codegen68k-only addition, byte-identical host emission. Trap words
+// verified against Retro68's Traps.h (Memory Manager section): NewPtr
+// 0xA11E, DisposePtr 0xA01F, NewHandle 0xA122, DisposeHandle 0xA023,
+// SetHandleSize 0xA024, BlockMoveData 0xA22E (NOT 0xA02E -- that word is
+// plain BlockMove, a distinct trap; see the Task 9 report). All six are
+// register-based Memory Manager calls (Inside Macintosh's documented A0/
+// A1/D0 fast-call convention), hence `reg`, never `pascal`.
+//
+// RESOLVED (Task 9 review fix): rt_ext_TextNewPtr/rt_ext_TextNewHandle
+// (runtime/host/rt_ext_host.inc) OOM-panic on a NULL result INSIDE
+// the C wrapper, before ever returning to this Clarus caller -- a raw
+// `reg` trap clause has no such check, so a native build's TextNewPtr/
+// TextNewHandle calls could otherwise silently propagate NULL on
+// allocation failure instead of panicking. Every Clarus call site of
+// these two (and their List/Map siblings) now guards the result itself
+// (`if x == ptr(0) { rtPanic("out of memory") }`, matching the C shim's
+// own message) -- dead code on host (the C shim panics first), live on
+// native. See rtTextNew/rtTextConcat/rtTextConcatSl below.
+external func TextHandleDeref(h: ptr): ptr = inline deref
+// `reg memerr` (Task 14, native-5e), not plain `reg`: SetHandleSize is a
+// void Pascal PROCEDURE (Inside Macintosh Memory Manager) -- the real trap
+// leaves no result in D0 at all, unlike NewHandle/NewPtr above. The
+// natively-generated call reads the MemErr low-memory global instead (see
+// cgCallExtRegMemErr's own doc comment, clarusc/cg68k.cla, for the
+// winvar.cla native-gate bug a plain `reg` clause caused here: `err` held
+// whatever stale garbage the trap happened to leave in D0, not an actual
+// error code, so the very first append to a fresh empty text
+// nondeterministically panicked "out of memory"). rt_ext_TextSetHandleSize
+// (rt_ext_mac.inc/rt_ext_host.inc) already does the equivalent
+// SetHandleSize+MemError() two-step in C for the host/ported lane -- this
+// clause only changes what codegen68k emits; cprint ignores it entirely,
+// same as every other trap/inline clause (Task 2's own proof).
+external func TextSetHandleSize(h: ptr, n: int): int = trap 0xA024 reg memerr
+external func TextBlockMoveData(src: ptr, dst: ptr, count: int) = trap 0xA22E reg
+// TextNewPtr/TextDisposePtr (review round 1 fix): the scratch-buffer
+// allocator rtTextConcat/rtTextConcatSl use, mirroring rt_text_concat's own
+// NewPtr choice exactly (rt_core.inc:307). rt_ext_TextNewPtr panics
+// ("out of memory") ITSELF on a NULL result on host; Task 9's own review
+// fix adds the same check at each Clarus call site too, since the native
+// `reg` trap clause above has no such check of its own (see the KNOWN
+// CONCERN block above, now RESOLVED).
+external func TextNewPtr(size: int): ptr = trap 0xA11E reg
+external func TextDisposePtr(p: ptr) = trap 0xA01F reg
+// TextNewHandle/TextDisposeHandle/TextRcCheck (Task 1, Plan 5c wave2a): the
+// ARC waist externs rtTextNew/rtTextRetain/rtTextRelease below use.
+// TextNewHandle oom-panics on NULL itself on host (same "check at the
+// primitive" placement as TextNewPtr just above); rtTextNew below now
+// guards the native path too (see the KNOWN CONCERN block above).
+// TextRcCheck is the cold-path over-release guard: rtTextRelease only
+// calls it once it has already determined `rc <= 0` itself (the host body then prints "rt_rc:
+// over-release at %s" and aborts; the Mac body is a no-op) -- never called
+// unconditionally the way the C reference's rt_rc_check is.
+external func TextNewHandle(n: int): ptr = trap 0xA122 reg
+external func TextDisposeHandle(h: ptr) = trap 0xA023 reg
+external func TextRcCheck(box: ptr, rc: int) = inline nop
+
+// RtText (Ch13: Overlay Records) mirrors rt_core.inc:259's `struct rt_text
+// { int32_t rc; Handle h; int32_t len; int32_t cap; }` field-for-field --
+// rt.c's rt_text_layout_check typedef guards this layout stays exact.
+overlay record RtText {
+    rc: int
+    h: ptr
+    len: int
+    cap: int
+}
+
+// rtTextGrow (rt_core.inc:246-255/261-264, rt_core_grow + rt_text_grow):
+// shared amortized-doubling grower -- doubles cap (from 4 if currently
+// empty) until it covers `need`, then SetHandleSize once. Callers that hold
+// a master pointer derived from t.h before calling this MUST re-derive it
+// afterward (relocation discipline, module header comment above) -- growth
+// can move the block.
+func rtTextGrow(t: ptr, need: int) {
+    var rt: RtText
+    var cap: int
+    var newcap: int
+    var err: int
+
+    rt = RtText(t)
+    cap = rt.cap
+    if need <= cap {
+        return
+    }
+    if cap > 0 {
+        newcap = cap
+    } else {
+        newcap = 4
+    }
+    while newcap < need {
+        newcap = newcap * 2
+    }
+    err = TextSetHandleSize(rt.h, newcap)
+    if err != 0 {
+        rtPanic("out of memory")
+    }
+    rt.cap = newcap
+}
+
+// rtTextBoxSize is TextNewPtr's argument for rtTextNew's box below -- this
+// language has no sizeof operator, so it's a hand-derived constant rather
+// than an exact `sizeof(struct rt_text)`: rt_core.inc's own
+// rt_text_layout_check pins struct rt_text to exactly `{ int32_t rc; Handle
+// h; int32_t len; int32_t cap; }` (four fields), but a Handle is a native
+// pointer, whose width (and the padding a natural-alignment C struct layout
+// inserts around it) differs by target -- 24 bytes measured on this repo's
+// x86_64/arm64 differential-test host (rc@0, 4 bytes padding, h@8, len@16,
+// cap@20), 16 bytes on the real 4-byte-pointer 68k target (no padding
+// needed there). 32 (four fields, each conservatively budgeted a full
+// 8-byte pointer-width slot) safely covers both: TextNewPtr only guarantees
+// "at least this many bytes," so a little slack here is harmless, unlike an
+// UNDER-sized box, which would corrupt whatever heap memory follows it.
+const rtTextBoxSize: int = 32
+
+// rtTextNew (rt_core.inc:278-288, rt_text_new) -- Plan 5c wave2a Task 2:
+// birth allocation is now entirely Clarus-owned. Mirrors the C reference
+// exactly except for ordering rc/len/cap before h (matches the Task 2
+// brief's own worked order; the C reference pokes h before len/cap, which
+// makes no observable difference -- t is not yet reachable from anywhere
+// else, so no ordering here is racy or otherwise significant).
+// TextNewPtr/TextNewHandle's own C shim panics on NULL (host only -- Task 9
+// (native-5d) gave both a bare `reg` trap clause, which has no such check),
+// so these guards are dead on host, live on native -- same message the C
+// shim uses ("out of memory"), same `x == ptr(0)` idiom rtTextRetain/etc.
+// already use.
+func rtTextNew(): ptr {
+    var t: ptr
+    var rt: RtText
+
+    t = TextNewPtr(rtTextBoxSize)
+    if t == ptr(0) {
+        rtPanic("out of memory")
+    }
+    rt = RtText(t)
+    rt.rc = 1
+    rt.len = 0
+    rt.cap = 0
+    rt.h = TextNewHandle(0)
+    if rt.h == ptr(0) {
+        rtPanic("out of memory")
+    }
+    return t
+}
+
+// rtTextRetain (rt_core.inc:800-805, rt_text_retain) -- Plan 5c wave2a Task
+// 2: null-safe increment, no over-release guard (Task 1's design decision:
+// the guard is a release-only cold path -- see TextRcCheck's own doc
+// comment above and rtTextRelease below).
+func rtTextRetain(t: ptr) {
+    var rt: RtText
+
+    if t == ptr(0) {
+        return
+    }
+    rt = RtText(t)
+    rt.rc = rt.rc + 1
+}
+
+// rtTextRelease (rt_core.inc:807-816, rt_text_release; the rt_text_free
+// alias, rt_core.inc:817, is exactly this function -- cprint.cla's
+// ITextFreeVar redirects straight to clar_fn_rtTextRelease, no separate
+// rtTextFree exists) -- Plan 5c wave2a Task 2: null-safe; the guard runs
+// ONLY on the cold `rc <= 0` path (TextRcCheck's own doc comment above)
+// rather than unconditionally the way the C reference's rt_rc_check call
+// does; decrements regardless; disposes the Handle then the box itself
+// once rc reaches 0.
+func rtTextRelease(t: ptr) {
+    var rt: RtText
+
+    if t == ptr(0) {
+        return
+    }
+    rt = RtText(t)
+    if rt.rc <= 0 {
+        TextRcCheck(t, rt.rc)
+    }
+    rt.rc = rt.rc - 1
+    if rt.rc == 0 {
+        TextDisposeHandle(rt.h)
+        TextDisposePtr(t)
+    }
+}
+
+// rtTextStore (rt_core.inc:278-285): clamped-to-nothing copy -- Text grows
+// to fit, so this never truncates. mp is derived AFTER rtTextGrow (which can
+// move t's block).
+func rtTextStore(t: ptr, s: ptr) {
+    var rt: RtText
+    var n: int
+    var mp: ptr
+
+    n = peekb(s)
+    rtTextGrow(t, n)
+    rt = RtText(t)
+    mp = TextHandleDeref(rt.h)
+    TextBlockMoveData(s + 1, mp, n)
+    rt.len = n
+}
+
+// rtTextStoreText (rt_core.inc:287-294): dst may alias src (a no-op copy
+// when so, same as the C comment notes) -- both master pointers are
+// re-derived AFTER rtTextGrow, since growing dst also moves src's block
+// when they're the same handle.
+func rtTextStoreText(dst: ptr, src: ptr) {
+    var rs: RtText
+    var rd: RtText
+    var n: int
+    var srcmp: ptr
+    var dstmp: ptr
+
+    rs = RtText(src)
+    n = rs.len
+    rtTextGrow(dst, n)
+    rs = RtText(src)
+    rd = RtText(dst)
+    srcmp = TextHandleDeref(rs.h)
+    dstmp = TextHandleDeref(rd.h)
+    TextBlockMoveData(srcmp, dstmp, n)
+    rd.len = n
+}
+
+// rtTextConcat (rt_core.inc:296-319): bstr/btext are mutually exclusive
+// (ptr(0) stands in for C's NULL, matching the brief's call-shape note);
+// dst may alias a (and, defensively, btext) -- built into a scratch buffer
+// first (decoupled from dst's own handle), then copied into dst after
+// growing it, same two-phase approach rt_text_concat's C comment describes.
+// Review fix (round 1): scratch is a TextNewPtr block (non-relocatable),
+// mirroring the C reference's own NewPtr choice exactly -- unlike a Handle,
+// SetHandleSize can never move it, so (unlike an earlier Handle-based
+// draft) there is no re-derive-after-grow step for scratch at all, and one
+// less relocation-discipline site to get wrong. TextNewPtr's own C shim
+// panics ("out of memory") on failure -- host only, Task 9 (native-5d)
+// gave TextNewPtr a bare `reg` trap clause with no such check, so this
+// function guards the NULL result itself now (dead on host, live on
+// native).
+func rtTextConcat(dst: ptr, a: ptr, bstr: ptr, btext: ptr) {
+    var ra: RtText
+    var rb: RtText
+    var rd: RtText
+    var alen: int
+    var blen: int
+    var total: int
+    var scratchSz: int
+    var scratch: ptr
+    var amp: ptr
+    var bmp: ptr
+    var dstmp: ptr
+
+    ra = RtText(a)
+    alen = ra.len
+    if bstr != ptr(0) {
+        blen = peekb(bstr)
+    } else {
+        rb = RtText(btext)
+        blen = rb.len
+    }
+    total = alen + blen
+    if total > 0 {
+        scratchSz = total
+    } else {
+        scratchSz = 1
+    }
+    scratch = TextNewPtr(scratchSz)
+    if scratch == ptr(0) {
+        rtPanic("out of memory")
+    }
+    amp = TextHandleDeref(ra.h)
+    TextBlockMoveData(amp, scratch, alen)
+    if bstr != ptr(0) {
+        TextBlockMoveData(bstr + 1, scratch + alen, blen)
+    } else {
+        bmp = TextHandleDeref(rb.h)
+        TextBlockMoveData(bmp, scratch + alen, blen)
+    }
+    rtTextGrow(dst, total)
+    rd = RtText(dst)
+    dstmp = TextHandleDeref(rd.h)
+    TextBlockMoveData(scratch, dstmp, total)
+    rd.len = total
+    TextDisposePtr(scratch)
+}
+
+// rtTextConcatSl (rt_core.inc:321-340): string on the left (a), text on the
+// right (b) -- same scratch-then-copy approach as rtTextConcat (dst may
+// alias b, scratch is a non-relocatable TextNewPtr block), no truncation
+// (text is unbounded).
+func rtTextConcatSl(dst: ptr, a: ptr, b: ptr) {
+    var rb: RtText
+    var rd: RtText
+    var slen: int
+    var blen: int
+    var total: int
+    var scratchSz: int
+    var scratch: ptr
+    var bmp: ptr
+    var dstmp: ptr
+
+    slen = peekb(a)
+    rb = RtText(b)
+    blen = rb.len
+    total = slen + blen
+    if total > 0 {
+        scratchSz = total
+    } else {
+        scratchSz = 1
+    }
+    scratch = TextNewPtr(scratchSz)
+    if scratch == ptr(0) {
+        rtPanic("out of memory")
+    }
+    TextBlockMoveData(a + 1, scratch, slen)
+    bmp = TextHandleDeref(rb.h)
+    TextBlockMoveData(bmp, scratch + slen, blen)
+    rtTextGrow(dst, total)
+    rd = RtText(dst)
+    dstmp = TextHandleDeref(rd.h)
+    TextBlockMoveData(scratch, dstmp, total)
+    rd.len = total
+    TextDisposePtr(scratch)
+}
+
+// rtTextCmp (rt_core.inc:466-479): byte-wise unsigned comparison,
+// shorter-is-less on a matching prefix -- same peekb-loop approach str.cla's
+// rtStrCmp uses (no memcmp primitive on the Clarus side; peekb already
+// returns an unsigned 0-255 value, so plain int comparison is
+// unsigned-correct), functionally identical ordering to the C reference's
+// memcmp-based body. No allocation happens during a pure compare, so both
+// master pointers are safely derived once, up front.
+func rtTextCmp(a: ptr, b: ptr): int {
+    var ra: RtText
+    var rb: RtText
+    var alen: int
+    var blen: int
+    var n: int
+    var i: int
+    var amp: ptr
+    var bmp: ptr
+    var ca: int
+    var cb: int
+
+    ra = RtText(a)
+    rb = RtText(b)
+    alen = ra.len
+    blen = rb.len
+    if alen < blen {
+        n = alen
+    } else {
+        n = blen
+    }
+    amp = TextHandleDeref(ra.h)
+    bmp = TextHandleDeref(rb.h)
+    i = 0
+    while i < n {
+        ca = peekb(amp + i)
+        cb = peekb(bmp + i)
+        if ca < cb {
+            return -1
+        }
+        if ca > cb {
+            return 1
+        }
+        i = i + 1
+    }
+    if alen < blen {
+        return -1
+    }
+    if alen > blen {
+        return 1
+    }
+    return 0
+}
+
+// rtTextCmpStr (rt_core.inc:342-355): text/string comparison, same
+// byte-wise unsigned/shorter-is-less contract as rtTextCmp. fpTextCmp
+// (cprint.cla) calls this directly for text/string, and flips+negates the
+// call for string/text (rt_text_cmp_str only ever knows (text, string)).
+func rtTextCmpStr(t: ptr, s: ptr): int {
+    var rt: RtText
+    var tlen: int
+    var slen: int
+    var n: int
+    var i: int
+    var mp: ptr
+    var ca: int
+    var cb: int
+
+    rt = RtText(t)
+    tlen = rt.len
+    slen = peekb(s)
+    if tlen < slen {
+        n = tlen
+    } else {
+        n = slen
+    }
+    mp = TextHandleDeref(rt.h)
+    i = 0
+    while i < n {
+        ca = peekb(mp + i)
+        cb = peekb(s + 1 + i)
+        if ca < cb {
+            return -1
+        }
+        if ca > cb {
+            return 1
+        }
+        i = i + 1
+    }
+    if tlen < slen {
+        return -1
+    }
+    if tlen > slen {
+        return 1
+    }
+    return 0
+}
+
+// rtTextLen (rt_core.inc:357).
+func rtTextLen(t: ptr): int {
+    return RtText(t).len
+}
+
+// rtTextIndex (rt_core.inc:359-363): panics (never clamps) on an
+// out-of-range index, same contract as rtStrIndex.
+func rtTextIndex(t: ptr, i: int): int {
+    var rt: RtText
+    var mp: ptr
+
+    rt = RtText(t)
+    if i < 0 or i >= rt.len {
+        rtPanic("text index out of range")
+    }
+    mp = TextHandleDeref(rt.h)
+    return peekb(mp + i)
+}
+
+// rtTextSetIndex (rt_core.inc:365-371): same panic contract as rtTextIndex.
+func rtTextSetIndex(t: ptr, i: int, c: int) {
+    var rt: RtText
+    var mp: ptr
+
+    rt = RtText(t)
+    if i < 0 or i >= rt.len {
+        rtPanic("text index out of range")
+    }
+    mp = TextHandleDeref(rt.h)
+    pokeb(mp + i, c)
+}
+
+// rtTextFromBytes (rt_core.inc:373-383): Text is growable, so this never
+// truncates on the destination side -- it only clamps to bufcap (the source
+// buffer's own size), matching the C comment exactly.
+func rtTextFromBytes(t: ptr, buf: ptr, bufcap: int, count: int) {
+    var want: int
+    var n: int
+    var rt: RtText
+    var mp: ptr
+
+    if count < 0 {
+        want = 0
+    } else {
+        want = count
+    }
+    if want > bufcap {
+        n = bufcap
+    } else {
+        n = want
+    }
+    rtTextGrow(t, n)
+    rt = RtText(t)
+    mp = TextHandleDeref(rt.h)
+    TextBlockMoveData(buf, mp, n)
+    rt.len = n
+}
+
+// rtTextToBytes (rt_core.inc:385-392): clamped copy of t's bytes into a
+// bufcap-byte buffer, reporting truncation via rtSetLastErr -- the ONE
+// text function with the clamp-and-report shape (everything else targets
+// the growable side and never truncates).
+func rtTextToBytes(t: ptr, buf: ptr, bufcap: int): int {
+    var rt: RtText
+    var n: int
+    var mp: ptr
+
+    rt = RtText(t)
+    if rt.len < bufcap {
+        n = rt.len
+    } else {
+        n = bufcap
+    }
+    mp = TextHandleDeref(rt.h)
+    TextBlockMoveData(mp, buf, n)
+    if n < rt.len {
+        rtSetLastErr(1, "string truncated")
+    }
+    return n
+}
+
+// rtTextSlice (rt_core.inc:394-403): same STRICT-bounds rule as
+// rtStrSlice, but against t.len rather than a fixed 255 cap on the source
+// side (the OUTPUT is still a Str255, so len itself is still bounds-checked
+// against 255).
+func rtTextSlice(out: ptr, t: ptr, start: int, len: int) {
+    var rt: RtText
+    var tlen: int
+    var mp: ptr
+
+    rt = RtText(t)
+    tlen = rt.len
+    if len < 0 or len > 255 {
+        rtPanic("slice out of range")
+    }
+    if start < 0 or start > tlen - len {
+        rtPanic("slice out of range")
+    }
+    mp = TextHandleDeref(rt.h)
+    TextBlockMoveData(mp + start, out + 1, len)
+    pokeb(out, len)
+}
+
+// rtTextHashStep/rtTextIntAt/rtTextStringAt/rtTextTextAt (clir-load-perf
+// Task 2; rtTextIntAt renamed post-review from rtTextU32At -- Clarus has
+// one integer type, signed 32-bit `int`; "u32" claimed a width
+// distinction the type system doesn't have and an unsignedness that's
+// false for the returned value, so intAt names what it returns, with the
+// 4-byte big-endian layout staying documented in prose below): bulk
+// range reads for a hot loader path -- no rt_core.inc legacy equivalent
+// (brand new to the ported runtime). Each hoists rt.len and the master
+// pointer ONCE and loops over peekb (or does a single TextBlockMoveData)
+// rather than re-deriving per byte -- that hoisting is the whole point,
+// collapsing per-byte runtime-call overhead. STRICT bounds throughout,
+// same "text index out of range" message rtTextIndex/rtTextSlice already
+// use -- and the SAME overflow-safe subtraction form rtTextSlice's own
+// bounds check (:594-599 above) already uses deliberately: `pos > rt.len
+// - n`, never `pos + n > rt.len` -- the addition form wraps (CLAR_ADD32
+// is modular), so a huge pos/n can pass the guard and read wild memory
+// instead of panicking (review round 1 fix: proven with a real compiled
+// binary, `intAt(2147483647)` on a 2-byte text used to return a value
+// instead of panicking).
+
+// rtTextHashStep: rolling 31-bit shift-add hash (djb2 shape, matching
+// bake.cla's own body-hash convention) over bytes [pos, pos+n). n == 0
+// is a no-op identity (returns h unchanged). Allocates nothing, so
+// holding mp across the loop is safe (relocation discipline, module
+// header comment above).
+func rtTextHashStep(t: ptr, h: int, pos: int, n: int): int {
+    var rt: RtText
+    var mp: ptr
+    var i: int
+    var b: int
+    var acc: int
+
+    rt = RtText(t)
+    if pos < 0 or n < 0 or pos > rt.len - n {
+        rtPanic("text index out of range")
+    }
+    mp = TextHandleDeref(rt.h)
+    acc = h
+    i = 0
+    while i < n {
+        b = peekb(mp + pos + i)
+        acc = ((acc << 5) + acc + b) & 0x7FFFFFFF
+        i = i + 1
+    }
+    return acc
+}
+
+// rtTextIntAt: reads the 4-byte big-endian field at pos and returns it
+// as the `int` whose bits those are (values with the top bit set are
+// negative) -- one deref, four peekb.
+func rtTextIntAt(t: ptr, pos: int): int {
+    var rt: RtText
+    var mp: ptr
+
+    rt = RtText(t)
+    if pos < 0 or pos > rt.len - 4 {
+        rtPanic("text index out of range")
+    }
+    mp = TextHandleDeref(rt.h)
+    return (peekb(mp + pos) << 24) | (peekb(mp + pos + 1) << 16) | (peekb(mp + pos + 2) << 8) | peekb(mp + pos + 3)
+}
+
+// rtTextStringAt: reads a 1-byte Pascal-style length prefix at pos (the
+// same Str255 shape `string` itself uses -- length byte then payload),
+// then that many bytes. Str255 is a plain value type (no ARC birth
+// needed), so this is an ordinary Clarus function returning `string` by
+// value -- copy through a char[255] buffer, then s.fromBytes -- rather
+// than rtTextSlice's raw out-ptr convention (which exists only because
+// that function is itself an ARC-adjacent waist primitive; a plain
+// by-value return is simpler here and the generated C already returns
+// clar_str_255 by value for any function declared `: string`, so
+// cprint.cla's ITextStringAt arm below needs no out-param dance
+// either). The length byte is 0-255 by construction (peekb's own
+// range), so the old `l < 0 or l > 255` cap check and its "string too
+// long" panic are impossible-by-construction and have been removed --
+// STRICT bounds are the only checks left. Caller advances by
+// `1 + result.length`.
+func rtTextStringAt(t: ptr, pos: int): string {
+    var rt: RtText
+    var mp: ptr
+    var l: int
+    var buf: char[255]
+    var i: int
+    var s: string
+
+    rt = RtText(t)
+    if pos < 0 or pos > rt.len - 1 {
+        rtPanic("text index out of range")
+    }
+    mp = TextHandleDeref(rt.h)
+    l = peekb(mp + pos)
+    // l is 0..255 by construction (peekb's own range) -- no negative-
+    // length or >255-cap case is reachable here, unlike the old 4-byte
+    // BE-composed length, so only the payload bound needs checking.
+    if pos > rt.len - 1 - l {
+        rtPanic("text index out of range")
+    }
+    i = 0
+    while i < l {
+        buf[i] = char(peekb(mp + pos + 1 + i))
+        i = i + 1
+    }
+    s.fromBytes(buf, l)
+    return s
+}
+
+// rtTextTextAt: a fresh `text` copy of bytes [pos, pos+n) -- text is a
+// reference type (handle + rc), so unlike stringAt this needs the same
+// dst-out-param ARC convention rtTextConcat/rtTextAppendText use: dst
+// is grown to hold n bytes, BOTH master pointers are re-derived AFTER
+// the grow (relocation discipline -- growing dst's own handle can move
+// ANY relocatable block, including t's), then one bulk
+// TextBlockMoveData (never a per-byte append loop -- that's the whole
+// point of this method existing). cprint.cla's ITextTextAt arm mirrors
+// fpTextConcat/ITextConcatSL's own dst-allocation dance (rtTextNew()
+// first, then this call) -- copy that convention exactly, not
+// improvised: dst is caller-allocated, this function never calls
+// rtTextNew itself, same shape rtTextConcat/rtTextConcatSl declare.
+func rtTextTextAt(dst: ptr, t: ptr, pos: int, n: int) {
+    var rt: RtText
+    var rd: RtText
+    var srcmp: ptr
+    var dstmp: ptr
+
+    rt = RtText(t)
+    if pos < 0 or n < 0 or pos > rt.len - n {
+        rtPanic("text index out of range")
+    }
+    rtTextGrow(dst, n)
+    rt = RtText(t)
+    rd = RtText(dst)
+    srcmp = TextHandleDeref(rt.h)
+    dstmp = TextHandleDeref(rd.h)
+    TextBlockMoveData(srcmp + pos, dstmp, n)
+    rd.len = n
+}
+
+// rtTextIndexOfStr (rt_core.inc:405-419): empty needle convention (Ch3) --
+// an empty needle is found at index 0, same as rtStrIndexOfStr.
+func rtTextIndexOfStr(t: ptr, needle: ptr): int {
+    var rt: RtText
+    var tlen: int
+    var nlen: int
+    var i: int
+    var j: int
+    var match: bool
+    var mp: ptr
+
+    rt = RtText(t)
+    tlen = rt.len
+    nlen = peekb(needle)
+    if nlen == 0 {
+        return 0
+    }
+    if nlen > tlen {
+        return -1
+    }
+    mp = TextHandleDeref(rt.h)
+    i = 0
+    while i <= tlen - nlen {
+        match = true
+        j = 0
+        while j < nlen {
+            if peekb(mp + i + j) != peekb(needle + 1 + j) {
+                match = false
+                break
+            }
+            j = j + 1
+        }
+        if match {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// rtTextIndexOfChar (rt_core.inc:421-430).
+func rtTextIndexOfChar(t: ptr, c: int): int {
+    var rt: RtText
+    var i: int
+    var mp: ptr
+
+    rt = RtText(t)
+    mp = TextHandleDeref(rt.h)
+    i = 0
+    while i < rt.len {
+        if peekb(mp + i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// rtTextAppendStr (rt_core.inc:432-441): amortized growth (rtTextGrow
+// doubles capacity, so a loop of N appends costs O(N) total, not O(N^2)).
+// len0 is captured before rtTextGrow (which never touches .len itself, but
+// CAN move the block) -- mp is re-derived after.
+func rtTextAppendStr(t: ptr, s: ptr) {
+    var n: int
+    var rt: RtText
+    var len0: int
+    var mp: ptr
+
+    n = peekb(s)
+    rt = RtText(t)
+    len0 = rt.len
+    rtTextGrow(t, len0 + n)
+    rt = RtText(t)
+    mp = TextHandleDeref(rt.h)
+    TextBlockMoveData(s + 1, mp + len0, n)
+    rt.len = len0 + n
+}
+
+// rtTextAppendChar (rt_core.inc:443-450): same re-derive-after-grow
+// discipline as rtTextAppendStr.
+func rtTextAppendChar(t: ptr, c: int) {
+    var rt: RtText
+    var len0: int
+    var mp: ptr
+
+    rt = RtText(t)
+    len0 = rt.len
+    rtTextGrow(t, len0 + 1)
+    rt = RtText(t)
+    mp = TextHandleDeref(rt.h)
+    pokeb(mp + len0, c)
+    rt.len = len0 + 1
+}
+
+// rtTextAppendText (rt_core.inc:452-464): src may alias t (self-append
+// doubles) -- n is captured before rtTextGrow can move t's block (which is
+// src's block too, when src == t); both master pointers are re-derived
+// AFTER rtTextGrow regardless of aliasing (paranoid-safe either way). For
+// self-append, the destination range (len0, len0+n) never overlaps the
+// source (0, n) because len0 == n when src == t -- no separate self-append
+// branch needed, same as the C reference's own comment.
+func rtTextAppendText(t: ptr, src: ptr) {
+    var rs: RtText
+    var rt: RtText
+    var n: int
+    var len0: int
+    var srcmp: ptr
+    var dstmp: ptr
+
+    rs = RtText(src)
+    n = rs.len
+    rt = RtText(t)
+    len0 = rt.len
+    rtTextGrow(t, len0 + n)
+    rs = RtText(src)
+    rt = RtText(t)
+    srcmp = TextHandleDeref(rs.h)
+    dstmp = TextHandleDeref(rt.h)
+    TextBlockMoveData(srcmp, dstmp + len0, n)
+    rt.len = len0 + n
+}

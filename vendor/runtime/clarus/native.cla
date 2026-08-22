@@ -1,0 +1,1476 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// native.cla: the native console/quit/panic/args module (Plan native-5d
+// Task 11) -- a from-scratch port of runtime/mac/rt_mac.c's RT_MAC_TEST
+// capture protocol (rt_mac.c:83-253), reimplemented at the File Manager
+// PB (parameter block) level since native.cla has no C runtime under it
+// at all: every byte that protocol writes, this module writes the same
+// way, straight through Toolbox traps.
+//
+// UNLIKE every other runtime module (core/str/text/list/map/ser), this
+// one is reached ONLY by name from cg68k.cla, never by an ordinary
+// Clarus call site the checker resolves against a declared signature:
+//   - natInit/natAlert/natLog/natQuit are JSR'd directly by cg68AddRoots-
+//     rooted label, from cg68k.cla's IAlert/ILog/IQuit intrinsic arms and
+//     the startup/terminal sequence (cgEmitStartup) -- never `call`ed
+//     from ordinary Clarus source.
+//   - nat_CorePanic is core.cla's CorePanic extern's nat_ fallback
+//     (cgCallExtNatFallback, Task 9) -- its signature is FIXED by that
+//     existing codegen path (msg: string, BY VALUE) and must not change.
+//   - nat_CoreSetLastErr (Task 12.5) is core.cla's CoreSetLastErr extern's
+//     own nat_ fallback, same str-BY-VALUE shape as nat_CorePanic.
+//     natLastErrCode/natLastErrMsg are the read side -- JSR'd directly
+//     from cg68k.cla's ILastErrCode/ILastErrMsg intrinsic arms
+//     (cgCallRuntime), same convention as natInit/natAlert/natLog/natQuit.
+//
+// That freedom is what lets natInit/natAlert/natLog take a raw `ptr`
+// argument (byte-level, str.cla-style) instead of a `string`: cg68k.cla's
+// own IAlert/ILog arms choose to marshal the argument BY ADDRESS
+// (cgCallRuntime, same mechanism str.cla's rtStrCmp already uses from
+// cgIntr's "str_cmp" arm) rather than by value, so natAlert/natLog never
+// need to recover a `string` variable's address from ordinary Clarus
+// source -- there is no such operator (Ch13's `ptr` is deliberately
+// producible only from an `external func` call or `ptr(intExpr)`).
+// nat_CorePanic, whose signature IS the ordinary str-by-value shape (it
+// must match core.cla's extern), sidesteps the same problem from the
+// other direction: it builds its own message with `+` (str_concat,
+// already fully proven by strs.cla) and then reaches the byte-level
+// protocol through the ORDINARY `log(...)` builtin -- which lowers to
+// the very intrinsic cg68k's own ILog arm marshals by address. No
+// address-of machinery is invented anywhere in this file.
+//
+// ponytail: natLog buffers into a fixed-capacity `ptr` scratch block
+// (natLogCap bytes) rather than a `text` (the brief's literal wording),
+// truncating silently past that -- `text`'s `.append` path through
+// cg68k's codegen is unproven this task (no fixture exercises it), and
+// every 5d fixture's own log traffic is tiny (one panic message at most).
+// Raise natLogCap, or grow onto a real Handle via TextSetHandleSize-style
+// resizing, if a program needs more.
+
+// ---- File Manager PB access (Retro68 Interfaces/CIncludes/Files.h's
+// IOParam struct, offsets verified against that struct's field order/
+// widths on a 68k target: qLink ptr(4)@0, qType short(2)@4, ioTrap
+// short(2)@6, ioCmdAddr ptr(4)@8, ioCompletion ptr(4)@12, ioResult
+// short(2)@16, ioNamePtr ptr(4)@18, ioVRefNum short(2)@22, ioRefNum
+// short(2)@24, ioVersNum byte@26, ioPermssn byte@27, ioMisc ptr(4)@28,
+// ioBuffer ptr(4)@32, ioReqCount long(4)@36, ioActCount long(4)@40,
+// ioPosMode short(2)@44, ioPosOffset long(4)@46 -- struct size 50,
+// matching the plan brief's own offset table exactly) ----
+const natIoResult: int = 16
+const natIoNamePtr: int = 18
+const natIoVRefNum: int = 22
+const natIoRefNum: int = 24
+const natIoPermssn: int = 27
+const natIoMisc: int = 28
+const natIoBuffer: int = 32
+const natIoReqCount: int = 36
+// natIoActCount (Task 14): _Read/_Write's own "actual byte count
+// completed" out field -- read back after both traps to detect a short
+// transfer (mirrors rt.c/rt_mac.c's own in/out `count`/`got` locals),
+// never written by this module.
+const natIoActCount: int = 40
+const natIoPosMode: int = 44
+
+// natIoFDirIndex/natIoFdType/natIoFdCreator (task-6a): the SAME 50-byte
+// PB block reinterpreted as a File Manager FileParam (a union of
+// variants, same struct memory as IOParam above -- see toolbox/files.cla's
+// own FileParam catalog entry for the full offset derivation, verified
+// there against Files.h/Finder.h). ioFDirIndex@28 aliases IOParam's own
+// ioMisc@28 (both want 0 here, so no extra reset needed between this
+// dance and a following NatOpen); fdType@32/fdCreator@36 are the FInfo
+// fields nested inside ioFlFndrInfo@32.
+const natIoFDirIndex: int = 28
+const natIoFdType: int = 32
+const natIoFdCreator: int = 36
+
+// natPbSize is the one NewPtr'd PB block's total size: >=50 bytes for
+// IOParam itself, plus room to hold the 4-byte Str255 "out" (len byte +
+// 3 chars) at natNameOff, built in place so ioNamePtr can point straight
+// into the same block (see natInit) -- no separate address-of step
+// needed. Rounded up well past the 54-byte minimum for headroom.
+const natPbSize: int = 64
+const natNameOff: int = 50
+
+// fsRdWrPerm (Files.h: fsCurPerm=0, fsRdPerm=1, fsWrPerm=2, fsRdWrPerm=3)
+// -- passed explicitly to PBOpen rather than relying on FSOpen's own
+// (unspecified at the PB level) default, since natAlert always needs
+// write access for its live per-call append.
+const natFsRdWrPerm: int = 3
+
+// fsAtMark (Files.h: positioning modes in ioPosMode) -- every write in
+// this protocol appends at the current mark, exactly like rt_mac.c's own
+// rt_test_write (never seeks).
+const natFsAtMark: int = 0
+
+const natLogCap: int = 4096
+
+// Every File Manager/Memory Manager trap here is the SAME "reg"
+// register-based convention list.cla/text.cla/map.cla/str.cla's own
+// NewPtr/DisposePtr/etc. traps already use (A0=ptr arg(s), D0=result) --
+// Inside Macintosh documents the File Manager's high-level Pascal
+// routines (Create/FSOpen/FSWrite/SetEOF/FSClose/FlushVol) and their
+// low-level PBxxx counterparts as the SAME single trap dispatch
+// (parameter-block address in A0, one A-line trap instruction), verified
+// directly against Retro68's InterfacesAndLibraries/Interfaces/CIncludes
+// (Files.h/Devices.h): every PBxxxSync routine there carries
+// `#pragma parameter __D0 PBxxxSync(__A0)` alongside its
+// `ONEWORDINLINE(0xAxxx)` trap word --
+//   PBCreateSync   Files.h    0xA008
+//   PBOpenSync     Devices.h  0xA000
+//   PBWriteSync    Devices.h  0xA003
+//   PBSetEOFSync   Files.h    0xA012
+//   PBCloseSync    Devices.h  0xA001
+//   PBFlushVolSync Files.h    0xA013
+//   PBReadSync     Devices.h  0xA002
+//   HLock          MacMemory.h 0xA029
+//   HUnlock        MacMemory.h 0xA02A
+// matching the plan brief's own trap-word table exactly (PBReadSync
+// verified the same way as the Task 11 six, by `strings`-ing Retro68's
+// Devices.h directly: it carries the identical `#pragma parameter __D0
+// PBxxxSync(__A0)` reg convention; HLock/HUnlock take a single Handle
+// arg in A0 and return nothing, `#pragma parameter HLock(__A0)`/
+// `HUnlock(__A0)` -- no `__D0`, so plain `reg` with a void Clarus
+// return, same shape as TextBlockMoveData's own void `reg` extern).
+// PBGetEOFSync (Files.h 0xA011) was ALSO tried (its own trap word
+// verified the same way) but is NOT used here -- see natFileReadText's
+// own doc comment for why (a boot-hang root-caused to that specific
+// trap call, on real hardware, downstream of this same module).
+// NewPtrCLEAR (0xA31E -- MacMemory.h's `NewPtrClear ONEWORDINLINE(0xA31E)`,
+// Traps.h `_NewPtrClear = 0xA31E`, same `#pragma parameter __A0 (__D0)`
+// convention as plain _NewPtr), NOT plain _NewPtr (0xA11E): the PB this
+// allocates is a File Manager parameter block, and PBOpen reads FIELDS
+// THIS MODULE NEVER WRITES -- ioMisc(28) is Open's "optional ptr to
+// access path buffer" and ioVersNum(26) its version number (Files.h:433;
+// Retro68's own FSOpen glue, multiversal/custom/glue.c:172, explicitly
+// sets BOTH to 0 before PBOpenSync for exactly this reason). Plain
+// _NewPtr hands back UNINITIALIZED heap, so those fields arrive as
+// garbage and the File Manager scribbles a 522-byte access path through
+// a wild pointer -- the (heap-layout-dependent, hence code-size-
+// sensitive) crash and the silent open failure that blocked Task 11's
+// first boot. Clearing costs nothing here and covers natBuf/natDigits/
+// natLogBuf too.
+external func NatNewPtr(size: int): ptr = trap 0xA31E reg
+external func NatCreate(pb: ptr): int = trap 0xA008 reg
+// NatSetFInfo (task-6a): PBSetFInfoSync, 0xA00D -- same trap word, same
+// bare `reg` OS-register convention (pb in A0, OSErr in D0) as every
+// other Nat* trap here, verified against the SAME Apple sources cited in
+// toolbox/files.cla's own PBSetFInfoSync catalog entry (Files.h:1643-
+// 1653, corroborated in AIncludes/Files.a:1930). Declared locally rather
+// than pulled in via `include "../../toolbox/files.cla"` -- this
+// module's own header already explains why it never composes with
+// ordinary Clarus/catalog source (JSR'd directly by label from
+// cg68k.cla), and every other File Manager trap it needs (NatCreate/
+// NatOpen/.../NatFlushVol) is already a local duplicate of a
+// toolbox/files.cla-adjacent trap for the same reason. NO NatGetFInfo
+// here -- see natFileWriteText's own doc comment for why the get half of
+// the C reference's get-modify-set dance is skipped entirely (a real,
+// hardware-only boot hang under busy-heap conditions, task-6a's own
+// live-drive finding).
+external func NatSetFInfo(pb: ptr): int = trap 0xA00D reg
+external func NatOpen(pb: ptr): int = trap 0xA000 reg
+external func NatWrite(pb: ptr): int = trap 0xA003 reg
+external func NatSetEOF(pb: ptr): int = trap 0xA012 reg
+external func NatClose(pb: ptr): int = trap 0xA001 reg
+external func NatFlushVol(pb: ptr): int = trap 0xA013 reg
+external func NatRead(pb: ptr): int = trap 0xA002 reg
+external func NatHLock(h: ptr) = trap 0xA029 reg
+external func NatHUnlock(h: ptr) = trap 0xA02A reg
+
+// ---- Task 7 (mac-resident-clarusc): natReadResource/natWriteRes's own
+// traps, declared locally same as every other File/Memory/Resource
+// Manager trap in this module (this file's own header explains why it
+// never composes with toolbox/*.cla). Every trap word decoded directly
+// against Retro68/InterfacesAndLibraries (CIncludes pragma + AIncludes
+// OPWORD), same standing rule as toolbox/resources.cla and toolbox/
+// files.cla's own citations (which quote the identical evidence in full):
+//   NatGet1NamedResource  Resources.h:437 `EXTERN_API( Handle )
+//                         Get1NamedResource(ResType theType,
+//                         ConstStr255Param name) ONEWORDINLINE(0xA820);`
+//                         no `#pragma parameter` (Handle-CFM-style decl) --
+//                         bit 11 SET (0xA820 & 0x0800 != 0) -> pascal
+//                         (stack args, left to right; Handle result),
+//                         same convention as this module's own
+//                         NatExitToShell/UiFrontWindow-style plain `trap`
+//                         externs. Resources.a:478 `_Get1NamedResource:
+//                         OPWORD $A820` corroborates the trap word.
+//   NatReleaseResource    Resources.h:466 `EXTERN_API( void )
+//                         ReleaseResource(Handle theResource)
+//                         ONEWORDINLINE(0xA9A3);` -- bit 11 SET, pascal,
+//                         void result. Resources.a:514 `_ReleaseResource:
+//                         OPWORD $A9A3` corroborates.
+//   NatGetHandleSize      MacMemory.h:1162 `#pragma parameter __D0
+//                         InlineGetHandleSize(__A0)` ONEWORDINLINE(0xA025)
+//                         -- bit 11 clear -> `reg` (h in A0, size in D0),
+//                         same trap word toolbox/memory.cla's own
+//                         GetHandleSize already cites; duplicated locally
+//                         here for the same reason NatHLock/NatHUnlock
+//                         above duplicate toolbox/memory.cla's HLock/
+//                         HUnlock.
+//   NatOpenRF             Files.h:1566 `#pragma parameter __D0
+//                         PBOpenRFSync(__A0)` ONEWORDINLINE(0xA00A) --
+//                         bit 11 clear -> `reg` (pb in A0, OSErr in D0),
+//                         the SAME IOParam-shaped natFilePb block
+//                         natFileWriteText's own NatOpen already uses,
+//                         just the resource-fork twin -- opens the
+//                         RESOURCE fork of the file named at ioNamePtr
+//                         instead of the data fork; every other IOParam
+//                         field (ioRefNum out, then read/write/close via
+//                         the SAME NatWrite/NatClose traps) behaves
+//                         identically once open. Files.a:1797
+//                         `_PBOpenRFSync: OPWORD $A00A` corroborates.
+external func NatGet1NamedResource(theType: int, name: ptr): ptr = trap 0xA820
+// NatReleaseResource is declared (trap word verified above) but MUST
+// NEVER be called from natReadResource's own path -- empirically
+// root-caused, real hardware, boot-hang SOLID; see natReadResource's own
+// doc comment for the full bisection. Kept declared (not deleted) so
+// the citation above stays a complete, honest record of what was
+// checked, and so a future fix attempt (if the root cause is ever
+// pinned down) has the trap ready to hand.
+external func NatReleaseResource(h: ptr) = trap 0xA9A3
+external func NatGetHandleSize(h: ptr): int = trap 0xA025 reg
+external func NatOpenRF(pb: ptr): int = trap 0xA00A reg
+
+// natClfsType: 'CLFS' packed big-endian (C=0x43 L=0x4C F=0x46 S=0x53) --
+// the same resource type Task 5's `emit68k --bake` stamps on every baked
+// resource (cg68k.cla's cg68WriteImage, `extraTypes.add("CLFS")`).
+// natReadResource looks up exactly this type, by name, in the current
+// resource chain.
+const natClfsType: int = 0x434C4653
+
+// _ExitToShell (Traps.h: 0xA9F4) takes no parameters and never returns --
+// Pascal convention is the natural (and, with zero args/result, the only
+// observable) choice, matching TickCount's own zero-arg style in the
+// language reference.
+external func NatExitToShell() = trap 0xA9F4
+
+// ---- attempt-abort phase Task 9: nat_CorePanic's own beep trap.
+// SysBeep is declared locally (NatSysBeep) rather than pulled in from
+// elsewhere: toolbox/osutils.cla (which declares it, line 96) is a
+// catalog file, only ever spliced when some program or runtime module
+// explicitly `include`s it -- unlike ui.cla/uidialogs.cla, which
+// runtime-ir-bake Task 2 made an UNCONDITIONAL manifest entry for every
+// native build (clarusc/drive.cla, `neededMods.add("ui.cla")` outside
+// any program-shape check), so there is no guarantee osutils.cla is
+// present to name. ParamText/Alert (below, in nat_CorePanic) are called
+// as ui.cla's OWN `UiParamText`/`UiAlert` directly, NOT duplicated here
+// -- ui.cla IS one of those unconditionally-spliced modules (confirmed:
+// even a plainly non-UI fixture like testdata/cg68k/smoke.cla still
+// includes it), so native.cla naming its externs is exactly as safe as
+// this same function already naming ui.cla's `UiTestScript()` a few
+// lines below -- no cross-module risk, and no reason to hand-duplicate
+// two more trap declarations verbatim.
+// Trap word verified against the SAME source toolbox/osutils.cla
+// already cites: NatSysBeep matches toolbox/osutils.cla:96's own
+// `external func SysBeep(duration: word) = trap 0xA9C8` (Sound.h,
+// ONEWORDINLINE(0xA9C8), no `#pragma parameter` -> bit 11 SET
+// (0xA9C8 & 0x0800 != 0) -> pascal, stack arg, no `reg`), copied
+// verbatim.
+external func NatSysBeep(duration: word) = trap 0xA9C8
+
+// ---- module state (all below-A5 globals -- zeroed by startup's own
+// zero loop before natInit ever runs, so natOpened/natDone/natRef/
+// natLogLen/natArgs all start at a well-defined 0/false/empty) ----
+var natPb: ptr
+var natBuf: ptr
+var natDigits: ptr
+var natLogBuf: ptr
+var natLogLen: int
+var natRef: int
+var natOpened: bool
+var natDone: bool
+var natArgs: list of string(255)
+
+// natPanicBuf/natEmptyStr: nat_CorePanic's own preallocated, natPb-
+// adjacent scratch (NewPtrCLEAR'd once in natInit, never touched again
+// until a panic) -- built so nat_CorePanic's own beep+alert path (below)
+// never needs a Clarus allocation on the panic path itself
+// (panic-during-panic safety: if the panic IS an out-of-memory
+// condition, the recovery path must not go anywhere near the Clarus
+// allocator). natEmptyStr is a 1-byte zeroed block -- a zero length byte
+// IS an empty Pascal string, so NewPtrCLEAR alone already leaves it
+// correctly formed, no poke needed (mirrors ui.cla's own
+// rtUiEmptyPStrGet, which does the identical `NewPtr(1); pokeb(p, 0)`
+// -- here folded into NewPtrCLEAR's own zeroing).
+var natPanicBuf: ptr
+var natEmptyStr: ptr
+
+// natCrLf renders s (a Str255-shaped ptr: [0]=length, [1..length]=bytes)
+// into dst, translating CR(13)->LF(10) and appending a trailing LF --
+// byte-identical to rt_mac.c's rt_test_crlf. Returns the byte count
+// written (<=256).
+func natCrLf(s: ptr, dst: ptr): int {
+    var len: int
+    var i: int
+    var c: int
+    var n: int
+
+    len = peekb(s)
+    n = 0
+    i = 0
+    while i < len {
+        c = peekb(s + 1 + i)
+        if c == 13 {
+            c = 10
+        }
+        pokeb(dst + n, c)
+        n = n + 1
+        i = i + 1
+    }
+    pokeb(dst + n, 10)
+    n = n + 1
+    return n
+}
+
+// natItoa renders v as decimal ASCII into dst (handles a negative v with
+// a leading '-', matching rt_mac.c's own "%ld" trailer rendering).
+// Returns the byte count written. Digit-building scratch is natDigits
+// (a dedicated block, never shared with natBuf) so this never collides
+// with any in-flight natCrLf/natWriteBytes use of natBuf.
+func natItoa(v: int, dst: ptr): int {
+    var neg: bool
+    var j: int
+    var d: int
+    var n: int
+    var i: int
+    var v2: int
+    v2 = v
+
+    neg = v2 < 0
+    if neg {
+        v2 = 0 - v2
+    }
+    j = 0
+    if v2 == 0 {
+        pokeb(natDigits, int('0'))
+        j = 1
+    } else {
+        while v2 > 0 {
+            d = v2 mod 10
+            pokeb(natDigits + j, int('0') + d)
+            v2 = v2 / 10
+            j = j + 1
+        }
+    }
+    n = 0
+    if neg {
+        pokeb(dst, int('-'))
+        n = 1
+    }
+    i = j
+    while i > 0 {
+        i = i - 1
+        pokeb(dst + n, peekb(natDigits + i))
+        n = n + 1
+    }
+    return n
+}
+
+// natWriteBytes appends n raw bytes at p to `out` at the current mark
+// (fsAtMark -- never seeks, same discipline as rt_mac.c's rt_test_write).
+// A no-op if natInit never got a usable refnum.
+func natWriteBytes(p: ptr, n: int) {
+    if natRef < 0 {
+        return
+    }
+    if n <= 0 {
+        return
+    }
+    pokew(natPb + natIoRefNum, natRef)
+    pokel(natPb + natIoBuffer, int(p))
+    pokel(natPb + natIoReqCount, n)
+    pokew(natPb + natIoPosMode, natFsAtMark)
+    NatWrite(natPb)
+}
+
+// natFlush flushes the default volume (ioNamePtr=NULL, ioVRefNum=0 --
+// matching rt_mac.c's own FlushVol(NULL, 0)), then restores natPb's
+// ioNamePtr to the "out" name it holds the rest of the time (natPb is a
+// single reused block, shared with Create/Open/SetEOF/Close).
+func natFlush() {
+    pokel(natPb + natIoNamePtr, 0)
+    pokew(natPb + natIoVRefNum, 0)
+    NatFlushVol(natPb)
+    pokel(natPb + natIoNamePtr, int(natPb + natNameOff))
+}
+
+// natInit opens (creating if needed) `out` on the default volume and
+// truncates it to empty -- rt_mac.c's rt_test_open, minus the atexit
+// registration (cg68k.cla's startup/IQuit/nat_CorePanic wiring calls
+// natQuit's trailer unconditionally on every exit path instead; see the
+// file header). Idempotent (natOpened guards every entry point).
+func natInit() {
+    if natOpened {
+        return
+    }
+    natOpened = true
+
+    natPb = NatNewPtr(natPbSize)
+    natBuf = NatNewPtr(256)
+    natDigits = NatNewPtr(16)
+    natLogBuf = NatNewPtr(natLogCap)
+    natLogLen = 0
+    natPanicBuf = NatNewPtr(256)
+    natEmptyStr = NatNewPtr(1)
+
+    // Build the Str255 "out" name in place at natPb+natNameOff, so
+    // ioNamePtr can point directly into this same block -- see the file
+    // header's note on why native.cla never needs a general address-of.
+    pokeb(natPb + natNameOff, 3)
+    pokeb(natPb + natNameOff + 1, int('o'))
+    pokeb(natPb + natNameOff + 2, int('u'))
+    pokeb(natPb + natNameOff + 3, int('t'))
+    pokel(natPb + natIoNamePtr, int(natPb + natNameOff))
+    pokew(natPb + natIoVRefNum, 0)
+
+    // dupFNErr (LaunchAPPL pre-creates `out`) is ignored either way --
+    // the Open just below is the real success/failure gate, same as
+    // rt_mac.c's own comment on this exact call.
+    NatCreate(natPb)
+
+    // `out` FInfo stamp (attempt-abort Task 7, spec %6b): TEXT/ttxt via
+    // the SAME direct-PBSetFInfoSync-only pattern natFileWriteText uses
+    // below (no PBGetFInfoSync first -- that exact call class hung solid
+    // on real hardware under a busy heap, see that function's own doc
+    // comment; natInit runs at startup with a quiet heap, but the
+    // direct-set shape is the proven one and is kept regardless). Two
+    // deliberate differences from that site:
+    //   - UNCONDITIONAL, not gated on Create's own ioResult: `out` is the
+    //     runtime's own capture file, not a user file whose overwrite
+    //     must preserve an existing FInfo, so it's stamped every launch
+    //     even when NatCreate returned dupFNErr (LaunchAPPL pre-creates
+    //     it) or any other result.
+    //   - explicitly zeroes ioFDirIndex (get-by-name, not get-by-index --
+    //     required before any FInfo PB call) and the full 16-byte FInfo
+    //     region (fdType/fdCreator plus the fdFlags/fdLocation/fdFldr
+    //     bytes after them, aliased here by IOParam's own ioActCount@40/
+    //     ioPosMode@44) before poking type/creator, rather than relying
+    //     on natPb's own allocator to have already cleared them --
+    //     natFilePb's site can lean on NewPtrCLEAR because nothing
+    //     touches its FInfo-region bytes between that alloc and its own
+    //     stamp; natPb is reused for the WHOLE program's natAlert/natLog
+    //     traffic after natInit returns (those calls poke natIoBuffer@32/
+    //     natIoReqCount@36, the SAME bytes as fdType/fdCreator), so this
+    //     stamp does not depend on any particular allocator behavior.
+    //     natPbSize (64 bytes) already covers this region -- FileParam's
+    //     16-byte FInfo block ends at offset 47, still inside IOParam's
+    //     own 50-byte span (toolbox/files.cla's FileParam catalog entry),
+    //     so no growth was needed here.
+    pokew(natPb + natIoFDirIndex, 0)
+    pokel(natPb + natIoActCount, 0)
+    pokel(natPb + natIoPosMode, 0)
+    pokel(natPb + natIoFdType, (int('T') << 24) | (int('E') << 16) | (int('X') << 8) | int('T'))
+    pokel(natPb + natIoFdCreator, (int('t') << 24) | (int('t') << 16) | (int('x') << 8) | int('t'))
+    NatSetFInfo(natPb)
+
+    // The success gate is ioResult (the PB's own 16-bit result field,
+    // which every SYNCHRONOUS File Manager call sets), NOT the trap's D0
+    // return: these are OS traps returning OSErr in D0's LOW WORD only
+    // (Files.h/Devices.h declare every PBxxxSync `#pragma parameter __D0`
+    // on a `short` result), so D0's high word is whatever the ROM last
+    // left there -- reading it as a full 32-bit `int` can read a nonzero
+    // "error" out of a successful call.
+    pokeb(natPb + natIoPermssn, natFsRdWrPerm)
+    NatOpen(natPb)
+    if peekw(natPb + natIoResult) != 0 {
+        natRef = -1
+        return
+    }
+    natRef = peekw(natPb + natIoRefNum)
+
+    pokew(natPb + natIoRefNum, natRef)
+    pokel(natPb + natIoMisc, 0)
+    NatSetEOF(natPb)
+}
+
+// natAlert appends s live: CR->LF + trailing LF, written immediately and
+// flushed -- byte-identical to rt_mac.c's rt_alert (RT_MAC_TEST arm).
+func natAlert(s: ptr) {
+    var n: int
+
+    natInit()
+    n = natCrLf(s, natBuf)
+    natWriteBytes(natBuf, n)
+    natFlush()
+}
+
+// natLog buffers s (CR->LF + trailing LF, same rendering as natAlert)
+// into natLogBuf instead of writing it -- flushed only by natQuit's own
+// trailer. Silently truncates past natLogCap (see the file header's
+// ponytail note) rather than growing or panicking.
+func natLog(s: ptr) {
+    var n: int
+    var i: int
+
+    natInit()
+    n = natCrLf(s, natBuf)
+    i = 0
+    while i < n and natLogLen < natLogCap {
+        pokeb(natLogBuf + natLogLen, peekb(natBuf + i))
+        natLogLen = natLogLen + 1
+        i = i + 1
+    }
+}
+
+// natQuit writes the exit trailer -- "##CLARUS-EXIT## <code>\n
+// ##CLARUS-LOG##\n" followed by the buffered log bytes -- then closes
+// and flushes and calls ExitToShell. Byte-identical to rt_mac.c's
+// rt_test_atexit, guarded (natDone) against running twice the same way.
+func natQuit(code: int) {
+    var n: int
+
+    if natDone {
+        return
+    }
+    natDone = true
+    natInit()
+
+    // "##CLARUS-EXIT## " (16 bytes)
+    pokeb(natBuf, int('#'))
+    pokeb(natBuf + 1, int('#'))
+    pokeb(natBuf + 2, int('C'))
+    pokeb(natBuf + 3, int('L'))
+    pokeb(natBuf + 4, int('A'))
+    pokeb(natBuf + 5, int('R'))
+    pokeb(natBuf + 6, int('U'))
+    pokeb(natBuf + 7, int('S'))
+    pokeb(natBuf + 8, int('-'))
+    pokeb(natBuf + 9, int('E'))
+    pokeb(natBuf + 10, int('X'))
+    pokeb(natBuf + 11, int('I'))
+    pokeb(natBuf + 12, int('T'))
+    pokeb(natBuf + 13, int('#'))
+    pokeb(natBuf + 14, int('#'))
+    pokeb(natBuf + 15, int(' '))
+    natWriteBytes(natBuf, 16)
+
+    n = natItoa(code, natBuf)
+    natWriteBytes(natBuf, n)
+
+    // "\n##CLARUS-LOG##\n" (16 bytes)
+    pokeb(natBuf, 10)
+    pokeb(natBuf + 1, int('#'))
+    pokeb(natBuf + 2, int('#'))
+    pokeb(natBuf + 3, int('C'))
+    pokeb(natBuf + 4, int('L'))
+    pokeb(natBuf + 5, int('A'))
+    pokeb(natBuf + 6, int('R'))
+    pokeb(natBuf + 7, int('U'))
+    pokeb(natBuf + 8, int('S'))
+    pokeb(natBuf + 9, int('-'))
+    pokeb(natBuf + 10, int('L'))
+    pokeb(natBuf + 11, int('O'))
+    pokeb(natBuf + 12, int('G'))
+    pokeb(natBuf + 13, int('#'))
+    pokeb(natBuf + 14, int('#'))
+    pokeb(natBuf + 15, 10)
+    natWriteBytes(natBuf, 16)
+
+    natWriteBytes(natLogBuf, natLogLen)
+
+    if natRef >= 0 {
+        pokew(natPb + natIoRefNum, natRef)
+        NatClose(natPb)
+    }
+    natFlush()
+    NatExitToShell()
+}
+
+// nat_CorePanic is core.cla's `external func CorePanic(msg: string)`'s
+// nat_ fallback (cgCallExtNatFallback, Task 9) -- signature fixed by that
+// existing codegen path (str BY VALUE, never a ptr-taking bridge). Builds
+// "runtime error: " + msg with plain str_concat (proven by strs.cla) --
+// NOT natQuit's normal cg_free_globals-first path: this calls natQuit
+// directly, matching the host's rt_panic (panic skips cleanup).
+//
+// attempt-abort phase Task 9 rewrite (HISTORY attempt-abort debt entry, field test
+// 2026-08-14): a real mid-segment-write OOM quit ClarusC.APPL with no
+// beep, no alert, and the trace line lost (it only reached `out` via
+// natQuit's own buffered-log trailer, which a crash between panic and
+// quit never gets to run). Two independent fixes, both below:
+//
+//   1. The trace line now ALSO goes out IMMEDIATELY, via natAlert, in
+//      ADDITION TO (not instead of) the pre-existing buffered `natLog`
+//      write. Fix round 1 (review C1): an earlier version of this
+//      function replaced the natLog call outright, which moved the
+//      message from the `log` field to the `out` field of the capture
+//      protocol `internal/mactest/mac_test.go`'s parseCapture splits at
+//      natQuit's own "##CLARUS-EXIT##"/"##CLARUS-LOG##" markers --
+//      `natAlert` writes+flushes BEFORE those markers exist (`out`),
+//      while `natLog`'s buffer is only flushed by natQuit AFTER them
+//      (`log`). `TestRunErrOn68k` (internal/mactest/native_test.go)
+//      asserts the panic text against `log`, matching the ORIGINAL
+//      buffered-only behavior; dropping the natLog call broke it
+//      (reproduced: "log \"\" missing \"array index out of range\"").
+//      Dual-writing keeps `log`'s own content byte-identical to before
+//      (same natCrLf rendering, same final bytes, just still buffered)
+//      while ALSO getting the crash-survival copy into `out` this task
+//      exists for -- the small duplication (the line appears twice in
+//      the total capture, once immediate/once buffered) is the accepted
+//      cost of not touching the test/goldens' own field expectations.
+//      Byte rendering is unchanged either way (natAlert and natLog
+//      share natCrLf's own CR->LF + trailing-LF renderer) -- the
+//      string->ptr plumbing `log(full)` used to get for free
+//      (cg68k.cla's ILog arm marshals a `string` argument BY ADDRESS)
+//      isn't available for natAlert (a plain intra-module function
+//      call, not a builtin), so this hand-copies `full`'s bytes into
+//      natPanicBuf (a preallocated Str255-shaped scratch block,
+//      natInit) via ordinary `string` indexing (`full[i]`/`full.length`
+//      -- no address-of needed, no allocation: reads
+//      `docs/clarus-language-reference.md`'s own "Strings" section)
+//      once, then feeds the SAME natPanicBuf to both natAlert (immediate)
+//      and natLog (buffered).
+//   2. When a UI is up and this run is NOT scripted, SysBeep + a
+//      plain-OK ALRT 128 (runtime/mac/alert.r) showing the same
+//      message, THEN natQuit as before. The gate reads TWO already-
+//      existing signals rather than inventing a new one:
+//        - natQdInited (this file's own global, set by
+//          nat_UiMacInitToolbox below once EVERY Toolbox manager
+//          UiAlert/UiParamText depend on has actually initialized --
+//          never true for a non-UI program, since rtUiStartup is only
+//          ever called for one, and never true for a panic that fires
+//          before that point, e.g. during natInit or earlier in
+//          rtUiStartup itself).
+//        - `peekb(UiTestScript()) == 0` -- ui.cla's own "not a scripted
+//          build" test (ui.cla:1437/2550's own identical check), called
+//          directly: ui.cla is spliced into EVERY native build now
+//          (runtime-ir-bake's "full lane superset" splice applies on
+//          this lane too, verified empirically -- even a plainly
+//          non-UI fixture like testdata/cg68k/smoke.cla still includes
+//          runtime/clarus/ui.cla), so this is an ordinary, always-
+//          resolvable call from native.cla, no new cross-module
+//          machinery needed. The SAME reasoning lets this function call
+//          ui.cla's own `UiParamText`/`UiAlert` directly a few lines
+//          below, instead of hand-duplicating trap declarations for
+//          them (see NatSysBeep's own trap-declaration comment above).
+//      Deliberately NOT routed through `alert(...)`/rtUiAlertMsg: that
+//      path allocates a `text` (rtTextNew) to build its trace copy --
+//      unsafe on a path that must survive an out-of-memory panic
+//      without touching the Clarus allocator again. natPanicBuf/
+//      natEmptyStr (natInit) are NewPtrCLEAR'd once, long before any
+//      panic, so nothing in this whole function allocates.
+func nat_CorePanic(msg: string) {
+    var full: string
+    var n: int
+    var i: int
+
+    full = "runtime error: " + msg
+    natInit()
+    n = full.length
+    pokeb(natPanicBuf, n)
+    i = 0
+    while i < n {
+        pokeb(natPanicBuf + 1 + i, int(full[i]))
+        i = i + 1
+    }
+    natAlert(natPanicBuf)
+    natLog(natPanicBuf)
+    if natQdInited and peekb(UiTestScript()) == 0 {
+        NatSysBeep(30)
+        UiParamText(natPanicBuf, natEmptyStr, natEmptyStr, natEmptyStr)
+        UiAlert(128, ptr(0))
+    }
+    natQuit(3)
+}
+
+// natErrCode/natErrMsg: native lastError storage (Plan native-5d Task
+// 12.5, storage-inversion fix) -- the platform-owned counterpart of the
+// host build's rt_lasterr_code/rt_lasterr_msg (rt_core.inc), since a
+// native build has no C runtime under it to own that state instead.
+var natErrCode: int
+var natErrMsg: string
+
+// nat_CoreSetLastErr is core.cla's `external func CoreSetLastErr(code:
+// int, msg: string)`'s nat_ fallback (cgCallExtNatFallback) -- signature
+// fixed by that existing codegen path, same str-BY-VALUE shape
+// nat_CorePanic already uses just above (cgCallExtNatFallback's own doc
+// comment: a clause-less extern's nat_ fallback is an ORDINARY Clarus
+// function, str args block-copied by the same cgPushArgs path any other
+// Clarus call uses -- NOT the ptr-by-address convention natAlert/natLog
+// use, which is specific to their own cgCallRuntime call sites). A plain
+// by-value store, mirroring core.cla's own former rtSetLastErr body.
+func nat_CoreSetLastErr(code: int, msg: string) {
+    natErrCode = code
+    natErrMsg = msg
+}
+
+// natLastErrCode/natLastErrMsg: the native reads of lastError -- cg68k.cla's
+// ILastErrCode/ILastErrMsg intrinsic arms call these directly (cgCallRuntime),
+// same "own prefixed name" convention as every other nat* entry point.
+func natLastErrCode(): int {
+    return natErrCode
+}
+
+func natLastErrMsg(): string {
+    return natErrMsg
+}
+
+// natArgsList mirrors rt_mac.c's rt_args_list (rt_mac.c:269-274): no
+// argv on a classic-Mac double-clicked app, so this is always empty.
+// natArgs is a global -- startup's own below-A5 zero loop already leaves
+// its list handle at a well-defined null/empty state, so there is no
+// lazy-allocate-once step to port (unlike rt_args_list's static
+// lazy-init, which exists only because C has no zero-init guarantee for
+// a Handle the way Clarus's global zeroing does).
+func natArgsList(): list of string(255) {
+    return natArgs
+}
+
+// ---- files (Plan native-5d Task 14) ----
+//
+// natFileReadText/natFileWriteText/natFileName port rt_mac.c:302-373's
+// file trio (rt_file_read_text/rt_file_write_text/rt_file_name) --
+// File Manager PB calls for the first two, a pure byte scan for the
+// third -- same lastError codes/messages as rt.c/rt_mac.c (via
+// rtSetLastErr, core.cla's ordinary Clarus-call waist, NOT
+// nat_CoreSetLastErr directly: every other runtime module reaches
+// lastError through rtSetLastErr, and native.cla is no exception even
+// though it happens to sit downstream of that call at codegen time).
+//
+// PB SHARING: natFilePb is a SECOND, dedicated PB block, distinct from
+// natInit's own natPb (the "out" capture-file protocol) -- reusing natPb
+// here would stomp its ioNamePtr/ioRefNum between calls (natAlert/natLog
+// depend on natPb staying pointed at "out" with natRef's refnum live the
+// whole program), and would also entangle this module's own error
+// paths with natInit's. A second NewPtrCLEAR'd block costs 64 bytes and
+// sidesteps the question entirely -- lazily allocated on first file call,
+// same one-time-init idiom natInit itself uses (natFileReady guard).
+// natFileWriteText/natFileReadText/nat_SerFileWriteData/
+// nat_SerFileReadTextInto share it (never reentrant: this runtime is
+// single-threaded and every call's own open/use/close completes before
+// any other file call can start).
+var natFilePb: ptr
+var natFileReady: bool
+
+func natFileEnsurePb() {
+    if natFileReady {
+        return
+    }
+    natFileReady = true
+    natFilePb = NatNewPtr(natPbSize)
+}
+
+// natFileFlush flushes the default volume after a write -- matches
+// rt_mac.c's own unconditional post-write FlushVol(NULL, 0) (both the
+// success and the FSWrite-failure path call it). Unlike natFlush (natPb's
+// own flush helper), there is no ioNamePtr to restore afterward: every
+// natFile* call re-points natFilePb's ioNamePtr at its own `path` arg
+// before doing anything else, so nothing here needs to survive past this
+// call.
+func natFileFlush() {
+    pokel(natFilePb + natIoNamePtr, 0)
+    pokew(natFilePb + natIoVRefNum, 0)
+    NatFlushVol(natFilePb)
+}
+
+// natFileWriteText (rt_mac.c:332-360, rt_file_write_text): create (dup-
+// name error ignored, same discipline as natInit's own Create call),
+// open, truncate to empty (SetEOF 0), write the text's bytes in one PB
+// call, close, flush -- false + lastError(2, "could not open file"/
+// "could not write file") on any failure, matching rt.c's exact codes/
+// messages. ioPermssn is left at 0 (fsCurPerm, from natFileEnsurePb's
+// NewPtrCLEAR) rather than explicitly set -- rt_mac.c's own FSOpen calls
+// for BOTH read and write pass no explicit permission either (the Pascal
+// FSOpen glue's own default), so this mirrors that exactly rather than
+// natInit's natFsRdWrPerm (natInit needs guaranteed write access for its
+// own live per-call append; a fresh Create+Open here needs no such
+// guarantee).
+//
+// ftype/fcreator (native-gaps-cleanup Task 2): caller-supplied Str255
+// pointers (file.writeText's mandatory type/creator args), packed+
+// validated via rtFourCC BEFORE Create is even attempted -- an invalid
+// (>4-char) value is lastError + a failed operation, no file touched at
+// all, matching the design doc's "no defaults, no sentinels" rule.
+func natFileWriteText(path: ptr, t: ptr, ftype: ptr, fcreator: ptr): bool {
+    var rt: RtText
+    var mp: ptr
+    var n: int
+    var ref: int
+    var wrote: int
+    var failed: bool
+    var packedType: int
+    var packedCreator: int
+
+    packedType = rtFourCC(ftype)
+    if packedType == -1 {
+        rtSetLastErr(2, "file type must be at most 4 characters")
+        return false
+    }
+    packedCreator = rtFourCC(fcreator)
+    if packedCreator == -1 {
+        rtSetLastErr(2, "file creator must be at most 4 characters")
+        return false
+    }
+
+    natFileEnsurePb()
+    pokel(natFilePb + natIoNamePtr, int(path))
+    pokew(natFilePb + natIoVRefNum, 0)
+
+    // dupFNErr (file already exists) ignored either way -- Open just
+    // below is the real success/failure gate (rt_mac.c's own comment on
+    // its identical Create call).
+    NatCreate(natFilePb)
+
+    // task-6a (stamp fdType/fdCreator on a FRESHLY created file); Task 2
+    // (native-gaps-cleanup) swapped the once-fixed 'TEXT'/'MPS ' pair for
+    // packedType/packedCreator above, the caller's own validated values --
+    // the cprint lane's high-level Create() is Retro68's
+    // own glue (multiversal/custom/glue.c:355-378, not an Apple source,
+    // quoted only for the mechanism): PBCreateSync, then a get-modify-set
+    // FInfo dance through PBGetFInfoSync/PBSetFInfoSync. The bare
+    // PBCreateSync trap this module already calls has no type/creator
+    // field of its own; SOME FInfo write is the only way to match it.
+    //
+    // Direct PBSetFInfoSync ONLY, no PBGetFInfoSync first (the brief's
+    // documented "or direct PBSetFInfo after create" alternative to the
+    // full get-modify-set dance): natFilePb is NewPtrCLEAR'd
+    // (natFileEnsurePb) and nothing between that alloc and here writes
+    // its FInfo-region bytes (ioFDirIndex@28/fdType@32/fdCreator@36 and
+    // the fdFlags/fdLocation/fdFldr bytes after them) -- PBCreateSync
+    // itself has no output fields there -- so they are STILL all-zero
+    // right now, exactly what PBGetFInfoSync would read back for a
+    // brand-new file anyway. Skipping the Get reaches the identical
+    // on-disk FInfo (fdType/fdCreator stamped, fdFlags/fdLocation/fdFldr
+    // left at their already-zero default) with one fewer PB trap call.
+    // NOT cosmetic: an earlier cut of this fix DID call PBGetFInfoSync
+    // first and hung solid, real hardware only, at the exact same class
+    // of bug already documented on natFileReadText's own PBGetEOFSync
+    // (see that function's own header) -- a File Manager query trap
+    // hanging under a heap busy with live UI/List/Map/Text traffic
+    // (reproduced by both native suite gates, which push files.writeText
+    // through many prior cases' worth of heap allocation; never
+    // reproduced by an isolated single-file fixture). Gated on Create's
+    // own ioResult (not attempted for an already-existing file,
+    // dupFNErr) so an OVERWRITE leaves the existing file's FInfo
+    // untouched, same as the C lane's Create() glue (which only reaches
+    // its own GetFInfo/SetFInfo when PBCreateSync itself reports noErr).
+    if peekw(natFilePb + natIoResult) == 0 {
+        pokew(natFilePb + natIoFDirIndex, 0)
+        pokel(natFilePb + natIoFdType, packedType)
+        pokel(natFilePb + natIoFdCreator, packedCreator)
+        NatSetFInfo(natFilePb)
+    }
+
+    NatOpen(natFilePb)
+    if peekw(natFilePb + natIoResult) != 0 {
+        rtSetLastErr(2, "could not open file")
+        return false
+    }
+    ref = peekw(natFilePb + natIoRefNum)
+
+    pokew(natFilePb + natIoRefNum, ref)
+    pokel(natFilePb + natIoMisc, 0)
+    NatSetEOF(natFilePb)
+
+    rt = RtText(t)
+    n = rt.len
+    wrote = 0
+    failed = false
+    if n > 0 {
+        // HLock/HUnlock bracket the trap call (task-14 boot-hang fix,
+        // empirically root-caused: _Write can itself allocate -- a disk
+        // driver/cache buffer -- which can trigger Memory Manager
+        // compaction mid-call; an UNLOCKED rt.h is fair game to relocate
+        // during that compaction, stranding `mp` (captured before the
+        // call) as a dangling pointer the trap keeps writing FROM. Silent
+        // with nothing else live on the heap (isolated fixtures never hit
+        // it); real heap traffic (smoke.cla's own record/container
+        // section immediately before this) reproduced it as a full boot
+        // hang -- see the task-14 report). mp is (re)derived AFTER the
+        // lock, matching text.cla's re-derive-after-any-relocating-call
+        // discipline.
+        NatHLock(rt.h)
+        mp = TextHandleDeref(rt.h)
+        pokew(natFilePb + natIoRefNum, ref)
+        pokel(natFilePb + natIoBuffer, int(mp))
+        pokel(natFilePb + natIoReqCount, n)
+        pokew(natFilePb + natIoPosMode, natFsAtMark)
+        NatWrite(natFilePb)
+        wrote = peekl(natFilePb + natIoActCount)
+        NatHUnlock(rt.h)
+        if peekw(natFilePb + natIoResult) != 0 {
+            failed = true
+        }
+    }
+
+    pokew(natFilePb + natIoRefNum, ref)
+    NatClose(natFilePb)
+    natFileFlush()
+
+    if failed or wrote != n {
+        rtSetLastErr(2, "could not write file")
+        return false
+    }
+    return true
+}
+
+// natFileReadText reads the WHOLE file (any size -- no cap on the result,
+// matching rt.c/rt_mac.c and the language reference's byte-for-byte
+// promise), in a LOOP of natFileReadCap-sized PB reads into a NON-
+// RELOCATABLE NEWPTR BOUNCE BUFFER (never directly into `out`'s Handle-
+// backed storage), growing+appending `out` after each chunk -- false +
+// lastError(2, "could not open file"/"could not read file") on any
+// failure (including file-not-found, which fails the initial Open).
+//
+// Boot-hang root cause (empirically bisected on real hardware, task-14 --
+// full writeup in the task-14 report): every cut of this function that
+// called PBGetEOFSync (trap 0xA011, `NatGetEOF`) to size the read --
+// rt_mac.c's own GetEOF+FSRead approach, and this module's own first two
+// attempts (grow-and-read-in-place, then a NewPtr bounce buffer, both
+// still GetEOF-sized) -- hung the boot SOLID after smoke.cla's record/
+// container section (a heap already busy with many live List/Map/Text
+// blocks), 100% reproducibly, even with NOTHING else in the function
+// body (bisected down to a bare Open+GetEOF+Close with the read/grow/
+// copy code deleted entirely -- STILL hung; Open+Close with NO GetEOF at
+// all, otherwise identical, did not). Root cause not fully explained
+// (isolated fixtures with no prior heap traffic never reproduce it --
+// something about PBGetEOFSync's own execution and a heap this busy),
+// but the WORKAROUND is unconditional and simple: never call it anywhere
+// in this path -- FSRead's own ioActCount/eofErr contract (Inside
+// Macintosh: reading past logical EOF returns eofErr in ioResult but
+// still sets ioActCount to the REAL byte count of THIS chunk) is enough
+// to drive the loop below without ever knowing the size up front.
+//
+// Loop termination (task-14-review's own worked cases, all covered):
+// each iteration requests a full natFileReadCap-sized chunk; `code==0`
+// (noErr) with a full chunk means "more may follow", so the loop
+// continues; `code==natEofErr` means this chunk (0 or more bytes, per
+// ioActCount) was the last one, so the loop stops after appending it.
+// A file whose size is an exact multiple of natFileReadCap reads one
+// extra all-zero-byte chunk (code==0, full chunk) then a FINAL chunk
+// with got==0/code==eofErr -- appends nothing, terminates cleanly, not
+// an error. A 0-byte file hits eofErr/got==0 on the very first
+// iteration -- terminates immediately, `out` stays empty, still true.
+const natFileReadCap: int = 32768
+const natEofErr: int = 65497 // -39 (Files.h eofErr), as peekw's UNSIGNED 16-bit read sees it (peekw never sign-extends)
+
+func natFileReadText(path: ptr, out: ptr): bool {
+    var rt: RtText
+    var mp: ptr
+    var ref: int
+    var got: int
+    var code: int
+    var bounce: ptr
+    var total: int
+    var done: bool
+
+    natFileEnsurePb()
+    pokel(natFilePb + natIoNamePtr, int(path))
+    pokew(natFilePb + natIoVRefNum, 0)
+
+    NatOpen(natFilePb)
+    if peekw(natFilePb + natIoResult) != 0 {
+        rtSetLastErr(2, "could not open file")
+        return false
+    }
+    ref = peekw(natFilePb + natIoRefNum)
+
+    bounce = NatNewPtr(natFileReadCap)
+    if bounce == ptr(0) {
+        rtPanic("out of memory")
+    }
+
+    total = 0
+    done = false
+    while not done {
+        pokew(natFilePb + natIoRefNum, ref)
+        pokel(natFilePb + natIoBuffer, int(bounce))
+        pokel(natFilePb + natIoReqCount, natFileReadCap)
+        pokew(natFilePb + natIoPosMode, natFsAtMark)
+        NatRead(natFilePb)
+        got = peekl(natFilePb + natIoActCount)
+        code = peekw(natFilePb + natIoResult)
+
+        if code != 0 and code != natEofErr {
+            pokew(natFilePb + natIoRefNum, ref)
+            NatClose(natFilePb)
+            TextDisposePtr(bounce)
+            rtSetLastErr(2, "could not read file")
+            return false
+        }
+
+        if got > 0 {
+            // rtTextGrow first (can relocate out's Handle), THEN
+            // re-derive mp -- text.cla's own relocation discipline,
+            // never violated here; `bounce` itself is a plain NewPtr,
+            // immune, so no re-derive needed on that side.
+            rtTextGrow(out, total + got)
+            rt = RtText(out)
+            mp = TextHandleDeref(rt.h)
+            TextBlockMoveData(bounce, mp + total, got)
+            total = total + got
+        }
+
+        if code == natEofErr or got < natFileReadCap {
+            done = true
+        }
+    }
+
+    pokew(natFilePb + natIoRefNum, ref)
+    NatClose(natFilePb)
+    TextDisposePtr(bounce)
+
+    rt = RtText(out)
+    rt.len = total
+    return true
+}
+
+// natFileName (rt_mac.c:362-373, rt_file_name): pure byte scan for the
+// LAST '/' (not Mac's ':' -- rt_mac.c's own comment: this is a pure
+// string algorithm ported as-is, not adapted to the Mac path convention),
+// filling dst (Str255-shaped: [0]=length, [1..length]=bytes) in place --
+// a void, fill-in-place shape (like natCrLf/natItoa above) rather than an
+// ordinary str-returning Clarus function, since building a fresh `str
+// 255` return value from raw peekb/pokeb bytes would need this module's
+// own local variable's address, which -- per the file header -- Clarus
+// source has no operator for. cgEmitStoreStr/cgEmitReturnStr's own
+// "file_name" arms are the only call sites (see cg68k.cla): they already
+// hold dst's address (the assignment/return target), so this signature
+// costs them nothing extra.
+func natFileName(dst: ptr, path: ptr) {
+    var n: int
+    var start: int
+    var i: int
+    var c: int
+    var len: int
+
+    n = peekb(path)
+    start = 0
+    i = 0
+    while i < n {
+        c = peekb(path + 1 + i)
+        if c == int('/') {
+            start = i + 1
+        }
+        i = i + 1
+    }
+    len = n - start
+
+    pokeb(dst, len)
+    i = 0
+    while i < len {
+        pokeb(dst + 1 + i, peekb(path + 1 + start + i))
+        i = i + 1
+    }
+}
+
+// natReadResource (Task 7, mac-resident-clarusc): `file.readResource(name,
+// out)` -- fills `out` from the current resource chain's 'CLFS' resource
+// named `name` (a Str255-shaped ptr, same convention as every other
+// natFile* path argument). false + lastError(2, "resource not found") if
+// no such resource exists; a missing resource is the ordinary "not
+// found" case, not a crash -- Get1NamedResource itself returns a nil
+// Handle (0) rather than raising any error signal this module could
+// trap.
+//
+// Copy idiom: GetHandleSize sizes the resource up front (no PBGetEOFSync-
+// style hazard here -- that boot-hang was specific to _Read's own
+// unsized-EOF loop, natFileReadText's own header; a resource Handle's
+// size is always known synchronously, no loop needed at all), HLock
+// brackets the read exactly like natFileWriteText's own write bracket
+// (a relocating call -- here, rtTextGrow's own possible SetHandleSize --
+// must never run while `out`'s master pointer is captured, but the
+// SOURCE handle `h` is a different block, locked for the whole
+// function), then the SAME rtTextGrow/TextHandleDeref/TextBlockMoveData
+// re-derive-after-grow discipline natFileReadText's own header documents
+// at length: `out`'s master pointer (`mp`) is captured only AFTER
+// rtTextGrow, since growing `out` can relocate `out`'s own Handle (never
+// `h`'s -- `h` stays locked throughout, immune regardless of ordering).
+//
+// NO ReleaseResource call (empirically root-caused, task-7's own live-
+// drive): a cut of this function ending `NatHUnlock(h); NatReleaseResource(h)`
+// hung the boot SOLID on real hardware, 100% reproducibly, downstream of
+// a heap already busy with this same suite's prior cases' traffic --
+// bisected the same way natFileReadText's own PBGetEOFSync hang and
+// natFileWriteText's own PBGetFInfoSync-before-write hang were: build a
+// diagnostic cut that returns early at each successive step
+// (Get1NamedResource alone; +GetHandleSize/HLock/deref; +rtTextGrow/copy/
+// HUnlock) and re-boot -- every cut through HUnlock completed cleanly,
+// the ONLY cut that hung was the one that went on to call
+// ReleaseResource. WORKAROUND, same shape as those two precedents:
+// leave the resource locked and never released -- a small, permanent
+// "still resident" cost per distinct name read (acceptable: this
+// primitive's whole reason to exist is a self-recompiling compiler
+// reading a handful of small baked source files once per process
+// lifetime, then exiting; nothing re-reads the same name enough times
+// for the unreleased handles to matter). Root cause not fully explained
+// (same as the other two precedents) -- what IS unconditional is the
+// workaround: never call NatReleaseResource anywhere in this path.
+func natReadResource(name: ptr, out: ptr): bool {
+    var h: ptr
+    var rt: RtText
+    var mp: ptr
+    var srcp: ptr
+    var sz: int
+
+    h = NatGet1NamedResource(natClfsType, name)
+    if h == ptr(0) {
+        rtSetLastErr(2, "resource not found")
+        return false
+    }
+
+    sz = NatGetHandleSize(h)
+    NatHLock(h)
+    srcp = TextHandleDeref(h)
+
+    rtTextGrow(out, sz)
+    rt = RtText(out)
+    mp = TextHandleDeref(rt.h)
+    if sz > 0 {
+        TextBlockMoveData(srcp, mp, sz)
+    }
+
+    NatHUnlock(h)
+    // Deliberately NO NatReleaseResource(h) here -- see this function's
+    // own doc comment above for the full bisection. Calling it hung the
+    // boot solid on real hardware; leaving `h` locked-and-resident
+    // forever is the proven workaround. Bounded: this primitive reads a
+    // handful of small baked source files once per process lifetime
+    // (the self-recompiling compiler's own bootstrap-source reads), so
+    // the permanent per-distinct-name resident cost never accumulates
+    // into a real leak in practice.
+
+    rt = RtText(out)
+    rt.len = sz
+    return true
+}
+
+// natWriteRes (Task 7, mac-resident-clarusc): `file.writeRes(path, fork,
+// doctype, creator)` -- creates `path`, writes `fork`'s bytes VERBATIM as
+// its RESOURCE fork (the data fork is never opened, so it stays empty),
+// stamped with doctype/creator. A deliberately raw fork write, not a
+// Resource Manager call sequence (AddResource/UpdateResFile) -- the
+// design doc's own rejected-alternatives section: this primitive exists
+// to lay down an already-fully-built resource-fork IMAGE (res68k.cla's
+// own builder, used elsewhere), so decomposing that image back into
+// individual RM calls would be pure extra surface for no benefit.
+//
+// Create/stamp discipline copied verbatim from natFileWriteText (READ
+// FIRST, per that function's own doc comment): dupFNErr from Create is
+// ignored (Open/OpenRF below is the real success/failure gate), and
+// FInfo is stamped via a DIRECT PBSetFInfoSync right after a successful
+// Create -- no PBGetFInfoSync first -- for the exact real-hardware boot-
+// hang reason natFileWriteText's own comment documents at length (a
+// File Manager query trap under a busy heap). The one structural
+// difference: OpenRF (the resource fork) stands in for Open (the data
+// fork) -- everything downstream (SetEOF/Write/Close/Flush) is the
+// identical natFilePb/ref dance either way, since both forks are
+// addressed by the same ioRefNum-keyed I/O calls once opened. No
+// chunking loop (unlike natFileReadText's bounce-buffer loop): `fork`'s
+// full length is already known before the first Write, so -- exactly
+// like natFileWriteText's own single-shot write -- one PBWriteSync call
+// with ioReqCount = the whole length suffices; HLock/HUnlock around the
+// call is the SAME real-hardware relocation-safety bracket
+// natFileWriteText's own comment root-causes (the trap can itself
+// allocate and trigger compaction mid-call).
+func natWriteRes(path: ptr, t: ptr, ftype: ptr, fcreator: ptr): bool {
+    var rt: RtText
+    var mp: ptr
+    var n: int
+    var ref: int
+    var wrote: int
+    var failed: bool
+    var packedType: int
+    var packedCreator: int
+
+    packedType = rtFourCC(ftype)
+    if packedType == -1 {
+        rtSetLastErr(2, "file type must be at most 4 characters")
+        return false
+    }
+    packedCreator = rtFourCC(fcreator)
+    if packedCreator == -1 {
+        rtSetLastErr(2, "file creator must be at most 4 characters")
+        return false
+    }
+
+    natFileEnsurePb()
+    pokel(natFilePb + natIoNamePtr, int(path))
+    pokew(natFilePb + natIoVRefNum, 0)
+
+    // dupFNErr (file already exists) ignored either way -- OpenRF just
+    // below is the real success/failure gate, same convention as
+    // natFileWriteText's own Create call.
+    NatCreate(natFilePb)
+
+    // Direct PBSetFInfoSync ONLY, no PBGetFInfoSync first -- see
+    // natFileWriteText's own doc comment for the full real-hardware
+    // rationale (identical here: natFilePb is freshly NewPtrCLEAR'd by
+    // natFileEnsurePb, and nothing between that alloc and here writes
+    // its FInfo-region bytes, so they are still all-zero, exactly what a
+    // Get would read back for a brand-new file anyway).
+    if peekw(natFilePb + natIoResult) == 0 {
+        pokew(natFilePb + natIoFDirIndex, 0)
+        pokel(natFilePb + natIoFdType, packedType)
+        pokel(natFilePb + natIoFdCreator, packedCreator)
+        NatSetFInfo(natFilePb)
+    }
+
+    // Open the RESOURCE fork (PBOpenRFSync), not the data fork -- the
+    // whole point of file.writeRes.
+    pokel(natFilePb + natIoNamePtr, int(path))
+    pokew(natFilePb + natIoVRefNum, 0)
+    NatOpenRF(natFilePb)
+    if peekw(natFilePb + natIoResult) != 0 {
+        rtSetLastErr(2, "could not open file")
+        return false
+    }
+    ref = peekw(natFilePb + natIoRefNum)
+
+    pokew(natFilePb + natIoRefNum, ref)
+    pokel(natFilePb + natIoMisc, 0)
+    NatSetEOF(natFilePb)
+
+    rt = RtText(t)
+    n = rt.len
+    wrote = 0
+    failed = false
+    if n > 0 {
+        NatHLock(rt.h)
+        mp = TextHandleDeref(rt.h)
+        pokew(natFilePb + natIoRefNum, ref)
+        pokel(natFilePb + natIoBuffer, int(mp))
+        pokel(natFilePb + natIoReqCount, n)
+        pokew(natFilePb + natIoPosMode, natFsAtMark)
+        NatWrite(natFilePb)
+        wrote = peekl(natFilePb + natIoActCount)
+        NatHUnlock(rt.h)
+        if peekw(natFilePb + natIoResult) != 0 {
+            failed = true
+        }
+    }
+
+    pokew(natFilePb + natIoRefNum, ref)
+    NatClose(natFilePb)
+    natFileFlush()
+
+    if failed or wrote != n {
+        rtSetLastErr(2, "could not write file")
+        return false
+    }
+    return true
+}
+
+// nat_SerFileWriteData/nat_SerFileReadTextInto: ser.cla's own
+// `external func SerFileWriteData(path: ptr, t: text, type: ptr, creator:
+// ptr): int` / `external func SerFileReadTextInto(path: ptr, out: text):
+// int` are clause-less externs (Plan native-5d Task 3's design: file.save/
+// file.load stay C-only in the codegen sense, resolved through the SAME
+// cgCallExtNatFallback name convention every other clause-less extern
+// uses) -- their nat_ fallbacks reuse natFileWriteText/natFileReadText's
+// PB machinery verbatim. `t`/`out` are declared `ptr` here rather than
+// `text` -- purely cosmetic: cgCallExtNatFallback's cgPushArgs marshals a
+// `text` argument as its own 4-byte handle VALUE (the generic non-KStr/
+// KRec branch), bit-identical to a `ptr` argument of the same size, so
+// either declared type reads the same stack slot; `ptr` matches every
+// other text-handling function in this runtime (rtTextStore et al. all
+// take `t: ptr`, never `t: text`).
+// native-gaps-cleanup Task 2: type/creator are now threaded straight
+// through from ser.cla's SerFileWriteData extern (its own new trailing
+// ptr params) to natFileWriteText's real caller-supplied values -- this
+// FIXES the "STILL an approximation" wart this comment used to document
+// (file.save on the native lane used to always get natFileWriteText's own
+// fixed 'TEXT'/'MPS ' stamp, ignoring the app's real type/creator; now it
+// gets exactly what the Clarus call site passed, same as every other
+// lane).
+func nat_SerFileWriteData(path: ptr, t: ptr, ftype: ptr, fcreator: ptr): int {
+    if natFileWriteText(path, t, ftype, fcreator) {
+        return 1
+    }
+    return 0
+}
+
+func nat_SerFileReadTextInto(path: ptr, out: ptr): int {
+    if natFileReadText(path, out) {
+        return 1
+    }
+    return 0
+}
+
+// ================================================================
+// Task 12 (native-5e): nat_ fallbacks for the reverse waist's own
+// per-backend glue externs that need no UI-specific runtime symbol (see
+// ui.cla for nat_UiLaunchReal, which DOES need one -- UiFireStartEmpty --
+// and so lives there instead, since native.cla is spliced into EVERY
+// native build, UI or not, while ui.cla is UI-only).
+// ================================================================
+
+// nat_UiTestEmit: uiscript.cla's `external func UiTestEmit(s: ptr)` --
+// clause-less, so cgCallExtNatFallback resolves it here by name. `s` is a
+// fresh `rt_text*` box (text.cla) holding one already-CRLF/newline-
+// rendered trace/snap line (rtUiEmitLine's own contract, uiscript.cla) --
+// copy its bytes out (rtTextToBytes, capped well above every real line
+// this port ever builds -- the longest is a 64-byte hex-dump row, uitest
+// script.cla's rtUiTestSnap), append the trailing LF, and write+flush
+// immediately, mirroring rt_mac.c's rt_test_emit -> rt_test_write, which
+// FlushVol's after EVERY write (unlike natLog's own end-of-run-only
+// buffering) so trace/snap output survives a mid-run crash on real
+// hardware exactly like the cprint lane's capture file does.
+var natUiEmitBuf: ptr = ptr(0)
+
+func nat_UiTestEmit(s: ptr) {
+    var n: int
+
+    natInit()
+    if natUiEmitBuf == ptr(0) {
+        natUiEmitBuf = NatNewPtr(512)
+    }
+    n = rtTextToBytes(s, natUiEmitBuf, 511)
+    pokeb(natUiEmitBuf + n, 10)
+    n = n + 1
+    natWriteBytes(natUiEmitBuf, n)
+    natFlush()
+}
+
+// nat_UiRtQuit: ui.cla's `external func UiRtQuit(code: int)` -- the
+// ported rtUiQuit's own terminal call (rt_ext_UiRtQuit -> rt_quit(code) on
+// the cprint lane). natQuit IS this backend's rt_quit: same exit trailer
+// (`##CLARUS-EXIT## <code>` + the buffered log), same ExitToShell, same
+// natDone re-entry guard -- a plain forward, no new behavior.
+func nat_UiRtQuit(code: int) {
+    natQuit(code)
+}
+
+// ================================================================
+// nat_UiMacInitToolbox/nat_UiScreenBounds/nat_UiScreenBits (Task 12,
+// native-5e; MOVED here from ui.cla/uiscript.cla by this task's own
+// review-fix round -- see the ledger): ui.cla/uiscript.cla are spliced
+// for BOTH backends (any UI program), so state declared there is an
+// unconditional `irGlobals` entry on the CPRINT lane too, silently
+// shifting every later global's `clar_ui_fire_staterows` rowsIdx position
+// -- broke testdata/emitui/uiblob_probe.blob.golden (found by the full-
+// suite gate). native.cla is emit68k-only (main.cla's manifest, `if
+// emitMode68k`), invisible to cprint entirely -- the correct home for
+// native-only UI glue, same discipline natUiEmitBuf already established.
+// NatNewPtr (not ui.cla's UiNewPtr) backs the allocation.
+// ================================================================
+
+// natQdGlobals is this backend's own QDGlobals-shaped storage block --
+// InitGraf's own `globalPtr` argument is conventionally `&qd.thePort`;
+// QuickDraw internally derives every OTHER qd field's address by walking
+// BACKWARD from that one pointer using the struct's own fixed layout
+// (Quickdraw.h's `struct QDGlobals`). Sized 206 bytes (privates 76 +
+// randSeed 4 + screenBits/BitMap 14 + arrow/Cursor 68 + 5 Patterns of 8 =
+// 40 + thePort 4 = 206, every field size verified directly against
+// Retro68's own Quickdraw.h struct definitions), thePort at the trailing
+// 4 bytes (offset 202) -- every other field's own offset, keyed off the
+// SAME struct order, is what nat_UiScreenBounds/nat_UiScreenBits below
+// read back via natQdGlobals + <offset>. NatNewPtr (NewPtrClear, 0xA31E)
+// rather than a plain uninitialized NewPtr: this module's own header
+// comment already explains why a File Manager PB needs its unwritten
+// fields pre-zeroed (natInit's own natPb) -- the same hazard applies here
+// (InitGraf reads/writes fields this code never explicitly initializes).
+var natQdInited: bool = false
+var natQdGlobals: ptr = ptr(0)
+
+external func NatInitGraf(globalPtr: ptr) = trap 0xA86E
+external func NatInitFonts() = trap 0xA8FE
+external func NatInitWindows() = trap 0xA912
+external func NatInitMenus() = trap 0xA930
+external func NatTEInit() = trap 0xA9CC
+external func NatInitDialogs(resumeProc: ptr) = trap 0xA97B
+external func NatInitCursor() = trap 0xA850
+external func NatMoreMasters() = trap 0xA036
+
+// nat_UiMacInitToolbox: ui.cla's `external func UiMacInitToolbox()` --
+// the SAME InitGraf/InitFonts/InitWindows/InitMenus/TEInit/InitDialogs/
+// InitCursor sequence rt_mac.c's own rt_mac_toolbox_init runs
+// (runtime/mac/rt_mac.c:32-44), idempotent (natQdInited) the same way.
+// Every trap word verified directly against Retro68's own
+// InterfacesAndLibraries/Interfaces/CIncludes/*.h (ONEWORDINLINE) and
+// multiversal/defs/WindowMgr.yaml (InitWindows, absent from the CIncludes
+// headers entirely -- found in the multiversal source instead): none
+// carry a `register:` annotation in multiversal's own schema (which DOES
+// support one, per ADB.yaml's own A0-register entries), confirming plain
+// Pascal stack-passed args, not an A0-register special case.
+//
+// Three extra NatMoreMasters calls (Task 12, native-5e review fix, FIRST
+// NATIVE UI BOOT second root-cause): cgEmitStartup's own single
+// `_MoreMasters` call (one 64-master-pointer block) is the classic Mac
+// baseline every native program gets, non-UI or UI -- proven sufficient
+// for hello.cla/test_suite.cla, but NOT for a live Window/Menu Manager:
+// InitWindows/InitMenus/TEInit/InitDialogs and their own later handle-
+// heavy operations (DrawMenuBar's own temporary region/handle traffic
+// among them) are well-documented (Inside Macintosh) to need SEVERAL
+// master-pointer blocks, not one -- a real classic app's own startup
+// idiom is 2-4 MoreMasters calls before touching the Window/Menu
+// Manager. Reproduced empirically: bisected via UiRtQuit(N) checkpoints
+// through rtUiStartup (Mini vMac boot -> gray test-pattern screen, never
+// progressing) -- every checkpoint through `rtUiBuildMenus`'s own
+// zero-menu tail (nMenus==0, so its only unconditional Toolbox call is
+// UiDrawMenuBar) fired correctly; UiDrawMenuBar itself (a proven-safe
+// zero-arg pascal trap encoding -- the SAME shape as the 5 already-
+// working Init* calls just above it) is where the app never reaches its
+// own next checkpoint -- consistent with a master-pointer exhaustion
+// stall/hang deep inside the Menu Manager's own region allocation, not a
+// codegen/calling-convention bug.
+// natQdInited (attempt-abort Task 9, fix round 1: review M1) is set TRUE
+// only after NatInitDialogs -- not on entry -- so nat_CorePanic's own
+// beep+alert gate (native.cla, above) can never read it as true before
+// the Dialog Manager (which UiParamText/UiAlert need) has actually
+// initialized. The `if natQdInited { return }` guard above
+// still reads it as the ordinary once-only idempotency check (this
+// function has exactly one caller, rtUiStartup, so re-entrancy mid-init
+// never happens in practice); NatInitCursor runs after the flag flips
+// since cursor state has no bearing on Alert()'s own safety.
+func nat_UiMacInitToolbox() {
+    if natQdInited {
+        return
+    }
+    natQdGlobals = NatNewPtr(206)
+    NatInitGraf(natQdGlobals + 202)
+    NatInitFonts()
+    NatMoreMasters()
+    NatInitWindows()
+    NatMoreMasters()
+    NatInitMenus()
+    NatMoreMasters()
+    NatTEInit()
+    NatInitDialogs(ptr(0))
+    natQdInited = true
+    NatInitCursor()
+}
+
+// nat_UiScreenBounds: ui.cla's `external func UiScreenBounds(out: ptr)` --
+// qd.screenBits.bounds is the 8-byte Rect at natQdGlobals+86 (two longs,
+// peekl/pokel -- no BlockMoveData trap needed for a fixed 8-byte copy),
+// matching rt_ext_UiScreenBounds's own `*(Rect *)out = qd.screenBits.bounds`.
+func nat_UiScreenBounds(out: ptr) {
+    pokel(out, peekl(natQdGlobals + 86))
+    pokel(out + 4, peekl(natQdGlobals + 90))
+}
+
+// nat_UiScreenBits: uiscript.cla's `external func UiScreenBits(baseAddrOut,
+// rowBytesOut, boundsOut: ptr)` -- reads baseAddr/rowBytes/bounds straight
+// out of natQdGlobals (baseAddr @80, rowBytes @84 as a signed 16-bit
+// field, bounds @86 for 8 bytes), matching rt_ext_UiScreenBits's own
+// three-field copy field for field. rowBytes is sign-extended by hand
+// (peekw is an UNSIGNED read, cg68k.cla's own documented convention) to
+// match the C shim's `(int32_t)qd.screenBits.rowBytes` cast -- harmless
+// for this port's own screen (rowBytes==64, well under 32768) but correct
+// either way.
+func nat_UiScreenBits(baseAddrOut: ptr, rowBytesOut: ptr, boundsOut: ptr) {
+    var rb: int
+
+    pokel(baseAddrOut, peekl(natQdGlobals + 80))
+    rb = peekw(natQdGlobals + 84)
+    if rb >= 32768 {
+        rb = rb - 65536
+    }
+    pokel(rowBytesOut, rb)
+    pokel(boundsOut, peekl(natQdGlobals + 86))
+    pokel(boundsOut + 4, peekl(natQdGlobals + 90))
+}
+
+// nat_UiConnPump: ui.cla's `external func UiConnPump()` -- the native-
+// lane resolution of the UI event loop's own connection-pump hook (Task
+// 6, see that extern's own doc comment for why it's an extern at all
+// rather than a plain call). native.cla is spliced only under want68k,
+// where conn.cla + conn_68k.cla are now ALSO unconditionally spliced
+// (drive.cla), so rtConnPump always exists here to forward to -- a plain
+// one-line pass-through, resolved automatically by cg68k's existing
+// clause-less-extern fallback (cgCallExtNatFallback), no special-casing
+// needed anywhere in cg68k.cla itself.
+func nat_UiConnPump() {
+    rtConnPump()
+}

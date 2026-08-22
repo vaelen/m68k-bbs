@@ -1,0 +1,2713 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// ui.cla: Toolbox extern trap block for the ported UI runtime, "slice A"
+// (native-5e Task 7, Step 1 ONLY -- no bodies, no `overlay record`s yet;
+// those land in Step 2+). Ports runtime/mac/rt_ui.c function-by-function
+// into runtime/clarus/ui*.cla, the same way text.cla/list.cla/map.cla
+// ported rt_core.inc -- but UI has no host/console equivalent (there is no
+// text-mode window/menu/event system), so this module is Mac-ONLY: its
+// externs get a matching rt_ext_Ui* wrapper in runtime/mac/rt_ext_mac.inc
+// ONLY, never in runtime/host/rt_ext_host.inc (contrast text.cla,
+// whose externs get a wrapper on BOTH sides).
+//
+// Scope (Task 7 brief's slice A, union of rt_ui.c line ranges): 334-926,
+// 1175-1213, 2122-2384, 2483-2537, 2623-2758, 2760-3141, 3421-3751,
+// 3806-3816+3919-3962 (rt_ui_launch's signature + its RT_MAC_TEST branch
+// ONLY -- the real-build AppleEvent branch, :3963-4028, plus the AE
+// handlers themselves, rt_ui_ae_check_missed/ae_oapp/ae_odoc/ae_pdoc/
+// ae_quit at :3817-3918, are OUT of scope for this step: AE/Resource/
+// AppFiles/WD machinery needs real Pascal function-pointer callbacks,
+// which Clarus cannot express -- a later step keeps that whole mechanism
+// as C-side glue in rt_ext_mac.inc, reachable from ported Clarus through a
+// small number of new glue externs THAT step adds itself, not these),
+// 4043-4464, 4467-4914, 5294-5337, 5339-5723. Two exclusion rules apply
+// throughout: (1) no List-Manager/TextEdit-Manager call (LDispose,
+// LActivate, LSetSelect, LUpdate, TEDispose, TEActivate, TEDeactivate,
+// TEClick, TEKey, TECalText, TESetSelect, TESetText, TETextBox, TEUpdate)
+// gets an extern here -- those only appear in code paths for the
+// field/textview/table widget kinds, out of scope this slice; wherever one
+// appears inside an otherwise in-scope function only because of a
+// kind-switch arm for an out-of-scope kind, that whole arm is a later
+// task's problem. (2) Ch10 forms (rt_ui_edit and its own helpers --
+// rt_ui_form_teardown/form_cancel/parse_int/parse_fixed/form_invalid/
+// form_fill/form_accept/form_is_new, rt_ui.c:4915-5293) are, for the same
+// reason, excluded even though their numeric lines fall inside the outer
+// 4467-5337 span the brief cites: a form only ever binds popup/field/table
+// widgets (out of scope), rtUiEdit is absent from this task's own Produces
+// list, and its one Toolbox call NumToString never appears outside that
+// span -- so it needed no extern here at all (confirmed by grep: every
+// NumToString call site in rt_ui.c falls either inside this excluded span
+// or inside the also-out-of-scope rt_ui_fixed_to_str/rt_ui_table_draw_field
+// helpers, :1048-1130).
+//
+// `Ui`-prefixed extern names (UiSetPort, UiFrontWindow, ...), never the
+// bare Toolbox name: same collision hazard text.cla's own header comment
+// documents for Text/List/Map/Ser's own prefixed copies of NewPtr/
+// DisposeHandle/etc -- checkFuncSig/scopeDeclare key purely on NAME (no
+// signature comparison), so a user program's own `external func SetPort`
+// (the documented Ch13 escape hatch) would otherwise collide with this
+// module's. Every Pascal-string-buffer parameter (a menu/window/control
+// title, an itemText out-buffer, DrawString's text, ParamText's four
+// strings, ...) is declared `ptr`, NOT `str`: Clarus has no str->ptr
+// conversion and no address-of for a local `str` variable, but Step 2's
+// callers need to pass BOTH blob-computed addresses (already `ptr`,
+// pointing into the UI descriptor blob's string pool) and runtime-built
+// scratch Pascal strings (a `UiNewPtr` scratch + `pokeb`, the same idiom
+// text.cla/list.cla already use) to these same traps -- a `str`-typed
+// param could accept neither. No existing runtime module declares a `str`
+// extern param anywhere (grep confirms); `ptr` is the established idiom.
+//
+// Every 16-bit Toolbox INTEGER (window/control coordinates, short counts,
+// short IDs/refnums/indices, WindowPartCode/ControlPartCode/MenuID/
+// EventMask) is `word` (Task 4's extern type, docs/clarus-language-
+// reference.md's own worked examples `UiMoveTo(h: word, v: word) = trap
+// 0xA893` and `UiFindWindow(pt: int, wpOut: ptr): word = trap 0xA92C` are
+// used verbatim below). A 4-byte Toolbox by-value struct (a Point argument
+// -- MenuSelect/DragWindow/GrowWindow/TrackBox/TrackGoAway/PtInRect/
+// FindWindow's own `pt`) is `int` (packed v/h, v in the high word, matching
+// QuickDraw's own Point-as-long convention) -- never a `ptr`, since it's
+// passed BY VALUE, not by address. A genuine 32-bit Toolbox value (Size,
+// OSType/ResType/FourCharCode, a `long` refcon/result) is `int`. Pointers
+// to Rect/EventRecord/WindowRecord/other records are plain `ptr` --
+// `overlay record` views of them are a Step 2 concern, not this one.
+//
+// Trap convention: an ordinary Toolbox call (every Window/Menu/Control/
+// QuickDraw/Event/Dialog/Gestalt/OS-Utility routine below, the vast
+// majority) is PASCAL convention, `= trap 0xNNNN` with no `reg` suffix.
+// The register-based Memory Manager family (UiHLock/UiHUnlock/UiNewPtr/
+// UiNewPtrClear/UiNewHandleClear/UiDisposeHandle/UiDisposePtr/
+// UiBlockMoveData) mirrors text.cla's own OWN-prefixed copies of the exact
+// same primitives byte-for-byte (same trap words, same `reg` clause) --
+// same "each module gets its own name" rationale as text.cla's header
+// comment, since this module needs its OWN scratch-allocation surface
+// distinct from Text/List/Map/Ser/Str/Native's. UiTickCount is the one
+// non-Memory-Manager `reg` trap: Inside Macintosh documents it as a
+// register-based OS trap (result in D0, no stack args), matching this
+// task's own brief. Every trap word below not already in text.cla's own
+// verified set was independently re-derived against Retro68's Traps.h
+// (converted from CR-only line endings per the repo's own documented
+// recipe) AND the actual Universal Interfaces C prototype (MacWindows.h/
+// Menus.h/Controls.h/QuickDraw.h/QuickdrawText.h/Events.h/Gestalt.h/
+// Dialogs.h/Devices.h -- also CR-only, also converted) for parameter
+// order/type, since Traps.h alone gives no parameter information. Four
+// trap words this task resolved beyond the brief's own pre-resolved table
+// (all confirmed against the real headers, `grep -a` -- these files carry
+// the ISO-8859 copyright byte, which makes a locale-default `grep` treat
+// them as binary and silently match nothing without `-a`): EqualRect
+// 0xA8A6 (QuickDraw.h, aliased `MacEqualRect`), HideCursor 0xA852
+// (QuickDraw.h), BeginUpdate/EndUpdate 0xA922/0xA923 (MacWindows.h; the
+// Traps.h enum itself spells these `_BeginUpDate`/`_EndUpDate`, capital D,
+// but the actual EXTERN_API function names -- and rt_ui.c's own call
+// spelling -- are the conventional `BeginUpdate`/`EndUpdate`), SetPortBits
+// 0xA875 (QuickDraw.h; the same trap Traps.h's enum calls `_SetPBits` --
+// SetPortBits is the modern Universal-Interfaces name for the identical
+// trap). BlockMoveData is 0xA22E, NOT 0xA02E (plain BlockMove, a distinct
+// trap) -- same distinction text.cla's own header comment makes; verified
+// again here directly against QuickDraw.h's own `BlockMoveData` prototype.
+//
+// Gestalt (UiGestaltErr/UiGestaltValue, below) is a REGISTER trap whose
+// raw contract answers in TWO registers: the OSErr in D0 and the RESPONSE
+// VALUE in A0. Gestalt.h's `#pragma parameter __D0 Gestalt(__D0, __A1)`
+// describes the INLINE GLUE, not the trap -- the glue's second word,
+// `TWOWORDINLINE(0xA1AD, 0x2288)`, decodes to `MOVE.L A0,(A1)`, i.e. it
+// copies A0 through the caller's `long *response` afterwards. A `reg`
+// extern names exactly ONE result register and cannot emit that store, so
+// the trap is declared twice -- see toolbox/osutils.cla's own header
+// comment for the full decode and the on-hardware proof.
+//
+// This corrects a long-lived misreading: until pack3-standardfile Task 5a
+// this file declared `UiGestalt(selector, response) = trap 0xA1AD
+// reg(d0: selector, a1: response) ret d0`, which bound A1 as an unread
+// INPUT and dropped A0 entirely, so `*response` was NEVER written on the
+// native lane. `err` still came back a clean noErr, so rtUiStartup below
+// read uninitialized heap garbage out of its own freshly-UiNewPtr'd
+// response slot -- which is exactly the symptom the (now removed)
+// `resp < 0x1000` upper bound there was added to paper over. The cprint
+// lane was unaffected: its wrapper called the real C `Gestalt()`, glue
+// word included.
+//
+// LMGetCurApName (rt_ui_apple_select's else-branch, rt_ui.c:2295, for a
+// program with no `app name` section) is NOT a trap at all -- it is a
+// direct read of the CurApName low-memory global at the fixed address
+// 0x0910 (Universal Interfaces' own LMGetCurApName is just `(StringPtr)
+// 0x910`, a cast of a constant, not a real call). No extern is declared
+// for it here; a later step passes `ptr(0x910)` directly to UiParamText's
+// first argument at that one call site, using the existing `ptr(intExpr)`
+// conversion -- no new language feature needed.
+//
+// Split from uiwidgets.cla: this file holds Window Manager, Menu Manager,
+// Event Manager, Gestalt/OS-Utility, Dialog Manager (Alert family), the
+// two universal QuickDraw port primitives (SetPort/GetPort -- read by
+// nearly every in-scope function under rt_ui.h's own PORT DISCIPLINE RULE,
+// so they belong with the "core" file, not the widget one), and this
+// module's own Memory Manager scratch-allocation family -- the traps
+// rt_ui_startup/rt_ui_run/window-management/menu-management/every-pump/
+// winst-instance-management code needs. uiwidgets.cla holds Control
+// Manager basics and QuickDraw drawing/geometry traps -- the ones widget
+// layout/creation/canvas-drawing code needs, plus the canvas offscreen
+// GrafPort's own OpenPort/ClosePort/PortSize/SetOrigin/SetPortBits (Ch11,
+// rt_ui_canvas_make/dispose) since those are canvas-specific, not general
+// port save/restore.
+
+// ---- Memory Manager (this module's own scratch-allocation family) ----
+// Mirrors text.cla's TextHandleDeref/TextNewPtr/TextDisposePtr/
+// TextNewHandle/TextDisposeHandle/TextHLock/TextHUnlock/TextBlockMoveData
+// exactly (same trap words, same `reg` clauses) -- this module's own copy,
+// per the naming-collision rationale above. No `UiRcCheck`/ARC pairing:
+// unlike Text/List/Map, nothing in this slice's winst/canvas allocation is
+// reference-counted (rt_ui.c's own struct rt_ui_winst is a plain malloc'd
+// -- NewHandleClear'd -- box, freed unconditionally by rt_ui_close, never
+// rc-tracked).
+// AE handler catalog (mac-resident-clarusc Task 12): pull the real
+// AppleEvent Manager declarations from the shared catalog instead of
+// hand-declaring them here -- same "catalog-first" convention
+// uidialogs.cla's own header comment establishes for toolbox/
+// standardfile.cla/files.cla. Resolved relative to this file, i.e.
+// <rtdir>/../../toolbox/ -- a user program that also composes
+// toolbox/appleevents.cla positionally dedups via the normalized
+// include-once identity. Harmless on the cprint lane (conv 9's `seld0`
+// clause is invisible to cprint.cla, which never consults a trap/reg/sel
+// clause at all -- every extern call renders as `rt_ext_<Name>` uniformly
+// regardless), and unreachable there in practice anyway: nat_UiLaunchReal
+// (below, near UiLaunchReal) is a clause-less nat_ fallback, resolved by
+// cgCallExtNatFallback on the NATIVE lane only; the cprint lane keeps its
+// own separate, already-complete rt_ext_UiLaunchReal (rt_ext_mac.inc),
+// untouched by this task. Must precede every other declaration in this
+// file (`include must precede other declarations`), hence all the way up
+// here rather than down by its own point of use.
+include "../../toolbox/appleevents.cla"
+
+external func UiHandleDeref(h: ptr): ptr = inline deref
+external func UiNewPtrRaw(size: int): ptr = trap 0xA11E reg
+
+// UiNewPtr: the allocation-waist wrapper around UiNewPtrRaw
+// (heap-jiggle-stress-mode phase, correctness-cleanup Task 3). Every
+// existing call site in this runtime already calls `UiNewPtr` -- this
+// wrapper is the smallest diff that hooks the allocation waist without
+// touching any of them: `rtUiJiggleTick()` (uiscript.cla) is a no-op
+// unless scripted `jiggle on` is in effect, so this is byte-identical
+// to a plain trap call by default. Within-handler staleness (a master
+// pointer cached before an allocation that can compact the heap, then
+// dereferenced after) is the historical bug shape; dispatch-boundary
+// jiggle alone (rtUiRunScripted) cannot catch it -- only hooking the
+// allocation waist itself does.
+func UiNewPtr(size: int): ptr {
+    rtUiJiggleTick()
+    return UiNewPtrRaw(size)
+}
+
+external func UiNewPtrClear(size: int): ptr = trap 0xA31E reg
+external func UiNewHandleClear(size: int): ptr = trap 0xA322 reg
+external func UiDisposeHandle(h: ptr) = trap 0xA023 reg
+external func UiDisposePtr(p: ptr) = trap 0xA01F reg
+external func UiHLock(h: ptr) = trap 0xA029 reg
+external func UiHUnlock(h: ptr) = trap 0xA02A reg
+external func UiBlockMoveData(src: ptr, dst: ptr, count: int) = trap 0xA22E reg
+
+// ---- QuickDraw port basics (PORT DISCIPLINE RULE, rt_ui.h) ----
+// Read/written by nearly every in-scope function that draws (each
+// self-asserts GetPort/SetPort, restores the caller's port before
+// returning) -- too pervasive to belong to either "core" or "widgets"
+// alone; kept here since rt_ui_startup itself (the module's own entry
+// point) needs GetPort/SetPort before anything widget-shaped exists.
+external func UiGetPort(port: ptr) = trap 0xA874
+external func UiSetPort(port: ptr) = trap 0xA873
+
+// ---- Window Manager ----
+// rt_ui_open (:4571-4739, NewWindow/ShowWindow/SetWRefCon), rt_ui_close/
+// rt_ui_teardown_window (:4740-4914, DisposeWindow), rt_ui_set_title/
+// rt_ui_get_title (:5329-5337), rt_ui_front/rt_ui_winst_of (:676-799,
+// 5294-5337, FrontWindow/GetWRefCon), rt_ui_handle_mouse_down (:3421-3499,
+// FindWindow/SelectWindow/DragWindow/GrowWindow/TrackGoAway), rt_ui_apply_
+// zoom/rt_ui_handle_zoom (:3053-3096, ZoomWindow/TrackBox), rt_ui_apply_
+// resize (:2991-3009, SizeWindow), rt_ui_handle_update's resizable-corner
+// lane and rt_ui_script_click (:2760-2782, 4102-4173, DrawGrowIcon/
+// FindWindow).
+external func UiFrontWindow(): ptr = trap 0xA924
+external func UiNewWindow(wStorage: ptr, boundsRect: ptr, title: ptr, visible: bool, procId: word, behind: ptr, goAwayFlag: bool, refCon: int): ptr = trap 0xA913
+external func UiShowWindow(theWindow: ptr) = trap 0xA915
+external func UiDisposeWindow(theWindow: ptr) = trap 0xA914
+external func UiSetWRefCon(theWindow: ptr, data: int) = trap 0xA918
+external func UiGetWRefCon(theWindow: ptr): int = trap 0xA917
+external func UiSetWTitle(theWindow: ptr, title: ptr) = trap 0xA91A
+external func UiGetWTitle(theWindow: ptr, title: ptr) = trap 0xA919
+external func UiSelectWindow(theWindow: ptr) = trap 0xA91F
+external func UiDragWindow(theWindow: ptr, startPt: int, boundsRect: ptr) = trap 0xA925
+external func UiGrowWindow(theWindow: ptr, startPt: int, bBox: ptr): int = trap 0xA92B
+external func UiSizeWindow(theWindow: ptr, w: word, h: word, fUpdate: bool) = trap 0xA91D
+external func UiZoomWindow(theWindow: ptr, partCode: word, front: bool) = trap 0xA83A
+external func UiTrackBox(theWindow: ptr, thePt: int, partCode: word): bool = trap 0xA83B
+external func UiTrackGoAway(theWindow: ptr, thePt: int): bool = trap 0xA91E
+external func UiFindWindow(pt: int, wpOut: ptr): word = trap 0xA92C
+
+// ---- Menu Manager ----
+// rt_ui_build_menus/rt_ui_build_apple_menu (:2198-2384, NewMenu/AppendMenu/
+// InsertMenu/DrawMenuBar/AppendResMenu/DisableItem), rt_ui_menu_enable
+// (:2375-2384, EnableItem/DisableItem), rt_ui_menu_dispatch (:2623-2656,
+// HiliteMenu), rt_ui_handle_mouse_down/rt_ui_handle_key (:3421-3751,
+// MenuSelect/MenuKey), rt_ui_apple_select (:2283-2306, GetMenuItemText/
+// OpenDeskAcc -- OpenDeskAcc lives in the OS-Utility group below since
+// Devices.h, not Menus.h, declares it), rt_ui_teardown_window (:4740-4914,
+// DeleteMenu/DisposeMenu, popup-menu cleanup -- the DELETE/DISPOSE calls
+// themselves are generic Menu Manager traps, needed regardless of the
+// popup KIND itself being out of scope), rt_ui_table_draw_field/friends'
+// CountMItems use is out of scope (table kind), but rt_ui_widget_get_int's
+// popup SELECTED-count use (:5339-5723, in the produces list) needs it.
+external func UiNewMenu(menuId: word, menuTitle: ptr): ptr = trap 0xA931
+external func UiDisposeMenu(theMenu: ptr) = trap 0xA932
+external func UiAppendMenu(theMenu: ptr, data: ptr) = trap 0xA933
+external func UiInsertMenu(theMenu: ptr, beforeId: word) = trap 0xA935
+external func UiDeleteMenu(menuId: word) = trap 0xA936
+external func UiDrawMenuBar() = trap 0xA937
+external func UiHiliteMenu(menuId: word) = trap 0xA938
+external func UiEnableItem(theMenu: ptr, item: word) = trap 0xA939
+external func UiDisableItem(theMenu: ptr, item: word) = trap 0xA93A
+external func UiCountMItems(theMenu: ptr): word = trap 0xA950
+external func UiGetMenuItemText(theMenu: ptr, item: word, itemString: ptr) = trap 0xA946
+external func UiAppendResMenu(theMenu: ptr, theType: int) = trap 0xA94D
+external func UiMenuSelect(startPt: int): int = trap 0xA93D
+// ch is `word`, not `char`: MenuKey's real ABI is CharParameter (a
+// numeric 16-bit short, char code in the word's LOW byte -- Menus.h),
+// same as UiTEKey below in uitext.cla. A `char` param would go through
+// cgCallExtPascal's byte-in-HIGH-byte pascal-Boolean/Char push, so the
+// ROM would read char 0 and no cmd-key shortcut would ever match --
+// scripted goldens dispatch menu keys through the script engine, never
+// this trap, so only a real native boot shows it (found with TickProbe,
+// 2026-08-03, alongside the UiTickCount convention fix above).
+external func UiMenuKey(ch: word): int = trap 0xA93E
+
+// ---- Event Manager ----
+// rt_ui_run's real event loop (:4467-4530, WaitNextEvent), rt_ui_run_
+// scripted/rt_ui_pump_passive (:4043-4464, GetNextEvent/FlushEvents(via
+// rt_ui_startup)), rt_ui_handle_canvas_click (:3122-3141, StillDown/
+// GetMouse), rt_ui_script_click (:4102-4173, GlobalToLocal), rt_ui_
+// handle_mouse_down (:3421-3499, SysBeep on a disabled-menu-bar or
+// disabled-widget click), rt_ui_handle_key (:3557-3673, SysBeep on an
+// unhandled key).
+external func UiWaitNextEvent(eventMask: word, theEvent: ptr, sleep: int, mouseRgn: ptr): bool = trap 0xA860
+external func UiGetNextEvent(eventMask: word, theEvent: ptr): bool = trap 0xA970
+// _FlushEvents is 0xA032 -- `0xA032 & 0x0800 == 0`, bit 11 clear, an OS
+// trap using REGISTER convention, NOT the two-word Pascal-stack shape a
+// plain `= trap` clause assumes (same bit-11 rule cases_event.cla's own
+// comment documents for _OSEventAvail/_FlushEvents; this was that
+// comment's own ledgered follow-up, fixed here). Retro68's multiversal
+// defs confirm the packed layout (Retro68/multiversal/defs/OSEvent.yaml,
+// executor-only FlushEvents clause): `evmask` is `register: D0LowWord`,
+// `stopmask` is `register: D0HighWord` -- both masks share ONE 16-bit-pair
+// register, D0, not two pushed stack words. `masks` packs them: low word
+// (bits 0-15) = whichMask/evmask, high word (bits 16-31) = stopMask.
+// Apple-interfaces re-verification (toolbox-cookbook phase, 2026-08-07):
+// directly confirmed against Apple's own Universal Interfaces 3.4
+// (Retro68/InterfacesAndLibraries/Interfaces) -- CIncludes/Events.h:621-623
+// declares `FlushEvents(EventMask whichMask, EventMask stopMask)
+// TWOWORDINLINE(0x201F, 0xA032)`. Decoding the first inline word: `0x201F`
+// is the raw 68k instruction `MOVE.L (SP)+,D0` -- it pops the two
+// stack-pushed 16-bit mask arguments as one 32-bit longword directly into
+// D0 BEFORE the trap word `0xA032` executes, which is exactly the
+// packed-D0 (whichMask low word, stopMask high word) shape this fix
+// relies on, confirmed independent of multiversal's own D0LowWord/
+// D0HighWord claim.
+external func UiFlushEvents(masks: int) = trap 0xA032 reg
+external func UiStillDown(): bool = trap 0xA973
+external func UiGetMouse(mouseLoc: ptr) = trap 0xA972
+external func UiGlobalToLocal(pt: ptr) = trap 0xA871
+external func UiSysBeep(duration: word) = trap 0xA9C8
+
+// ---- Gestalt / OS Utility / Dialog Manager (Alert family) ----
+// rt_ui_startup's System 7 check (:3727-3816, Gestalt/FlushEvents),
+// rt_ui_run_scripted's determinism setup (:4367-4374, HideCursor),
+// rt_ui_apple_select (:2283-2306, ParamText/Alert/NoteAlert/OpenDeskAcc),
+// rt_ui_ask_save_changes's own ParamText+Alert(130) use is OUT of scope
+// (Ch12 dialogs, a later task's rt_ui.c:2429-2482 -- not in this slice's
+// line ranges). UiTickCount backs rt_ui_every_pump/rt_ui_startup's
+// TickCount-vs-gVirtualTicks scheduling (:3674-3816) and rt_ui_script_tick
+// (:4295-4314). PASCAL convention, not `reg`: _TickCount (0xA975) is an
+// ordinary stack-result Toolbox trap (Events.h: pascal UInt32), and a
+// `reg` call here reads a stale D0 -- every scripted golden runs on
+// gVirtualTicks so no scripted scenario ever executes this trap; the bug
+// only shows on a real (non---events) native boot, where `every` blocks
+// silently never fire (found via TickProbe, 2026-08-03; regression pin:
+// internal/mactest TestRealEventLoopTickOn68k).
+external func UiTickCount(): int = trap 0xA975
+// UiGestaltErr/UiGestaltValue: Gestalt is `reg`, NOT plain pascal (Task
+// 12, native-5e review fix, FIRST NATIVE UI BOOT root-cause) -- declaring
+// it plain pascal made cg68k push selector/response on the STACK, which
+// the real register-based GestaltDispatch handler never reads, hanging
+// the machine on a native boot. The register BINDINGS were then wrong in
+// their own right until pack3-standardfile Task 5a: multiversal/defs/
+// Gestalt.yaml (`selector` `register: D0`, `responsep` `register:
+// Out<A0>`, `returnreg: D0`) was correct, and the `a1: response` binding
+// read off Gestalt.h's `#pragma parameter` line was a misreading of glue
+// as trap contract. Two declarations because `reg` names one result
+// register; see this file's own header comment and toolbox/osutils.cla.
+external func UiGestaltErr(selector: int): word = trap 0xA1AD reg(d0: selector) ret d0
+external func UiGestaltValue(selector: int): int = trap 0xA1AD reg(d0: selector) ret a0
+external func UiHideCursor() = trap 0xA852
+external func UiOpenDeskAcc(deskAccName: ptr): word = trap 0xA9B6
+external func UiParamText(param0: ptr, param1: ptr, param2: ptr, param3: ptr) = trap 0xA98B
+external func UiNoteAlert(alertId: word, modalFilter: ptr): word = trap 0xA987
+external func UiAlert(alertId: word, modalFilter: ptr): word = trap 0xA985
+
+// ================================================================
+// Task 7 Step 4: function bodies. Ported directly by the controlling
+// session -- see task-7-report.md's Step 2 dispatch-log entry for why
+// (a dispatched subagent's own background-test-wait stalls led the
+// controlling Fable session to take every remaining step in-session).
+// ================================================================
+
+// ---- Glue externs this file adds (bare declarations -- no trap/inline
+// clause needed: cprint ignores clauses entirely, resolving every extern
+// call to `rt_ext_<Name>` by default, exactly like uidesc.cla's own bare
+// `UiProgDesc` declaration; the reverse-waist names below (UiFireWinEvent
+// etc.) get cprint's OWN special-cased resolution instead, per name, per
+// Task 6's report -- their trap/inline clause is equally irrelevant, so
+// bare is correct for them too). rt_ext_mac.inc gets one matching C
+// wrapper per non-reverse-waist entry below. ----
+external func UiMacInitToolbox()
+
+// UiConnPump (serial-connection phase, Task 6): the UI event loop's own
+// hook for draining connection events -- called once per pass, right
+// beside rtUiEveryPump(), everywhere a pump-style function is (see the
+// three call sites: rtUiRun below, rtUiRunScripted in uiscript.cla,
+// UiTestTick in uitest.cla). Deliberately an EXTERN, not a plain call to
+// conn.cla's own rtConnPump(): ui.cla is spliced into EVERY program on
+// EVERY lane unconditionally (runtime-ir-bake Task 2), so a plain call to
+// rtConnPump would have to resolve to a real Clarus symbol for EVERY
+// program the checker ever compiles, on BOTH lanes -- but conn.cla stays
+// usesConn-gated on the host/C lane (drive.cla's own header comment on
+// its splice site), so most host UI programs never get it spliced at
+// all. Routing through a bare extern (same "clauses are irrelevant to
+// cprint" convention as UiMacInitToolbox just above) sidesteps that
+// entirely: cg68k's existing clause-less-extern fallback
+// (cgCallExtNatFallback) resolves this to native.cla's own
+// `nat_UiConnPump` (which forwards to the always-present-on-68k
+// rtConnPump, conn.cla+conn_68k.cla now being unconditionally spliced
+// under want68k) -- pure native-lane wiring, exactly this task's own
+// scope ("native/UI is Task 6", cprint.cla's cpEmitMain doc comment on
+// its own separate, non-UI, usesConn-gated host pump loop). cprint's own
+// default (no synthesized-name match in lowUiSynthExternName) renders it
+// as an ordinary `rt_ext_UiConnPump()` call; its host-lane C wrapper
+// (rt_ext_mac.inc, the Retro68/cprint-Mac lane's own link target) is a
+// permanent no-op, matching the same scope note -- host/Mac-cprint UI+
+// connection integration is not wired by this task and stays a
+// documented gap, exactly like UiMacInitToolbox's own rt_ext_host.inc
+// omission (no plain non-Mac host build ever really links a UI program).
+external func UiConnPump()
+
+// nat_UiMacInitToolbox's own nat_ fallback body -- and the natQdGlobals
+// state it and UiScreenBounds/UiScreenBits (below) share -- lives in
+// native.cla, NOT here (Task 12, native-5e review fix): ui.cla is spliced
+// for BOTH backends (any UI program, native or cprint), but
+// natQdInited/natQdGlobals are pure NATIVE-lane state -- putting them here
+// added 2 unconditional `irGlobals` entries to EVERY UI program on BOTH
+// lanes, silently shifting every later global's `clar_ui_fire_staterows`
+// rowsIdx position and breaking testdata/emitui/uiblob_probe.blob.golden
+// (found by the full-suite gate: same size, different bytes). native.cla
+// is emit68k-only (main.cla's manifest, `if emitMode68k`), so its own
+// globals are invisible to the cprint lane entirely -- the correct home
+// for native-only state, same discipline natUiEmitBuf (Task 12) already
+// established there. native.cla's own NatNewPtr (not UiNewPtr, ui.cla-
+// only) backs the allocation.
+external func UiRtQuit(code: int)
+// UiTestScript (plan's own reverse-waist glue-extern table, "normative
+// for Tasks 6-10, 12"): cprint shim returns rt_ui_test_script -- SAME
+// symbol rt_ui.c used to weak-define (rt_ui.c:4043, `__attribute__((weak))
+// const char rt_ui_test_script[] = "";`), now moved to rt_ext_mac.inc
+// since rt_ui.c is dropped from the build entirely under --uiport (a
+// program built with no `--events` override would otherwise leave this
+// symbol wholly undefined -- a link error every scripted-scenario build
+// happens to avoid via its own generated events.c's STRONG override, but
+// a real non-scripted build must not depend on that).
+external func UiTestScript(): ptr
+// UiLaunchReal: the C-side glue for rt_ui_launch's real-build branch
+// (AEInstallEventHandler + the 4 pascal AE handlers + AEDesc decoding +
+// the System-6 CountAppFiles fallback, rt_ui.c:3963-4028) -- kept
+// entirely as C on the CPRINT lane (rt_ext_mac.inc's own already-complete
+// rt_ext_UiLaunchReal; no function pointers reach Clarus there, per Task 7
+// report log entry #3), never exercised by any golden scenario there
+// either (all of them are script-driven). REVISED, mac-resident-clarusc
+// Task 12: the NATIVE lane's own fallback (nat_UiLaunchReal, below) is no
+// longer a stub -- `callback func` (landed after Task 7, toolbox-
+// integration phase) lets it install real handlers straight into Clarus
+// code, proven for real on Snow (see that task's report).
+external func UiLaunchReal()
+
+// UiAEProcessEvent (Task 12): pumps a kHighLevelEvent through the
+// AppleEvent Manager to whichever handler nat_UiLaunchReal/
+// rt_ext_UiLaunchReal installed -- bare and per-backend for the same
+// reason UiLaunchReal itself is (rtUiRun, which calls this, is shared by
+// both backends; the cprint lane's own AEProcessAppleEvent call needs a
+// hand-written C body, same as every other cprint-side AE call in this
+// port). evBuf is the raw 16-byte EventRecord buffer UiWaitNextEvent
+// already filled in (rt_ui.c's own `AEProcessAppleEvent(&ev)` -- rtUiRun's
+// own doc comment above explains why this file can't just call the
+// native lane's real `AEProcessAppleEvent` (toolbox/appleevents.cla)
+// directly from here). Return value ignored, matching rt_ui.c's own call
+// site exactly (a bare statement, no error handling).
+external func UiAEProcessEvent(evBuf: ptr)
+
+// aeQuitHandler/aeOappHandler (Task 12): the required-suite AppleEvent
+// handlers nat_UiLaunchReal installs below, real `callback func`s (the
+// toolbox-integration phase's mechanism) -- unlike the cprint lane's own
+// rt_ext_mac.inc AE handlers (rt_ext_ui_ae_quit et al, pure C, "no
+// function pointers reach Clarus" per Task 7 report log entry #3, written
+// before `callback func` existed), the native lane can call straight back
+// into ordinary Clarus code: aeQuitHandler calls the REAL rtUiQuit() close
+// cascade (honoring a cancelled closeRequest) rather than the cprint
+// lane's own degenerate "no windows open" shortcut (rt_ext_ui_ae_quit's
+// own comment explains why it's stuck with that -- a real Clarus function
+// pointer, which is exactly what a callback IS). Neither handler fetches
+// any parameter off theAppleEvent (quit/oapp both take none in the
+// required suite) or checks keyMissedKeywordAttr (IM's own
+// handler-completeness convention); reply is likewise unused (returning
+// noErr from an installed handler makes the AppleEvent Manager send an
+// empty "we handled it" reply on our behalf) -- this task's own brief
+// calls for MINIMAL required-suite handling, not the full completeness
+// checklist. kAEOpenDocuments/kAEPrintDocuments deliberately get NO
+// installed handler at all: the AppleEvent Manager's own built-in
+// dispatch already answers errAEEventNotHandled for a (class, id) pair
+// with nothing registered, which is exactly this task's own brief's
+// fallback for odoc/pdoc ("route to the existing openDocument path if
+// present, else return errAEEventNotHandled") -- App.openDocument's real
+// AE arm (decoding a docList into FSSpecs/paths) does not exist yet
+// (Step 1's own finding: rt_ui_launch's script-parsing branch is the ONLY
+// real port so far; the C reference's OWN odoc handler, rt_ext_mac.inc's
+// rt_ext_ui_ae_odoc, is itself untested by any golden), so there is no
+// "existing" path to route to.
+callback func aeQuitHandler(theAppleEvent: ptr, reply: ptr, handlerRefcon: int): word {
+    rtUiQuit()
+    // Reached only if rtUiQuit's own close cascade was CANCELLED (some
+    // window's closeRequest ran `cancel`) -- the ordinary quit path calls
+    // UiRtQuit(0) -> natQuit(0) -> ExitToShell, which does not return, so
+    // this line is unreachable on that path; the app stays open and
+    // genuinely did handle the event when it IS reached (same distinction
+    // rt_ext_ui_ae_quit's own comment documents).
+    return 0 // noErr
+}
+
+callback func aeOappHandler(theAppleEvent: ptr, reply: ptr, handlerRefcon: int): word {
+    // No-op acknowledge: nat_UiLaunchReal (below) already ran the
+    // program's own startup (UiFireStartEmpty) unconditionally BEFORE
+    // installing this handler, so there is nothing left to do when the
+    // Process Manager's own oapp AppleEvent arrives moments later --
+    // calling UiFireStartEmpty() again here would double-fire it.
+    return 0 // noErr
+}
+
+// nat_UiLaunchReal (Task 12, native-5e; REVISED mac-resident-clarusc
+// Task 12): UiLaunchReal's clause-less nat_ fallback -- cgCallExtNatFallback
+// resolves it here by name. Gated on rtUiSys7 (the existing System-6-vs-7
+// runtime flag, already set by the time this runs -- cgEmitStartup's own
+// fixed order is rtUiStartup [sets rtUiSys7] / [App.launch] / rtUiLaunch
+// [calls UiLaunchReal] / rtUiRun): on System 7+, installs the two
+// required-suite handlers above so the Finder's Quit AppleEvent (the
+// first System 7.1 boot's own finding: an unhandled Quit wedges Finder
+// shutdown until force-quit) actually reaches rtUiQuit(). On System 6
+// (rtUiSys7 false) this is BYTE-IDENTICAL to the pre-Task-12 stub:
+// AEInstallEventHandler is real Toolbox trap 0xA816, which doesn't exist
+// before System 7 and must never be called on a System 6 boot. Document
+// delivery (odoc/pdoc, launch-time or while running) stays the same "no
+// real AE detection" gap the old stub already had -- see the handlers'
+// own header comment above for why that's this task's deliberate scope
+// line, not an oversight.
+func nat_UiLaunchReal() {
+    var junk: int
+
+    if rtUiSys7 {
+        junk = AEInstallEventHandler(kCoreEventClass, kAEQuitApplication, aeQuitHandler, 0, false)
+        junk = AEInstallEventHandler(kCoreEventClass, kAEOpenApplication, aeOappHandler, 0, false)
+    }
+    UiFireStartEmpty()
+}
+
+// nat_UiAEProcessEvent (Task 12): UiAEProcessEvent's native fallback --
+// straight through to the real trap (toolbox/appleevents.cla's
+// AEProcessAppleEvent, included above), result discarded (rtUiRun's own
+// call site ignores it too, matching rt_ui.c).
+func nat_UiAEProcessEvent(evBuf: ptr) {
+    var junk: int
+    junk = AEProcessAppleEvent(evBuf)
+}
+
+// UiScreenBounds: qd.screenBits.bounds is a QuickDraw GLOBAL (not a trap
+// result) -- wraps it directly in C rather than hand-deriving an
+// A5-relative offset into QDGlobals (rt_ui_open's own screen-clamp math,
+// rt_ui.c:4617-4645, and rt_ui_handle_grow's, :3024-3025, both need it).
+external func UiScreenBounds(out: ptr)
+
+// nat_UiScreenBounds's own nat_ fallback body lives in native.cla, same
+// cross-lane-global-leak fix as nat_UiMacInitToolbox above.
+
+// ---- Reverse-waist synthesized dispatchers (Task 6) this file's ported
+// dispatch functions call. Bare (see above); cprint's `lowUiSynthExternName`
+// table resolves each to its own `clar_fn_clar_ui_fire_*` C symbol by
+// NAME, regardless of any clause here. ----
+external func UiFireWinEvent(winIdx: int, inst: ptr, ev: int, a: int, b: int)
+external func UiFireWidget(winIdx: int, inst: ptr, widgetIdx: int, ev: int, a: int, b: int)
+external func UiFireMenu(handlerIdx: int, frontInstOrNil: ptr)
+external func UiFireEvery(idx: int)
+external func UiReleaseVars(winIdx: int, inst: ptr)
+external func UiFireLaunchDoc(path: ptr)
+external func UiFireStartEmpty()
+
+// ---- rt_ui.h's RTUI_* constants ui.cla's own code needs (mirrored, see
+// uiwidgets.cla's own header comment on why -- rt_ui.h is a C header) ----
+const rtUiWindowKind: int = 2001
+const rtUiMenuIdBase: int = 2
+const rtUiAppleMenuId: int = 1
+const rtUiEvOpened: int = 0
+const rtUiEvCloseRequest: int = 1
+const rtUiEvClosed: int = 2
+const rtUiEvResized: int = 3
+const rtUiEvKey: int = 4
+// Window Manager WDEF procID constants (MacWindows.h, Inside Macintosh I):
+// noGrowDocProc=4 (fixed size, close box, no zoom), zoomDocProc=8
+// (resizable, close box, zoom box), movableDBoxProc=5 (Task 9: a `form for
+// T` window's own WDEF on System 7+ -- MacWindows.h:197-203).
+const rtUiProcNoGrowDoc: int = 4
+const rtUiProcMovableDBox: int = 5
+const rtUiProcZoomDoc: int = 8
+const rtUiMenubarH: int = 20
+const rtUiTitlebarH: int = 19
+
+// ---- Module-level runtime state (NOT blob data -- these mirror the C
+// reference's own file-scope statics, rt_ui.c:2209-2227/3670-3672/3725).
+// ----
+var rtUiMenuHandlesArr: ptr = ptr(0)
+var rtUiNMenusVal: int = 0
+var rtUiAppleMenuHandle: ptr = ptr(0)
+var rtUiStdEditMenuIdx: int = -1
+var rtUiSys7: bool = false
+var rtUiEveryDueArr: ptr = ptr(0)
+var rtUiNEveryVal: int = 0
+
+// ================================================================
+// rt_ui_is_ours/rt_ui_winst_of (rt_ui.c:676-700): windowKind lives at
+// WindowRecord offset 108 (Task 7 report log entry #4), nextWindow at
+// 144 -- both cited there with their full GrafPort/WindowRecord field
+// derivation.
+// ================================================================
+
+func rtUiIsOurs(wp: ptr): bool {
+    if wp == ptr(0) {
+        return false
+    }
+    return peekw(wp + 108) == rtUiWindowKind
+}
+
+func rtUiWinstOf(wp: ptr): ptr {
+    if not rtUiIsOurs(wp) {
+        return ptr(0)
+    }
+    return ptr(UiGetWRefCon(wp))
+}
+
+// ================================================================
+// Window instance management: rtUiFront/rtUiState/rtUiSetTitle/
+// rtUiGetTitle (rt_ui.c:5308-5337). rtUiFront(winIdx): the C reference
+// compares `inst->desc == d` (a descriptor POINTER); the port compares
+// `w.winIdx == winIdx` instead (Task 7 report log entry #5 -- the
+// central redesign of this whole port).
+// ================================================================
+
+func rtUiFront(winIdx: int): ptr {
+    var wp: ptr
+    var inst: ptr
+    var w: RtUiWinst
+
+    wp = UiFrontWindow()
+    while wp != ptr(0) {
+        if peekw(wp + 108) == rtUiWindowKind {
+            inst = ptr(UiGetWRefCon(wp))
+            w = RtUiWinst(inst)
+            if w.winIdx == winIdx {
+                return inst
+            }
+        }
+        wp = ptr(peekl(wp + 144))
+    }
+    return ptr(0)
+}
+
+func rtUiState(instV: ptr): ptr {
+    return RtUiWinst(instV).state
+}
+
+func rtUiSetTitle(instV: ptr, s: ptr) {
+    UiSetWTitle(RtUiWinst(instV).wp, s)
+}
+
+func rtUiGetTitle(instV: ptr, dst255: ptr) {
+    UiGetWTitle(RtUiWinst(instV).wp, dst255)
+}
+
+// ================================================================
+// rt_ui_natural_size (rt_ui.c:4531-4569) -> rtUiNaturalSize. Mirrors
+// rtUiLayout's own x/y math (uiwidgets.cla) without an actual content
+// rect to lay out against -- a `width: fill`/`fill: both` widget in a
+// sizeless window just falls back to its own kind's natural width/
+// height, same as rtUiLayout's own comment notes for this same edge
+// case.
+// ================================================================
+
+func rtUiNaturalSize(winIdx: int, outW: ptr, outH: ptr) {
+    var n: int
+    var i: int
+    var maxRight: int
+    var prevLeft: int
+    var prevRight: int
+    var prevBottom: int
+    var kind: int
+    var atKind: int
+    var x: int
+    var y: int
+    var ww: int
+    var hh: int
+    var right: int
+
+    maxRight = 0
+    prevLeft = 0
+    prevRight = 0
+    prevBottom = 0
+    n = uidWinNWidgets(winIdx)
+    i = 0
+    while i < n {
+        kind = uidWidgetKind(winIdx, i)
+        atKind = uidWidgetAtKind(winIdx, i)
+        hh = rtUiKindHeight(kind)
+
+        switch atKind {
+        case rtUiAtRight {
+            x = prevRight + rtUiGap
+        }
+        case rtUiAtNext {
+            x = prevLeft
+        }
+        case rtUiAtAuto {
+            x = rtUiAutoMargin
+        }
+        else {
+            x = uidWidgetX(winIdx, i)
+        }
+        }
+
+        if uidWidgetYIsBottom(winIdx, i) or atKind == rtUiAtAuto {
+            y = prevBottom + rtUiGap
+        } else {
+            y = uidWidgetY(winIdx, i)
+        }
+
+        if uidWidgetWidthIsFill(winIdx, i) or uidWidgetFillBoth(winIdx, i) {
+            ww = rtUiKindWidth(kind)
+        } else if uidWidgetWidth(winIdx, i) == 0 {
+            ww = rtUiKindWidth(kind)
+        } else {
+            ww = uidWidgetWidth(winIdx, i)
+        }
+        if uidWidgetFillBoth(winIdx, i) {
+            hh = rtUiKindHeight(kind)
+        }
+
+        right = x + ww
+        if right > maxRight {
+            maxRight = right
+        }
+        prevLeft = x
+        prevRight = right
+        prevBottom = y + hh
+        i = i + 1
+    }
+    pokel(outW, maxRight + rtUiGap)
+    pokel(outH, prevBottom + rtUiGap)
+}
+
+// ================================================================
+// rt_ui_open (rt_ui.c:4571-4729) -> rtUiOpen(winIdx): ptr. The
+// auto-focus-first-field/textview loop went live Task 8. Task 9 adds two
+// more pieces: the WDEF choice now branches on `formOff` (a window with
+// `form for T` -- e.g. one holding a popup, rt_ui.c:4647-4661 -- always
+// opens as a movable-modal box, System 7 only, falling back to
+// noGrowDocProc on System 6, which has no movable-dBox WDEF at all; a
+// non-form window's own resizable flag picks zoomDocProc/noGrowDocProc
+// exactly as before), and the table-row-sync loop (rt_ui.c:4669-4680,
+// rtUiTableSyncOne per TABLE widget) now runs for real, right after
+// rtUiCanvasReallocAll and BEFORE the auto-focus loop -- per-instance, not
+// the global rtUiTablesSync walk (which starts from FrontWindow() and
+// would skip this window before ShowWindow below makes it visible).
+// ================================================================
+
+func rtUiOpen(winIdx: int): ptr {
+    var instH: ptr
+    var inst: ptr
+    var w: RtUiWinst
+    var stateSize: int
+    var nWidgets: int
+    var screenBoundsSlot: ptr
+    var screenLeft: int
+    var screenTop: int
+    var screenRight: int
+    var screenBottom: int
+    var screenW: int
+    var screenH: int
+    var reqW: int
+    var reqH: int
+    var reqWSlot: ptr
+    var reqHSlot: ptr
+    var left: int
+    var top: int
+    var ww: int
+    var hh: int
+    var boundsRect: ptr
+    var procId: int
+    var titlePtr: ptr
+    var i: int
+    var savedPort: ptr
+    var formOff: int
+
+    instH = rtUiAllocLocked(rtUiWinstBoxSize)
+    inst = UiHandleDeref(instH)
+    w = RtUiWinst(inst)
+    w.selfH = instH
+    w.wp = ptr(0)
+    w.winIdx = winIdx
+
+    stateSize = uidWinStateSize(winIdx)
+    if stateSize > 0 {
+        w.stateH = rtUiAllocLocked(stateSize)
+        w.state = UiHandleDeref(w.stateH)
+    } else {
+        w.stateH = ptr(0)
+        w.state = ptr(0)
+    }
+
+    nWidgets = uidWinNWidgets(winIdx)
+    w.ctrlsH = rtUiAllocLocked(nWidgets * 4)
+    w.ctrls = UiHandleDeref(w.ctrlsH)
+    w.rectsH = rtUiAllocLocked(nWidgets * rtUiRectSize)
+    w.rects = UiHandleDeref(w.rectsH)
+    w.labelsH = rtUiAllocLocked(nWidgets * rtUiLabelSlotSize)
+    w.labels = UiHandleDeref(w.labelsH)
+    w.canvasH = rtUiAllocLocked(nWidgets * rtUiCanvasBufSize)
+    w.canvases = UiHandleDeref(w.canvasH)
+    w.teH = rtUiAllocLocked(nWidgets * 4)
+    w.tes = UiHandleDeref(w.teH)
+    w.hbarsH = rtUiAllocLocked(nWidgets * 4)
+    w.hbars = UiHandleDeref(w.hbarsH)
+    w.enabledH = rtUiAllocLocked(nWidgets)
+    w.logicalEnabled = UiHandleDeref(w.enabledH)
+    w.listsH = rtUiAllocLocked(nWidgets * 4)
+    w.lists = UiHandleDeref(w.listsH)
+    w.popupsH = rtUiAllocLocked(nWidgets * 4)
+    w.popups = UiHandleDeref(w.popupsH)
+    w.popupSelH = rtUiAllocLocked(nWidgets * 4)
+    w.popupSel = UiHandleDeref(w.popupSelH)
+    w.focusIdx = -1
+
+    i = 0
+    while i < nWidgets {
+        pokel(rtUiCanvasBufAt(w, i) + 32, 8) // canvases[i].patLevel = 8
+        pokeb(w.logicalEnabled + i, 1)
+        i = i + 1
+    }
+
+    // Natural size (no `size:` at all): rt_ui_open's own `reqW == 0`
+    // convention (mac-target-4d Task 9).
+    reqW = uidWinW(winIdx)
+    reqH = uidWinH(winIdx)
+    if reqW == 0 {
+        reqWSlot = UiNewPtr(4)
+        reqHSlot = UiNewPtr(4)
+        rtUiNaturalSize(winIdx, reqWSlot, reqHSlot)
+        reqW = peekl(reqWSlot)
+        reqH = peekl(reqHSlot)
+        UiDisposePtr(reqWSlot)
+        UiDisposePtr(reqHSlot)
+    }
+
+    // Screen-bounds clamp (rt_ui.c:4617-4645): qd.screenBits.bounds is a
+    // QuickDraw GLOBAL -- read via the UiScreenBounds C glue extern
+    // (above) rather than hand-deriving an A5-relative offset.
+    screenBoundsSlot = UiNewPtr(rtUiRectSize)
+    UiScreenBounds(screenBoundsSlot)
+    screenTop = peekw(screenBoundsSlot + 0)
+    screenLeft = peekw(screenBoundsSlot + 2)
+    screenBottom = peekw(screenBoundsSlot + 4)
+    screenRight = peekw(screenBoundsSlot + 6)
+    UiDisposePtr(screenBoundsSlot)
+    screenW = screenRight - screenLeft
+    screenH = screenBottom - screenTop
+
+    left = (screenW - reqW) / 2
+    if left < 4 {
+        left = 4
+    }
+    ww = reqW
+    if ww > screenW - left - rtUiScreenMargin {
+        ww = screenW - left - rtUiScreenMargin
+        if ww < 1 {
+            ww = 1
+        }
+    }
+
+    top = 44
+    hh = reqH
+    if top + hh + rtUiScreenMargin > screenH {
+        top = rtUiMenubarH + rtUiTitlebarH
+        if top + hh + rtUiScreenMargin > screenH {
+            hh = screenH - top - rtUiScreenMargin
+            if hh < 1 {
+                hh = 1
+            }
+        }
+    }
+
+    boundsRect = UiNewPtr(rtUiRectSize)
+    UiSetRect(boundsRect, left, top, left + ww, top + hh)
+
+    formOff = uidWinFormOff(winIdx)
+    if formOff != -1 {
+        if rtUiSys7 {
+            procId = rtUiProcMovableDBox
+        } else {
+            procId = rtUiProcNoGrowDoc
+        }
+    } else if uidWinResizable(winIdx) {
+        procId = rtUiProcZoomDoc
+    } else {
+        procId = rtUiProcNoGrowDoc
+    }
+    titlePtr = uidWinTitle(winIdx)
+    w.wp = UiNewWindow(ptr(0), boundsRect, titlePtr, false, procId, ptr(-1), true, 0)
+    UiDisposePtr(boundsRect)
+    if w.wp == ptr(0) {
+        rtPanic("out of memory")
+    }
+    pokew(w.wp + 108, rtUiWindowKind)
+    UiSetWRefCon(w.wp, int(inst))
+
+    rtUiMakeWidgets(inst)
+    rtUiLayout(inst)
+    rtUiCanvasReallocAll(inst)
+
+    // Initial row population for any table (rt_ui.c:4669-4680): AFTER
+    // layout, not inside rtUiMakeWidgets -- LAddRow's internal
+    // visible-range math needs the real (non-degenerate) cellSize.h/rView
+    // rtUiLayout's own rtUiTableRelayout pass just gave it, not the zero
+    // placeholder UiLNew was created against.
+    i = 0
+    while i < nWidgets {
+        if uidWidgetKind(winIdx, i) == rtUiKindTable {
+            rtUiTableSyncOne(inst, i)
+        }
+        i = i + 1
+    }
+
+    // Auto-focus the FIRST field/textview-kind widget (rt_ui.c:4682-4712,
+    // Task 8 -- FIELD/TEXTVIEW widgets can exist as of this task). MUST run
+    // here, BEFORE ShowWindow/SelectWindow below: rtUiMenuRecomputeDim
+    // (inside rtUiTeSetFocus) keys off UiFrontWindow(), which never returns
+    // a still-invisible window, so this call's own recompute is a
+    // same-behavior no-op -- the real dim flip happens once, moments later,
+    // in rtUiAfterFrontChange's own recompute call below.
+    i = 0
+    while i < nWidgets {
+        if uidWidgetKind(winIdx, i) == rtUiKindField or uidWidgetKind(winIdx, i) == rtUiKindTextview {
+            savedPort = rtUiGetPortSaved()
+            UiSetPort(w.wp)
+            rtUiTeSetFocus(inst, i)
+            UiSetPort(savedPort)
+            i = nWidgets // break
+        } else {
+            i = i + 1
+        }
+    }
+
+    UiShowWindow(w.wp)
+    UiSelectWindow(w.wp)
+    rtUiTraceOpen(winIdx, inst)
+    rtUiAfterFrontChange()
+
+    UiFireWinEvent(winIdx, inst, rtUiEvOpened, 0, 0)
+
+    return inst
+}
+
+// ================================================================
+// Window teardown/close (rt_ui.c:4740-4897). The gModal (forms) carve-out
+// at rtUiCloseInternal's own top (Task 10) lives on that function itself,
+// below -- not here (rtUiTeardownWindow is the shared "actually tear the
+// Toolbox objects down" primitive both the plain and form-cancel paths
+// call). Task 9 adds the table/popup-specific teardown: a
+// table's ListHandle is disposed BEFORE DisposeWindow (rt_ui.c:4747-4767
+// -- its own vertical scrollbar is a real Control Manager control living
+// in THIS window's own control list, so it would be silently
+// double-torn-down if DisposeWindow ran first; the JMP-stub listDefProc
+// Handle is ours to free separately, captured BEFORE UiLDispose, which
+// frees the ListRec it lives in). A popup's menu lives in the Menu
+// Manager's own list (InsertMenu at creation, never the bar), independent
+// of this window's Toolbox objects -- DisposeWindow doesn't touch it, so
+// it gets its own explicit teardown (DeleteMenu + DisposeMenu,
+// rt_ui.c:4816-4827) in the SAME per-widget loop as canvas/TE disposal,
+// below. The System 7 CDEF's own private-data-NULL-out block
+// (rt_ui.c:4768-4791) is omitted -- dead, a popup's `ctrls[wIdx]` always
+// stays ptr(0) this port (the RTUI_POPUP_CDEF gate, uitable.cla's own
+// header note).
+// ================================================================
+
+func rtUiTeardownWindow(inst: ptr) {
+    var w: RtUiWinst
+    var winIdx: int
+    var n: int
+    var i: int
+    var lh: ptr
+    var ldefH: ptr
+
+    w = RtUiWinst(inst)
+    winIdx = w.winIdx
+
+    n = uidWinNWidgets(winIdx)
+    i = 0
+    while i < n {
+        lh = rtUiListAt(w, i)
+        if lh != ptr(0) {
+            ldefH = ptr(peekl(UiHandleDeref(lh) + rtUiListDefProc))
+            UiLDispose(lh)
+            UiDisposeHandle(ldefH)
+        }
+        i = i + 1
+    }
+
+    UiDisposeWindow(w.wp)
+    rtUiTraceClose(winIdx, inst)
+    rtUiAfterFrontChange()
+    rtUiTraceFire1(uidWinName(winIdx), "closed")
+    UiFireWinEvent(winIdx, inst, rtUiEvClosed, 0, 0)
+
+    if w.state != ptr(0) {
+        UiReleaseVars(winIdx, inst)
+    }
+
+    i = 0
+    while i < n {
+        rtUiCanvasDispose(rtUiCanvasBufAt(w, i))
+        // TEHandle is its own separate Handle, not covered by
+        // UiDisposeHandle(w.teH) below (Task 8, rt_ui.c:4815).
+        if rtUiTeAt(w, i) != ptr(0) {
+            UiTEDispose(rtUiTeAt(w, i))
+        }
+        if rtUiPopupAt(w, i) != ptr(0) {
+            UiDeleteMenu(rtUiPopupMenuIdBase + i)
+            UiDisposeMenu(rtUiPopupAt(w, i))
+        }
+        i = i + 1
+    }
+
+    if w.stateH != ptr(0) {
+        UiDisposeHandle(w.stateH)
+    }
+    UiDisposeHandle(w.ctrlsH)
+    UiDisposeHandle(w.rectsH)
+    UiDisposeHandle(w.labelsH)
+    UiDisposeHandle(w.canvasH)
+    UiDisposeHandle(w.teH)
+    UiDisposeHandle(w.hbarsH)
+    UiDisposeHandle(w.enabledH)
+    UiDisposeHandle(w.listsH)
+    UiDisposeHandle(w.popupsH)
+    UiDisposeHandle(w.popupSelH)
+    UiDisposeHandle(w.selfH)
+}
+
+func rtUiCloseInternal(inst: ptr): bool {
+    var w: RtUiWinst
+    var winIdx: int
+    var cancelSlot: ptr
+    var cancelled: bool
+
+    // Form carve-out (rt_ui.c:4874-4881, Task 10): the currently-modal
+    // window routes to rtUiFormCancel (same carve-out the close-box path
+    // already had, below) BEFORE the generic closeRequest path even runs,
+    // and ALWAYS reports "closed" -- a form has no dirty-document veto of
+    // its own. rtUiFormCancel disposes the window itself, so this returns
+    // immediately after -- nothing below double-closes it. Root-caused
+    // HERE (rt_ui.c's own Fix round 1 writeup, verbatim): a form window
+    // reaching rt_ui_close_internal used to fire a plain closeRequest
+    // (wrong: forms never get that hook) and never ran form teardown, so
+    // gModal stayed `active` with `inst` pointing at memory this function
+    // was about to free -- every later click dereferenced that dangling
+    // pointer, permanently bricking the app. This is the ONE choke point
+    // every caller (rtUiClose, rtUiQuit's cascade, and the close-box/
+    // scripted-close paths that funnel through rtUiClose) shares, so
+    // fixing it here covers all of them at once.
+    if rtUiModalActive and inst == rtUiModalInst {
+        rtUiFormCancel(inst)
+        return true
+    }
+
+    w = RtUiWinst(inst)
+    winIdx = w.winIdx
+    rtUiTraceFire1(uidWinName(winIdx), "closeRequest")
+    cancelSlot = UiNewPtr(4)
+    pokel(cancelSlot, 0)
+    UiFireWinEvent(winIdx, inst, rtUiEvCloseRequest, int(cancelSlot), 0)
+    cancelled = peekl(cancelSlot) != 0
+    UiDisposePtr(cancelSlot)
+    if cancelled {
+        return false
+    }
+    rtUiTeardownWindow(inst)
+    return true
+}
+
+func rtUiClose(instV: ptr) {
+    var ok: bool
+    ok = rtUiCloseInternal(instV)
+}
+
+func rtUiQuit() {
+    var wp: ptr
+    var next: ptr
+    var inst: ptr
+
+    wp = UiFrontWindow()
+    while wp != ptr(0) {
+        next = ptr(peekl(wp + 144))
+        if rtUiIsOurs(wp) {
+            inst = ptr(UiGetWRefCon(wp))
+            if not rtUiCloseInternal(inst) {
+                return
+            }
+        }
+        wp = next
+    }
+    UiRtQuit(0)
+}
+
+// ================================================================
+// Toolbox scratch-out-param helpers (GlobalToLocal/GetMouse both take an
+// IN/OUT or OUT Point* -- same fresh-scratch-slot pattern as
+// rtUiGetPortSaved's own header comment explains, uiwidgets.cla).
+// ================================================================
+
+func rtUiGlobalToLocalPt(pt: int): int {
+    var slot: ptr
+    var result: int
+
+    slot = UiNewPtr(4)
+    pokel(slot, pt)
+    UiGlobalToLocal(slot)
+    result = peekl(slot)
+    UiDisposePtr(slot)
+    return result
+}
+
+func rtUiGetMousePt(): int {
+    var slot: ptr
+    var v: int
+
+    slot = UiNewPtr(4)
+    UiGetMouse(slot)
+    v = peekl(slot)
+    UiDisposePtr(slot)
+    return v
+}
+
+func rtUiHiWord(v: int): int {
+    return (v >> 16) & 0xFFFF
+}
+
+func rtUiLoWord(v: int): int {
+    return v & 0xFFFF
+}
+
+// ================================================================
+// Menus (rt_ui.c:2198-2384, 2483-2656, Ch9). `string`-typed extern
+// overloads (NOT `ptr`) for the handful of Toolbox calls this section
+// makes with a COMPILE-TIME LITERAL string (never blob data) -- per Task
+// 7 report log entry #6, a `string`-typed extern param auto-marshals the
+// address of a genuine Clarus `string`/string-literal expression, simpler
+// than hand-building a scratch Pascal-string buffer byte by byte for a
+// fixed literal. (Note: the language reference's own extern-param prose
+// says "str" descriptively -- the actual keyword the checker accepts is
+// `string` [`TxString`/`resolveType`, clarusc/check.cla:1364]; a bare
+// `str` identifier is undefined. Caught by this file's own first compile
+// attempt.) The apple-menu title (a single MacRoman 0x14 byte, not
+// ASCII) and the "About <name>..." composite (mixing a literal prefix
+// with blob-sourced name bytes) still need the manual `ptr`+pokeb/
+// BlockMoveData approach -- see rtUiBuildAppleMenu.
+// ================================================================
+external func UiNewMenuStr(menuId: word, menuTitle: string): ptr = trap 0xA931
+external func UiAppendMenuStr(theMenu: ptr, data: string) = trap 0xA933
+
+func rtUiAboutPrefixPtr(): ptr {
+    var p: ptr
+
+    p = UiNewPtr(7)
+    pokeb(p, 6)
+    pokeb(p + 1, int('A'))
+    pokeb(p + 2, int('b'))
+    pokeb(p + 3, int('o'))
+    pokeb(p + 4, int('u'))
+    pokeb(p + 5, int('t'))
+    pokeb(p + 6, int(' '))
+    return p
+}
+
+var rtUiEmptyPStrCache: ptr = ptr(0)
+
+func rtUiEmptyPStrGet(): ptr {
+    if rtUiEmptyPStrCache == ptr(0) {
+        rtUiEmptyPStrCache = UiNewPtr(1)
+        pokeb(rtUiEmptyPStrCache, 0)
+    }
+    return rtUiEmptyPStrCache
+}
+
+// rtUiBuildAppleMenu (rt_ui.c:2244-2281). The apple-logo title byte
+// (MacRoman 0x14) is built via `pokeb` with a NUMERIC literal, never
+// typed into this source file directly (project convention: MacRoman
+// bytes corrupt under the Edit tool -- see CLAUDE.md/project memory on
+// this; expressing the byte as `0x14` sidesteps the whole hazard, it's
+// plain ASCII source either way).
+func rtUiBuildAppleMenu() {
+    var titleBuf: ptr
+    var buf: ptr
+    var prefix: ptr
+    var n: int
+    var appName: ptr
+    var appNameLen: int
+
+    titleBuf = UiNewPtr(2)
+    pokeb(titleBuf, 1)
+    pokeb(titleBuf + 1, 0x14)
+    rtUiAppleMenuHandle = UiNewMenu(rtUiAppleMenuId, titleBuf)
+    UiDisposePtr(titleBuf)
+
+    appName = uidAppName()
+    if appName != ptr(0) and peekb(appName) != 0 {
+        appNameLen = peekb(appName)
+        buf = UiNewPtr(264)
+        prefix = rtUiAboutPrefixPtr()
+        rtUiPstrcpy(buf, prefix)
+        UiDisposePtr(prefix)
+        n = peekb(buf)
+        UiBlockMoveData(appName + 1, buf + 1 + n, appNameLen)
+        n = n + appNameLen
+        pokeb(buf + 1 + n, 0xC9) // MacRoman ellipsis
+        pokeb(buf, n + 1)
+        UiAppendMenu(rtUiAppleMenuHandle, buf)
+        UiDisposePtr(buf)
+        UiAppendMenuStr(rtUiAppleMenuHandle, "-")
+    } else {
+        UiAppendMenuStr(rtUiAppleMenuHandle, "About This Application;-")
+    }
+    UiAppendResMenu(rtUiAppleMenuHandle, 0x44525652) // 'DRVR'
+    UiInsertMenu(rtUiAppleMenuHandle, 0)
+}
+
+// rtUiAboutParam (new). Substitutes the cached empty Pascal string for
+// an absent `uidApp*` property (each getter returns `ptr(0)` when the
+// `app` section omits that field) so UiParamText always gets a real
+// Pascal-string pointer.
+func rtUiAboutParam(p: ptr): ptr {
+    if p == ptr(0) {
+        return rtUiEmptyPStrGet()
+    }
+    return p
+}
+
+// rtUiAboutAlert (new). Real About display for an app-declared program:
+// ALRT/DITL 129's ParamText slots are ^0=name, ^1=version, ^2=author,
+// ^3=about (see clarusc/cg68k.cla:12386-12393 / scripts/build-mac.sh:103-110
+// for where 129 is emitted on each lane).
+func rtUiAboutAlert() {
+    UiParamText(rtUiAboutParam(uidAppName()), rtUiAboutParam(uidAppVersion()), rtUiAboutParam(uidAppAuthor()), rtUiAboutParam(uidAppAbout()))
+    UiNoteAlert(129, ptr(0))
+}
+
+// rtUiAppleSelect (rt_ui.c:2283-2306). The real (non-RT_MAC_TEST) About
+// path (ALRT 129 for an app-declared program, NoteAlert 128 otherwise)
+// and the DA-list dispatch (item > 1) are never exercised by any golden
+// scenario (every one is script-driven, so rtUiTraceAbout's own branch
+// always runs instead) -- ported for contract completeness.
+func rtUiAppleSelect(itemNum: int) {
+    var empty: ptr
+    var itemNameBuf: ptr
+
+    if itemNum == 1 {
+        if rtUiScripted {
+            rtUiTraceAbout()
+            return
+        }
+        if uidHasApp() and uidAppName() != ptr(0) and peekb(uidAppName()) != 0 {
+            rtUiAboutAlert()
+        } else {
+            empty = rtUiEmptyPStrGet()
+            UiParamText(ptr(0x910), empty, empty, empty) // LMGetCurApName == ptr(0x910) directly
+            UiNoteAlert(128, ptr(0))
+        }
+        return
+    }
+    itemNameBuf = UiNewPtr(256)
+    UiGetMenuItemText(rtUiAppleMenuHandle, itemNum, itemNameBuf)
+    UiOpenDeskAcc(itemNameBuf)
+    UiDisposePtr(itemNameBuf)
+}
+
+// rtUiBuildMenus (rt_ui.c:2308-2373).
+func rtUiBuildMenus() {
+    var nMenus: int
+    var i: int
+    var j: int
+    var mh: ptr
+    var nItems: int
+    var buf: ptr
+    var n: int
+    var key: int
+
+    nMenus = uidNMenus()
+    rtUiNMenusVal = nMenus
+    if nMenus > 0 {
+        rtUiMenuHandlesArr = UiNewPtrClear(nMenus * 4)
+    } else {
+        rtUiMenuHandlesArr = ptr(0)
+    }
+    i = 0
+    while i < nMenus {
+        mh = UiNewMenu(rtUiMenuIdBase + i, uidMenuTitle(i))
+        if uidMenuIsStandardEdit(i) {
+            UiAppendMenuStr(mh, "Undo/Z")
+            UiAppendMenuStr(mh, "-")
+            UiAppendMenuStr(mh, "Cut/X")
+            UiAppendMenuStr(mh, "Copy/C")
+            UiAppendMenuStr(mh, "Paste/V")
+            UiAppendMenuStr(mh, "Clear")
+            UiDisableItem(mh, 1)
+            if rtUiStdEditMenuIdx < 0 {
+                rtUiStdEditMenuIdx = i
+            }
+        } else {
+            nItems = uidMenuNItems(i)
+            j = 0
+            while j < nItems {
+                if uidItemSeparator(i, j) {
+                    UiAppendMenuStr(mh, "-")
+                } else {
+                    buf = UiNewPtr(258)
+                    rtUiPstrcpy(buf, uidItemLabel(i, j))
+                    n = peekb(buf)
+                    key = uidItemKey(i, j)
+                    if key != 0 {
+                        pokeb(buf + 1 + n, int('/'))
+                        pokeb(buf + 2 + n, key)
+                        pokeb(buf, n + 2)
+                    }
+                    UiAppendMenu(mh, buf)
+                    UiDisposePtr(buf)
+                }
+                j = j + 1
+            }
+        }
+        UiInsertMenu(mh, 0)
+        pokel(rtUiMenuHandlesArr + i * 4, int(mh))
+        i = i + 1
+    }
+    UiDrawMenuBar()
+}
+
+func rtUiMenuEnable(menuIdx: int, itemIdx: int, enable: bool) {
+    var mh: ptr
+
+    if rtUiMenuHandlesArr == ptr(0) or menuIdx < 0 or menuIdx >= rtUiNMenusVal {
+        return
+    }
+    mh = ptr(peekl(rtUiMenuHandlesArr + menuIdx * 4))
+    if mh == ptr(0) {
+        return
+    }
+    if enable {
+        UiEnableItem(mh, itemIdx + 1)
+    } else {
+        UiDisableItem(mh, itemIdx + 1)
+    }
+}
+
+// rtUiMenuRecomputeDim (rt_ui.c:2483-2524). scopeWinIdx == -1 ("no
+// scope") mirrors the C reference's own `if (!h->scope) continue;`.
+func rtUiMenuRecomputeDim() {
+    var k: int
+    var nMh: int
+    var scopeWinIdx: int
+    var enable: bool
+    var front: ptr
+    var j: int
+
+    nMh = uidNMenuHandlers()
+    k = 0
+    while k < nMh {
+        scopeWinIdx = uidMenuHandlerScopeWinIdx(k)
+        if scopeWinIdx != -1 {
+            enable = rtUiFront(scopeWinIdx) != ptr(0)
+            rtUiMenuEnable(uidMenuHandlerMenuIdx(k), uidMenuHandlerItemIdx(k), enable)
+            rtUiTraceDimCheck(k, enable)
+        }
+        k = k + 1
+    }
+    if rtUiStdEditMenuIdx >= 0 {
+        front = rtUiWinstOf(UiFrontWindow())
+        enable = front != ptr(0) and RtUiWinst(front).focusIdx >= 0
+        j = 2
+        while j <= 5 {
+            rtUiMenuEnable(rtUiStdEditMenuIdx, j, enable)
+            j = j + 1
+        }
+        rtUiTraceStdEditDim(enable)
+    }
+    rtUiTraceDimFirstDone()
+}
+
+func rtUiAfterFrontChange() {
+    rtUiMenuRecomputeDim()
+    rtUiTraceFrontCheck()
+}
+
+// rtUiStdEditDispatch (rt_ui.c:2560-2619). itemIdx is 0-based, matching
+// the fixed layout rtUiBuildMenus appended (0=Undo, 1=separator, 2=Cut,
+// 3=Copy, 4=Paste, 5=Clear) -- Undo/the separator fall out silently, no
+// focused TE is a silent no-op (native dimming ordinarily keeps a real
+// click/cmd-key from reaching here otherwise, but a scripted `menu M I`
+// call bypasses that gate, so both are guarded defensively here too).
+// Cut/Paste/Clear route their TE mutation through rtUiTeMutated as a USER
+// edit; Copy does not mutate, so it fires no change event/trace at all.
+// PORT DISCIPLINE RULE: self-asserts/restores the port around the TE
+// calls, which draw.
+func rtUiStdEditDispatch(itemIdx: int) {
+    var front: ptr
+    var inst: ptr
+    var w: RtUiWinst
+    var te: ptr
+    var savedPort: ptr
+
+    front = UiFrontWindow()
+    if not rtUiIsOurs(front) {
+        // SystemEdit-to-frontmost-desk-accessory forwarding (rt_ui.c:
+        // 2566-2568): ponytail, skipped -- SystemEdit isn't a plain
+        // A-line trap (not in Retro68's Traps.h under that name; a Desk
+        // Manager glue routine with a different calling shape) and this
+        // path needs a REAL desk accessory frontmost, unreachable by any
+        // scripted golden scenario. Add a real extern + this call if a
+        // DA-interop scenario is ever added.
+        return
+    }
+    if itemIdx < 2 or itemIdx > 5 {
+        return // Undo (permanently disabled) or the separator
+    }
+    inst = rtUiWinstOf(front)
+    if inst == ptr(0) {
+        return
+    }
+    w = RtUiWinst(inst)
+    if w.focusIdx < 0 {
+        return
+    }
+    te = rtUiTeAt(w, w.focusIdx)
+    if te == ptr(0) {
+        return
+    }
+    savedPort = rtUiGetPortSaved()
+    UiSetPort(w.wp)
+    if itemIdx == 2 { // Cut
+        UiTECut(te)
+        UiZeroScrap()
+        UiTEToScrap()
+        rtUiTeMutated(inst, w.focusIdx, true)
+    } else if itemIdx == 3 { // Copy: no mutation -- no change trace/event (pinned)
+        UiTECopy(te)
+        UiZeroScrap()
+        UiTEToScrap()
+    } else if itemIdx == 4 { // Paste -- see rtUiStdEditPaste's own comment (uitext.cla)
+        rtUiStdEditPaste(inst, te)
+    } else if itemIdx == 5 { // Clear
+        UiTEDelete(te)
+        rtUiTeMutated(inst, w.focusIdx, true)
+    }
+    UiSetPort(savedPort)
+}
+
+// rtUiMenuDispatch (rt_ui.c:2623-2656). `h->fire` (a C function pointer)
+// becomes an unconditional `UiFireMenu(k, front)` call -- the
+// synthesized dispatcher itself, per Task 6's report.
+func rtUiMenuDispatch(result: int) {
+    var menuID: int
+    var itemNum: int
+    var menuIdx: int
+    var itemIdx: int
+    var k: int
+    var nMh: int
+    var front: ptr
+    var scopeWinIdx: int
+    var skip: bool
+
+    menuID = rtUiHiWord(result)
+    itemNum = rtUiLoWord(result)
+    UiHiliteMenu(0)
+    if menuID == 0 {
+        return
+    }
+    if menuID == rtUiAppleMenuId {
+        rtUiAppleSelect(itemNum)
+        return
+    }
+    menuIdx = menuID - rtUiMenuIdBase
+    itemIdx = itemNum - 1
+    if menuIdx == rtUiStdEditMenuIdx {
+        rtUiStdEditDispatch(itemIdx)
+        return
+    }
+    nMh = uidNMenuHandlers()
+    k = 0
+    while k < nMh {
+        if uidMenuHandlerMenuIdx(k) == menuIdx and uidMenuHandlerItemIdx(k) == itemIdx {
+            scopeWinIdx = uidMenuHandlerScopeWinIdx(k)
+            skip = false
+            if scopeWinIdx != -1 {
+                front = rtUiFront(scopeWinIdx)
+                if front == ptr(0) {
+                    skip = true
+                }
+            } else {
+                front = ptr(0)
+            }
+            if not skip {
+                rtUiTraceMenuSelectFor(k)
+                UiFireMenu(k, front)
+            }
+        }
+        k = k + 1
+    }
+}
+
+// ================================================================
+// Every (rt_ui.c:3670-3715).
+// ================================================================
+
+func rtUiBuildEvery() {
+    var n: int
+    var now: int
+    var i: int
+
+    n = uidNEvery()
+    rtUiNEveryVal = n
+    if n > 0 {
+        rtUiEveryDueArr = UiNewPtrClear(n * 4)
+    } else {
+        rtUiEveryDueArr = ptr(0)
+    }
+    if peekb(UiTestScript()) != 0 {
+        now = 0
+    } else {
+        now = UiTickCount()
+    }
+    i = 0
+    while i < n {
+        pokel(rtUiEveryDueArr + i * 4, now + uidEveryTicks(i))
+        i = i + 1
+    }
+}
+
+// rtUiEveryPump (rt_ui.c:3700-3715). The `(long)(now - due) < 0`
+// tick-wraparound comparison ports AS-IS (Task 7 brief's porting rules:
+// "int arithmetic wraps identically") -- inverted here into a fire
+// condition (`now - due >= 0`) rather than the C reference's own skip
+// condition, same logic either way.
+//
+// Task 6 (native-gaps-cleanup) root-cause fix: this is the ONE place that
+// touches `rtUiEveryDueArr` without checking `rtUiScripted` first (every
+// other every-array reader/writer -- rtUiScriptEveryPump, UiTestTick,
+// rtUiRun, rtUiLaunch -- gates on `rtUiScripted`/`UiTestScript()`).
+// `rtUiBuildEvery`'s own scripted-vs-real seed IS correct (verified with a
+// temporary debug probe, boot, read, revert: `peekb(UiTestScript())` reads
+// nonzero and `now` seeds to `0` at build time, every time) -- the actual
+// bug is here: `rtUiRun`'s real (non-scripted) event-loop branch calls this
+// unconditionally, but so does test-suite code that legitimately needs the
+// REAL loop's idle work for its OWN purpose while a build is otherwise
+// scripted (testsuite/toolbox/cases_uitest.cla's `casePostEventClick`,
+// which drives a REAL PostEvent-queued click through `UiGetNextEvent`/
+// `rtUiHandleMouseDown` because a virtual `tick` never drains the real OS
+// event queue -- see that case's own header comment). Called while
+// `rtUiScripted` is already true (any composed `--testapi`/`--events`
+// build, set the moment `rtUiRunScripted` starts), it used real
+// `UiTickCount()` (~46 ticks into a suite-sized boot) to reschedule EVERY
+// program-wide every-block's `due` -- including one whose owning window
+// isn't even open yet (the pump has no per-window scope) -- stomping the
+// virtual-tick-seeded schedule with a real-tick one that `rtUiScriptTick`'s
+// own virtual counter (starting at 0) then took ages to catch up to.
+// Forwarding to the scripted twin here, once, fixes every such caller at
+// the source (ponytail: fix the root, not each call site) instead of
+// auditing every current and future real-loop-idle-work caller for its own
+// `rtUiScripted` guard. Unreachable in every frozen golden scenario (all
+// `--events`-driven, so `rtUiRun` always takes rtUiRunScripted's branch and
+// never enters its own real loop -- ui.cla's own header comment on
+// rtUiRun) -- this function is simply never CALLED during any of their
+// boots, scripted or not, so this change cannot affect their trace/snap
+// output.
+func rtUiEveryPump() {
+    var now: int
+    var i: int
+    var due: int
+
+    if rtUiScripted {
+        rtUiScriptEveryPump()
+        return
+    }
+    if rtUiEveryDueArr == ptr(0) {
+        return
+    }
+    now = UiTickCount()
+    i = 0
+    while i < rtUiNEveryVal {
+        due = peekl(rtUiEveryDueArr + i * 4)
+        if now - due >= 0 {
+            pokel(rtUiEveryDueArr + i * 4, now + uidEveryTicks(i))
+            rtUiTraceEveryFire(i)
+            UiFireEvery(i)
+        }
+        i = i + 1
+    }
+}
+
+// ================================================================
+// rtUiStartup (rt_ui.c:3727-3751) -- ZERO ARGS (report log entry #5):
+// every count/table the C reference's own 8-arg signature took now comes
+// straight from the blob via UiProgDesc()/uidesc.cla accessors.
+// gestaltSystemVersion selector = FourCharCode 'sysv' = 0x73797376
+// (Gestalt.h); everyEvent mask = 0xFFFF (Events.h).
+// ================================================================
+
+func rtUiStartup() {
+    var resp: int
+    var err: int
+
+    UiMacInitToolbox()
+    UiFlushEvents(0x0000FFFF)
+    // Two calls, one per result register -- Gestalt's raw trap returns the
+    // OSErr in D0 and the response value in A0, and a `reg` extern names
+    // only one `ret` register (see this file's own header comment). Gestalt
+    // is a pure query, so asking twice is safe.
+    err = UiGestaltErr(0x73797376)
+    if err == 0 {
+        resp = UiGestaltValue(0x73797376)
+    } else {
+        resp = 0
+    }
+    // `resp` is a small BCD-encoded system version (0x0608 for 6.0.8,
+    // 0x0700 for 7.0.0, ...). The upper `< 0x1000` bound (Task 14,
+    // native-5e) papered over the native lane's then-broken Gestalt
+    // binding, which left the response slot holding uninitialized heap
+    // garbage -- large, pointer-shaped, and >= 0x0700 by pure chance, so a
+    // bare `>= 0x0700` misread "no response at all" as "System 7" and
+    // picked rtUiProcMovableDBox chrome for every form window on a real
+    // System 6 target. pack3-standardfile Task 5a fixed the binding
+    // (UiGestaltValue reads A0); the bound stays anyway as a cheap sanity
+    // guard on a value that drives WDEF selection, and is a no-op for any
+    // genuine response.
+    rtUiSys7 = resp >= 0x0700 and resp < 0x1000
+    rtUiBuildAppleMenu()
+    rtUiBuildMenus()
+    rtUiTraceInit()
+    rtUiMenuRecomputeDim()
+    rtUiBuildEvery()
+}
+
+// ================================================================
+// rtUiFlushAllBuffered (rt_ui.c:2189-2196) -- the ONE "walk every open
+// window" umbrella that lives here rather than uiwidgets.cla (needs the
+// same windowKind/nextWindow offsets rtUiQuit/rtUiFront already use).
+// ================================================================
+
+func rtUiFlushAllBuffered() {
+    var wp: ptr
+
+    wp = UiFrontWindow()
+    while wp != ptr(0) {
+        if peekw(wp + 108) == rtUiWindowKind {
+            rtUiFlushBufferedCanvases(ptr(UiGetWRefCon(wp)))
+        }
+        wp = ptr(peekl(wp + 144))
+    }
+}
+
+// ================================================================
+// Update / activate (rt_ui.c:2748-2971). POPUP (rt_ui.c:2822-2878, System 6
+// manual box -- the RTUI_POPUP_CDEF branch is excluded, see uitable.cla's
+// own header note) and TABLE (rt_ui.c:2879-2911, header strip + LUpdate)
+// draw branches added Task 9.
+// ================================================================
+
+func rtUiDrawDefaultOutline(box: ptr) {
+    var r: ptr
+
+    r = UiNewPtr(rtUiRectSize)
+    UiBlockMoveData(box, r, rtUiRectSize)
+    UiInsetRect(r, -4, -4)
+    UiPenSize(3, 3)
+    UiFrameRoundRect(r, 16, 16)
+    UiPenNormal()
+    UiDisposePtr(r)
+}
+
+func rtUiHandleUpdate(wp: ptr) {
+    var inst: ptr
+    var w: RtUiWinst
+    var n: int
+    var i: int
+    var kind: int
+    var flags: int
+    var s: ptr
+    var corner: ptr
+    var saveClip: ptr
+    var te: ptr
+    var teMp: ptr
+    var frame: ptr
+    var labelRect: ptr
+    var box: ptr
+    var itemText: ptr
+    var textRect: ptr
+    var popupH: ptr
+    var cx: int
+    var cy: int
+    var pk: int
+    var lh: ptr
+    var lhMp: ptr
+    var tableOff: int
+    var colsOff: int
+    var nCols: int
+    var fillW: int
+    var hx: int
+    var headerRect: ptr
+    var ck: int
+
+    UiSetPort(wp)
+    UiBeginUpdate(wp)
+    inst = rtUiWinstOf(wp)
+    if inst != ptr(0) {
+        w = RtUiWinst(inst)
+        UiDrawControls(wp)
+        if uidWinResizable(w.winIdx) {
+            corner = UiNewPtr(rtUiRectSize)
+            UiSetRect(corner, peekw(wp + 22) - rtUiScrollbarW, peekw(wp + 20) - rtUiScrollbarW, peekw(wp + 22), peekw(wp + 20))
+            saveClip = UiNewRgn()
+            UiGetClip(saveClip)
+            UiClipRect(corner)
+            UiDrawGrowIcon(wp)
+            UiSetClip(saveClip)
+            UiDisposeRgn(saveClip)
+            UiDisposePtr(corner)
+        }
+        n = uidWinNWidgets(w.winIdx)
+        i = 0
+        while i < n {
+            kind = uidWidgetKind(w.winIdx, i)
+            if kind == rtUiKindLabel {
+                s = rtUiLabelAt(w, i)
+                UiTextBox(s + 1, peekb(s), rtUiRectAt(w, i), 0)
+            } else if kind == rtUiKindButton {
+                flags = uidWidgetFlags(w.winIdx, i)
+                if (flags & rtUiFlagDefault) != 0 {
+                    rtUiDrawDefaultOutline(rtUiRectAt(w, i))
+                }
+            } else if kind == rtUiKindField or kind == rtUiKindTextview {
+                // Field/textview draw a frame around their TE view
+                // (un-insetting rtUiTeRelayout's own inset gives back
+                // exactly the box that inset came from), then TEUpdate for
+                // the text/caret itself; a field additionally draws its
+                // `label:` lane the same TETextBox way RTUI_LABEL does,
+                // just narrower (rt_ui.c:2791-2821).
+                te = rtUiTeAt(w, i)
+                if te != ptr(0) {
+                    frame = UiNewPtr(rtUiRectSize)
+                    teMp = UiHandleDeref(te) // AFTER the NewPtr -- it can relocate te
+                    UiBlockMoveData(teMp + rtUiTeViewRect, frame, rtUiRectSize)
+                    UiInsetRect(frame, 0 - rtUiTeFrameInset, 0 - rtUiTeFrameInset)
+                    // Flush edges (fix-flush): push a frame edge that lands
+                    // on the portRect boundary 1px outward so it merges
+                    // with the window frame.
+                    if peekw(frame + 2) <= 0 {
+                        pokew(frame + 2, -1)
+                    }
+                    if peekw(frame + 0) <= 0 {
+                        pokew(frame + 0, -1)
+                    }
+                    UiFrameRect(frame)
+                    UiDisposePtr(frame)
+                    UiTEUpdate(teMp + rtUiTeViewRect, te)
+                }
+                if kind == rtUiKindField and peekb(rtUiLabelAt(w, i)) > 0 {
+                    labelRect = UiNewPtr(rtUiRectSize)
+                    UiBlockMoveData(rtUiRectAt(w, i), labelRect, rtUiRectSize)
+                    pokew(labelRect + 6, peekw(labelRect + 2) + rtUiFieldLabelW - 4)
+                    s = rtUiLabelAt(w, i)
+                    UiTextBox(s + 1, peekb(s), labelRect, 0)
+                    UiDisposePtr(labelRect)
+                }
+            } else if kind == rtUiKindPopup and rtUiCtrlAt(w, i) == ptr(0) {
+                // label lane (same TETextBox lane a field's own `label:`
+                // uses), then the box itself: FrameRect + a 1px drop
+                // shadow, the current item's text, and a small filled
+                // down-arrow triangle at the right end (rt_ui.c:2832-2878).
+                if peekb(rtUiLabelAt(w, i)) > 0 {
+                    labelRect = UiNewPtr(rtUiRectSize)
+                    UiBlockMoveData(rtUiRectAt(w, i), labelRect, rtUiRectSize)
+                    pokew(labelRect + 6, peekw(labelRect + 2) + rtUiFieldLabelW - 4)
+                    s = rtUiLabelAt(w, i)
+                    UiTextBox(s + 1, peekb(s), labelRect, 0)
+                    UiDisposePtr(labelRect)
+                }
+                box = UiNewPtr(rtUiRectSize)
+                rtUiPopupBoxInto(inst, i, box)
+                UiFrameRect(box)
+                UiMoveTo(peekw(box + 2) + 1, peekw(box + 4) + 1)
+                UiLineTo(peekw(box + 6) + 1, peekw(box + 4) + 1)
+                UiLineTo(peekw(box + 6) + 1, peekw(box + 0) + 1)
+                popupH = rtUiPopupAt(w, i)
+                if popupH != ptr(0) {
+                    // Zeroed first: an empty popup leaves GetMenuItemText's
+                    // out-of-range behavior on item 1 unspecified --
+                    // pre-zeroing guarantees "draws empty" (rt_ui.h's
+                    // defensive contract).
+                    itemText = UiNewPtr(256)
+                    pokeb(itemText, 0)
+                    UiGetMenuItemText(popupH, rtUiPopupSelAt(w, i) + 1, itemText)
+                    textRect = UiNewPtr(rtUiRectSize)
+                    UiBlockMoveData(box, textRect, rtUiRectSize)
+                    UiInsetRect(textRect, 4, 2)
+                    pokew(textRect + 6, peekw(textRect + 6) - 16) // room for the arrow
+                    UiTextBox(itemText + 1, peekb(itemText), textRect, 0)
+                    UiDisposePtr(itemText)
+                    UiDisposePtr(textRect)
+
+                    cx = peekw(box + 6) - 10
+                    cy = (peekw(box + 0) + peekw(box + 4)) / 2 - 2
+                    pk = 0
+                    while pk < 5 {
+                        UiMoveTo(cx - pk, cy + pk)
+                        UiLineTo(cx + pk, cy + pk)
+                        pk = pk + 1
+                    }
+                }
+                UiDisposePtr(box)
+            } else if kind == rtUiKindTable and rtUiListAt(w, i) != ptr(0) {
+                // Header strip: a frame around the whole widget, column
+                // headers drawn at each column's x position (same
+                // rtUiTableFillWidth the LDEF uses, so the two can never
+                // disagree on boundaries), a divider line under the strip,
+                // then LUpdate to let the LDEF draw the actual cell rows
+                // for whatever part of the update region falls inside the
+                // LM view (rt_ui.c:2879-2911). The divider is drawn at
+                // rView.top - 1, not rView.top: that row is the shared
+                // border with the LM view and with the scrollbar's top
+                // frame line, so the LDEF's per-cell EraseRect (which
+                // covers rView.top and below) can never erase it.
+                lh = rtUiListAt(w, i)
+                tableOff = uidWidgetTableOff(w.winIdx, i)
+                colsOff = uidTableColsOff(tableOff)
+                nCols = uidTableNCols(tableOff)
+                box = UiNewPtr(rtUiRectSize)
+                UiBlockMoveData(rtUiRectAt(w, i), box, rtUiRectSize)
+                headerRect = UiNewPtr(rtUiRectSize)
+                UiBlockMoveData(box, headerRect, rtUiRectSize)
+                lhMp = UiHandleDeref(lh) // AFTER both NewPtrs -- they can relocate lh
+                pokew(headerRect + 4, peekw(lhMp + rtUiListRView + 0)) // .bottom = view.top
+                UiFrameRect(box)
+                fillW = rtUiTableFillWidth(colsOff, nCols, peekw(lhMp + rtUiListRView + 6) - peekw(lhMp + rtUiListRView + 2))
+                hx = peekw(lhMp + rtUiListRView + 2)
+                ck = 0
+                while ck < nCols {
+                    UiMoveTo(hx + 2, peekw(headerRect + 4) - 3)
+                    UiDrawText(uidColHeader(colsOff, ck) + 1, 0, peekb(uidColHeader(colsOff, ck)))
+                    if uidColWidthFill(colsOff, ck) {
+                        hx = hx + fillW
+                    } else {
+                        hx = hx + uidColWidthPx(colsOff, ck)
+                    }
+                    ck = ck + 1
+                }
+                UiMoveTo(peekw(box + 2), peekw(headerRect + 4) - 1)
+                UiLineTo(peekw(box + 6), peekw(headerRect + 4) - 1)
+                // ((GrafPtr)wp)->visRgn -- GrafPort.visRgn @ offset 24 (device
+                // INTEGER 2 + portBits BitMap 14 + portRect Rect 8 = 24,
+                // GrafPort is WindowRecord's first field at offset 0 --
+                // same derivation rtUiHandleGrow's own header comment
+                // spells out in full, just above).
+                UiLUpdate(ptr(peekl(wp + 24)), lh)
+                UiDisposePtr(headerRect)
+                UiDisposePtr(box)
+            }
+            i = i + 1
+        }
+        rtUiFlushBufferedCanvases(inst)
+    }
+    UiEndUpdate(wp)
+}
+
+func rtUiHandleActivate(wp: ptr, activating: bool) {
+    var inst: ptr
+    var w: RtUiWinst
+    var n: int
+    var i: int
+    var ctrl: ptr
+    var hb: ptr
+    var lh: ptr
+    var te: ptr
+    var enable: bool
+
+    inst = rtUiWinstOf(wp)
+    if inst == ptr(0) {
+        return
+    }
+    w = RtUiWinst(inst)
+    UiSetPort(wp)
+    n = uidWinNWidgets(w.winIdx)
+    i = 0
+    while i < n {
+        ctrl = rtUiCtrlAt(w, i)
+        if ctrl != ptr(0) {
+            enable = activating and rtUiEnabledAt(w, i)
+            if enable {
+                UiHiliteControl(ctrl, 0)
+            } else {
+                UiHiliteControl(ctrl, 255)
+            }
+        }
+        // fix-hbar: the H bar joins the same dim loop as the V bar --
+        // no logicalEnabled gate, that array is only ever set for
+        // BUTTONs (rt_ui.c:2951-2954, Task 8).
+        hb = rtUiHbarAt(w, i)
+        if hb != ptr(0) {
+            if activating {
+                UiHiliteControl(hb, 0)
+            } else {
+                UiHiliteControl(hb, 255)
+            }
+        }
+        // rt_ui.c:2956 -- a table's List Manager list (de)activates with
+        // its window, so the list's own scroll bar hides its arrows and a
+        // selection un-hilites while the window isn't frontmost. Missed by
+        // Task 9's slice-C port (this loop predates it, and no scenario
+        // deactivated a table-bearing window until formedit/bookmarks
+        // opened a modal form over one).
+        lh = rtUiListAt(w, i)
+        if lh != ptr(0) {
+            UiLActivate(activating, lh)
+        }
+        i = i + 1
+    }
+    if w.focusIdx >= 0 {
+        te = rtUiTeAt(w, w.focusIdx)
+        if te != ptr(0) {
+            if activating {
+                UiTEActivate(te)
+            } else {
+                UiTEDeactivate(te)
+            }
+        }
+    }
+}
+
+// ================================================================
+// Resize / zoom (rt_ui.c:2966-3096).
+// ================================================================
+
+func rtUiInvalGrowCorner(wp: ptr) {
+    var r: ptr
+
+    r = UiNewPtr(rtUiRectSize)
+    UiSetRect(r, peekw(wp + 22) - rtUiScrollbarW, peekw(wp + 20) - rtUiScrollbarW, peekw(wp + 22), peekw(wp + 20))
+    UiEraseRect(r)
+    UiInvalRect(r)
+    UiDisposePtr(r)
+}
+
+func rtUiApplyResize(wp: ptr, inst: ptr, newW: int, newH: int) {
+    var w: RtUiWinst
+    var savedPort: ptr
+
+    w = RtUiWinst(inst)
+    savedPort = rtUiGetPortSaved()
+    UiSetPort(wp)
+    rtUiInvalGrowCorner(wp)
+    UiSizeWindow(wp, newW, newH, true)
+    rtUiInvalGrowCorner(wp)
+    UiSetPort(savedPort)
+    rtUiLayout(inst)
+    rtUiCanvasReallocAll(inst)
+    rtUiTraceFire1(uidWinName(w.winIdx), "resized")
+    UiFireWinEvent(w.winIdx, inst, rtUiEvResized, 0, 0)
+}
+
+// rtUiHandleGrow (rt_ui.c:3010-3040): the oracle reads
+// `((WindowPeek)wp)->contRgn)->rgnBBox` directly (real C struct access);
+// this port must hand-derive the same two offsets, verified against the
+// actual layout structs Retro68's build uses (final-review fix round 2 --
+// not verified against a header when first written; the type is plainly
+// `Region` in this toolchain's headers, Multiverse.h:1698 -- no
+// `MacRegion` alias exists here; grepped both `Retro68/` and `toolchain/`
+// in full, zero hits. Apple's own Universal Interfaces may name it
+// differently elsewhere, but not in this repo's in-tree toolchain):
+// `toolchain/multiversal/CIncludes/Multiverse.h` (the consolidated header
+// Retro68's own multiversal defs generate; same header set every other
+// offset in this port cites) --
+//   `struct WindowRecord { GrafPort port; INTEGER windowKind; Boolean
+//   visible; Boolean hilited; Boolean goAwayFlag; Boolean spareFlag;
+//   RgnHandle strucRgn; RgnHandle contRgn; ... }` -- GrafPort is the
+//   well-documented (Inside Macintosh I) 108-byte record, confirmed by
+//   summing Multiverse.h's own GrafPort field list byte-for-byte
+//   (device INTEGER 2 + portBits BitMap 14 + portRect Rect 8 + visRgn/
+//   clipRgn RgnHandle 4+4 + bkPat/fillPat Pattern 8+8 + pnLoc/pnSize
+//   Point 4+4 + pnMode INTEGER 2 + pnPat Pattern 8 + pnVis/txFont
+//   INTEGER 2+2 + txFace Style(byte) 1 + filler Byte 1 + txMode/txSize
+//   INTEGER 2+2 + spExtra Fixed 4 + fgColor/bkColor LONGINT 4+4 +
+//   colrBit/patStretch INTEGER 2+2 + picSave/rgnSave/polySave Handle
+//   4+4+4 + grafProcs ptr 4 = 108). `contRgn` therefore sits at
+//   108 (port) + 2 (windowKind) + 1+1+1+1 (the four Booleans) + 4
+//   (strucRgn) = 118 -- `wp + 118` below.
+//   `struct Region { INTEGER rgnSize; Rect rgnBBox; }` -- `rgnBBox`
+//   (a Rect: top/left/bottom/right, each INTEGER) sits at offset 2 past
+//   rgnSize, so rgnBBox.top is `contRgnMp + 2`, rgnBBox.left is
+//   `contRgnMp + 4` -- exactly what `contTop`/`contLeft` below read.
+// No scripted scenario exercises this path (real mouse-drag-driven
+// GrowWindow only, via `UiGrowWindow` below -- no `RT_MAC_TEST` scripted
+// verb feeds a live resize-corner drag; `zoomwin`/`hdim`'s own `resize`
+// verb goes through `rtUiScriptResize` -> `rtUiApplyResize` directly,
+// never through this function). Verified by header derivation only, not
+// by a boot -- flagged here rather than left silently unverified.
+func rtUiHandleGrow(wp: ptr, inst: ptr, wherePt: int) {
+    var w: RtUiWinst
+    var contRgnH: ptr
+    var contRgnMp: ptr
+    var contLeft: int
+    var contTop: int
+    var screenBoundsSlot: ptr
+    var screenW: int
+    var screenH: int
+    var maxW: int
+    var maxH: int
+    var minW: int
+    var minH: int
+    var limits: ptr
+    var newSize: int
+
+    w = RtUiWinst(inst)
+    if not uidWinResizable(w.winIdx) {
+        return
+    }
+
+    contRgnH = ptr(peekl(wp + 118))
+    contRgnMp = ptr(peekl(contRgnH))
+    contTop = peekw(contRgnMp + 2)
+    contLeft = peekw(contRgnMp + 4)
+
+    screenBoundsSlot = UiNewPtr(rtUiRectSize)
+    UiScreenBounds(screenBoundsSlot)
+    screenW = peekw(screenBoundsSlot + 6) - peekw(screenBoundsSlot + 2)
+    screenH = peekw(screenBoundsSlot + 4) - peekw(screenBoundsSlot + 0)
+    UiDisposePtr(screenBoundsSlot)
+
+    maxW = screenW - contLeft - rtUiScreenMargin
+    maxH = screenH - contTop - rtUiScreenMargin
+    if maxW < 1 {
+        maxW = 1
+    }
+    if maxH < 1 {
+        maxH = 1
+    }
+
+    if uidWinMinW(w.winIdx) > 0 {
+        minW = uidWinMinW(w.winIdx)
+    } else {
+        minW = 1
+    }
+    if uidWinMinH(w.winIdx) > 0 {
+        minH = uidWinMinH(w.winIdx)
+    } else {
+        minH = 1
+    }
+    if maxW < minW {
+        maxW = minW
+    }
+    if maxH < minH {
+        maxH = minH
+    }
+
+    limits = UiNewPtr(rtUiRectSize)
+    UiSetRect(limits, minW, minH, maxW, maxH)
+    newSize = UiGrowWindow(wp, wherePt, limits)
+    UiDisposePtr(limits)
+    if newSize == 0 {
+        return
+    }
+    rtUiApplyResize(wp, inst, rtUiLoWord(newSize), rtUiHiWord(newSize))
+}
+
+func rtUiApplyZoom(wp: ptr, inst: ptr, part: int) {
+    var screenBoundsSlot: ptr
+    var screenW: int
+    var screenH: int
+    var stdRect: ptr
+    var dataH: ptr
+    var dataMp: ptr
+    var savedPort: ptr
+    var isFront: bool
+
+    if part == 8 { // inZoomOut
+        screenBoundsSlot = UiNewPtr(rtUiRectSize)
+        UiScreenBounds(screenBoundsSlot)
+        screenW = peekw(screenBoundsSlot + 6) - peekw(screenBoundsSlot + 2)
+        screenH = peekw(screenBoundsSlot + 4) - peekw(screenBoundsSlot + 0)
+        UiDisposePtr(screenBoundsSlot)
+        stdRect = UiNewPtr(rtUiRectSize)
+        UiSetRect(stdRect, 4, rtUiMenubarH + rtUiTitlebarH, screenW - rtUiScreenMargin, screenH - rtUiScreenMargin)
+        dataH = ptr(peekl(wp + 130))
+        if dataH != ptr(0) {
+            dataMp = ptr(peekl(dataH))
+            UiBlockMoveData(stdRect, dataMp + 8, rtUiRectSize)
+        }
+        UiDisposePtr(stdRect)
+    }
+
+    savedPort = rtUiGetPortSaved()
+    UiSetPort(wp)
+    UiEraseRect(wp + 16)
+    isFront = wp == UiFrontWindow()
+    UiZoomWindow(wp, part, isFront)
+    UiInvalRect(wp + 16)
+    UiSetPort(savedPort)
+    rtUiApplyResize(wp, inst, peekw(wp + 22) - peekw(wp + 18), peekw(wp + 20) - peekw(wp + 16))
+}
+
+func rtUiHandleZoom(wp: ptr, inst: ptr, wherePt: int, part: int) {
+    var w: RtUiWinst
+
+    w = RtUiWinst(inst)
+    if not uidWinResizable(w.winIdx) {
+        return
+    }
+    if not UiTrackBox(wp, wherePt, part) {
+        return
+    }
+    rtUiApplyZoom(wp, inst, part)
+}
+
+// ================================================================
+// Mouse (rt_ui.c:2678-2758 fire_widget, 3099-3159 canvas, 3229-3499
+// content-click/mouse-down -- the last of these NOT in the brief's own
+// numeric line ranges but functionally essential, see task-7-report.md's
+// design-decision log). Table/textview/popup-scrollbar/TE-hit/popup-hit/
+// table-hit branches inside rt_ui_handle_content_click are omitted
+// entirely (dead -- none of those controls/arrays can ever exist).
+// ================================================================
+
+func rtUiFireWidget(inst: ptr, wIdx: int) {
+    var w: RtUiWinst
+    var kind: int
+    var ctrl: ptr
+    var newVal: int
+    var savedPort: ptr
+    var wasModalInst: bool
+    var flags: int
+    var front: ptr
+
+    w = RtUiWinst(inst)
+    savedPort = rtUiGetPortSaved()
+    UiSetPort(w.wp)
+    kind = uidWidgetKind(w.winIdx, wIdx)
+    ctrl = rtUiCtrlAt(w, wIdx)
+    // Captured BEFORE the switch, not re-read after (rt_ui.c:2692-2696,
+    // Task 10): a successful rtUiFormAccept/rtUiFormCancel below disposes
+    // `inst` (and its window) outright, so `inst` itself must never be
+    // dereferenced again once that's happened -- this bool is the only
+    // thing checked past that point (see the port-restore comment below).
+    wasModalInst = rtUiModalActive and rtUiModalInst == inst
+
+    if kind == rtUiKindCheck {
+        if UiGetControlValue(ctrl) != 0 {
+            newVal = 0
+        } else {
+            newVal = 1
+        }
+        UiSetControlValue(ctrl, newVal)
+        rtUiTraceFire2(uidWinName(w.winIdx), uidWidgetName(w.winIdx, wIdx), "change")
+        UiFireWidget(w.winIdx, inst, wIdx, rtUiWevChange, newVal, 0)
+    } else if kind == rtUiKindButton {
+        // mac-target-4d Task 6 / native-5e Task 10: this is the ONE choke
+        // point every DEFAULT/CANCEL button reaches regardless of source
+        // (real click, scripted click, or Return/Escape key wiring) --
+        // picked as the single place to intercept a modal FORM window's
+        // OK/Cancel buttons (walker-validate/accept, or cancel) instead of
+        // a plain click fire.
+        flags = uidWidgetFlags(w.winIdx, wIdx)
+        if wasModalInst and (flags & rtUiFlagDefault) != 0 {
+            rtUiFormAccept(inst) // a validation failure leaves `inst` open/untouched; success tears it down
+        } else if wasModalInst and (flags & rtUiFlagCancel) != 0 {
+            rtUiFormCancel(inst) // always tears down
+        } else {
+            rtUiTraceFire2(uidWinName(w.winIdx), uidWidgetName(w.winIdx, wIdx), "click")
+            UiFireWidget(w.winIdx, inst, wIdx, rtUiWevClick, 0, 0)
+        }
+    }
+
+    // Fix round 1 (rt_ui.c:2728-2745, Task 10): a REAL click reaches here
+    // with the port already SetPort'd to inst->wp by
+    // rtUiHandleContentClick before TrackControl even ran, so the plain
+    // savedPort snapshot above IS w.wp itself in that case -- if
+    // rtUiFormAccept/rtUiFormCancel just disposed it (wasModalInst was
+    // true, and the modal is no longer active -- a validation failure
+    // instead leaves it active, so this stays false then), blindly
+    // restoring savedPort would leave the CURRENT port pointing at freed
+    // WindowRecord memory. Fall back to whatever window is front NOW
+    // instead; if none is left at all, there's nothing valid to set.
+    if wasModalInst and not rtUiModalActive {
+        front = UiFrontWindow()
+        if front != ptr(0) {
+            UiSetPort(front)
+        }
+    } else {
+        UiSetPort(savedPort)
+    }
+}
+
+func rtUiFindFlagged(inst: ptr, flag: int, outIdx: ptr): bool {
+    var w: RtUiWinst
+    var n: int
+    var i: int
+
+    w = RtUiWinst(inst)
+    n = uidWinNWidgets(w.winIdx)
+    i = 0
+    while i < n {
+        if uidWidgetKind(w.winIdx, i) == rtUiKindButton and (uidWidgetFlags(w.winIdx, i) & flag) != 0 {
+            pokel(outIdx, i)
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// rtUiCanvasHit (rt_ui.c:3099-3110): PtInRect against every CANVAS-kind
+// widget's own laid-out rect.
+func rtUiCanvasHit(inst: ptr, localPt: int, outIdx: ptr): bool {
+    var w: RtUiWinst
+    var n: int
+    var i: int
+
+    w = RtUiWinst(inst)
+    n = uidWinNWidgets(w.winIdx)
+    i = 0
+    while i < n {
+        if uidWidgetKind(w.winIdx, i) == rtUiKindCanvas and UiPtInRect(localPt, rtUiRectAt(w, i)) {
+            pokel(outIdx, i)
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// rtUiFireCanvasXY (rt_ui.c:3111-3120): fires RTUI_WEV_CLICK/DRAG with
+// (x, y) relative to the canvas widget's own origin (Ch8's contract).
+func rtUiFireCanvasXY(inst: ptr, wIdx: int, event: int, localPt: int) {
+    var w: RtUiWinst
+    var r: ptr
+    var localH: int
+    var localV: int
+    var rLeft: int
+    var rTop: int
+
+    w = RtUiWinst(inst)
+    r = rtUiRectAt(w, wIdx)
+    rTop = peekw(r + 0)
+    rLeft = peekw(r + 2)
+    localV = rtUiHiWord(localPt)
+    localH = rtUiLoWord(localPt)
+    if event == rtUiWevClick {
+        rtUiTraceFire2(uidWinName(w.winIdx), uidWidgetName(w.winIdx, wIdx), "click")
+    } else {
+        rtUiTraceFire2(uidWinName(w.winIdx), uidWidgetName(w.winIdx, wIdx), "drag")
+    }
+    UiFireWidget(w.winIdx, inst, wIdx, event, localH - rLeft, localV - rTop)
+}
+
+func rtUiHandleCanvasClick(wp: ptr, inst: ptr, wIdx: int, wherePt: int) {
+    var last: int
+    var cur: int
+
+    rtUiFireCanvasXY(inst, wIdx, rtUiWevClick, wherePt)
+    last = wherePt
+    while UiStillDown() {
+        UiSetPort(wp)
+        cur = rtUiGetMousePt()
+        if cur != last {
+            rtUiFireCanvasXY(inst, wIdx, rtUiWevDrag, cur)
+            last = cur
+        }
+    }
+}
+
+// rtUiHandleContentClick (rt_ui.c:3229-3419). Task 8 added the textview-
+// scrollbar tag lane (rt_ui.c:3274-3283, ahead of the plain-widget
+// dispatch -- a scrollbar's own contrlRfCon carries the 0x8000/0xC000 tag,
+// never a plain widget index, so it must be recognized BEFORE that index
+// is used to look anything up) and the TE-hit lane (rt_ui.c:3355-3373).
+// Task 9 adds: the table-scrollbar lane (rt_ui.c:3238-3273, ahead of even
+// the textview-scrollbar tag check -- a table's own vScroll carries none
+// of our refCon tag bits, identified by comparing the control itself
+// instead), the popup-hit lane (rt_ui.c:3374-3411), and the table-hit lane
+// (rt_ui.c:3412-3418). The POPUP dispatch INSIDE the Control Manager lane
+// (rt_ui.c:3286-3323, "FindControl resolved a click to a popup's own
+// CDEF-backed control") is genuinely unreachable in this port and stays
+// unported: ctrls[wIdx] always stays ptr(0) for a popup here (the
+// RTUI_POPUP_CDEF gate, uitable.cla's own header note), so FindControl can
+// never resolve `ctrl` to one -- there is no control for it to find.
+func rtUiHandleContentClick(wp: ptr, inst: ptr, wherePt: int, shiftDown: bool) {
+    var w: RtUiWinst
+    var localPt: int
+    var ctrlSlot: ptr
+    var cpart: int
+    var ctrl: ptr
+    var rfCon: int
+    var wIdx: int
+    var trackPart: int
+    var cIdxSlot: ptr
+    var cIdx: int
+    var tIdxSlot: ptr
+    var tIdx: int
+    var extendSel: bool
+    var n: int
+    var ti: int
+    var lh: ptr
+    var mods: int
+    var pIdxSlot: ptr
+    var pIdx: int
+    var tblIdxSlot: ptr
+    var tblIdx: int
+
+    w = RtUiWinst(inst)
+    UiSetPort(wp)
+    localPt = rtUiGlobalToLocalPt(wherePt)
+
+    ctrlSlot = UiNewPtr(4)
+    cpart = UiFindControl(localPt, wp, ctrlSlot)
+    ctrl = ptr(peekl(ctrlSlot))
+    UiDisposePtr(ctrlSlot)
+
+    if cpart != 0 and ctrl != ptr(0) {
+        // Table's own vertical scrollbar (rt_ui.c:3238-3273).
+        n = uidWinNWidgets(w.winIdx)
+        ti = 0
+        while ti < n {
+            if uidWidgetKind(w.winIdx, ti) == rtUiKindTable {
+                lh = rtUiListAt(w, ti)
+                if lh != ptr(0) and ctrl == ptr(peekl(UiHandleDeref(lh) + rtUiListVScroll)) {
+                    // No live mouse to hold an arrow/thumb in scripted mode
+                    // (same reason rtUiHandleScrollbarClick's own scripted
+                    // lane only nudges discrete parts) -- List Manager's
+                    // bar has no separate nudge primitive at all (LClick is
+                    // the only entry point for both cells AND the bar), so
+                    // a scripted click landing in the scrollbar strip is
+                    // simply a no-op here.
+                    if rtUiScripted {
+                        return
+                    }
+                    // A pure scrollbar interaction never selects a row or
+                    // fires anything -- LClick's own return is meaningless
+                    // here too, since no cell was clicked; both ignored.
+                    if shiftDown {
+                        mods = 0x200
+                    } else {
+                        mods = 0
+                    }
+                    UiLClick(localPt, mods, lh)
+                    return
+                }
+            }
+            ti = ti + 1
+        }
+
+        rfCon = peekl(UiHandleDeref(ctrl) + 36)
+        if (rfCon & 0x8000) != 0 {
+            // A textview's own scrollbar (tagged at creation,
+            // rtUiMakeWidgets) -- scrolls its TE, never fires a widget
+            // event.
+            rtUiHandleScrollbarClick(inst, ctrl, rfCon & 0x3FFF, cpart, localPt)
+            return
+        }
+        wIdx = rfCon
+        if rtUiScripted {
+            rtUiFireWidget(inst, wIdx)
+            return
+        }
+        trackPart = UiTrackControl(ctrl, localPt, ptr(0))
+        if trackPart != 0 {
+            rtUiFireWidget(inst, wIdx)
+        }
+        return
+    }
+
+    cIdxSlot = UiNewPtr(4)
+    if rtUiCanvasHit(inst, localPt, cIdxSlot) {
+        cIdx = peekl(cIdxSlot)
+        UiDisposePtr(cIdxSlot)
+        rtUiHandleCanvasClick(wp, inst, cIdx, localPt)
+        return
+    }
+    UiDisposePtr(cIdxSlot)
+
+    tIdxSlot = UiNewPtr(4)
+    if rtUiTeHit(inst, localPt, tIdxSlot) {
+        tIdx = peekl(tIdxSlot)
+        UiDisposePtr(tIdxSlot)
+        // click-to-focus: shift-click extends the CURRENT selection only
+        // when it lands back in the ALREADY-focused TE.
+        extendSel = shiftDown and tIdx == RtUiWinst(inst).focusIdx
+        rtUiTeSetFocus(inst, tIdx)
+        UiTEClick(localPt, extendSel, rtUiTeAt(RtUiWinst(inst), tIdx))
+        // fix-hbar: TEAutoView can scroll the view on click near an edge --
+        // re-sync the bars' thumbs. Not a mutation, so this does NOT go
+        // through rtUiTeMutated's change trace/event funnel.
+        rtUiTeScrollSync(inst, tIdx)
+        return
+    }
+    UiDisposePtr(tIdxSlot)
+
+    pIdxSlot = UiNewPtr(4)
+    if rtUiPopupHit(inst, localPt, pIdxSlot) {
+        pIdx = peekl(pIdxSlot)
+        UiDisposePtr(pIdxSlot)
+        rtUiPopupClick(inst, pIdx)
+        return
+    }
+    UiDisposePtr(pIdxSlot)
+
+    tblIdxSlot = UiNewPtr(4)
+    if rtUiTableHit(inst, localPt, tblIdxSlot) {
+        tblIdx = peekl(tblIdxSlot)
+        UiDisposePtr(tblIdxSlot)
+        if shiftDown {
+            mods = 0x200
+        } else {
+            mods = 0
+        }
+        rtUiTableClick(inst, tblIdx, localPt, mods)
+        return
+    }
+    UiDisposePtr(tblIdxSlot)
+}
+
+func rtUiHandleMouseDown(ev: ptr) {
+    var wherePt: int
+    var wpSlot: ptr
+    var part: int
+    var wp: ptr
+    var inst: ptr
+    var dragBounds: ptr
+    var modifiers: int
+    var shiftDown: bool
+
+    wherePt = peekl(ev + 10)
+    wpSlot = UiNewPtr(4)
+    part = UiFindWindow(wherePt, wpSlot)
+    wp = ptr(peekl(wpSlot))
+    UiDisposePtr(wpSlot)
+
+    // Modality filter (rt_ui.c:3429-3446, Task 10): while a form is open,
+    // a click that isn't headed for IT gets a beep instead -- the menu
+    // bar (any item, since there's no per-item way to tell without
+    // opening it) and any OTHER window of ours (a real System 6 modal
+    // dialog blocks the whole app, not just its own window). DragWindow
+    // ON the modal itself is explicitly allowed (falls through to the
+    // inDrag case below unfiltered); System 6/DA windows (never
+    // rtUiIsOurs) and every other event kind (updates, activates,
+    // timers, TEIdle) are untouched -- this is the ONE gate, nothing
+    // else in the loop changes. The scripted dispatch path
+    // (rtUiScriptClick) calls this exact same function, so scripts get
+    // the identical filtering for free.
+    if rtUiModalActive {
+        if part == 1 {
+            UiSysBeep(1)
+            return
+        }
+        if wp != ptr(0) and rtUiIsOurs(wp) and wp != RtUiWinst(rtUiModalInst).wp {
+            UiSysBeep(1)
+            return
+        }
+    }
+
+    if part == 6 {
+        if wp != ptr(0) and UiTrackGoAway(wp, wherePt) {
+            inst = rtUiWinstOf(wp)
+            if inst != ptr(0) {
+                rtUiClose(inst)
+            }
+        }
+    } else if part == 4 {
+        dragBounds = UiNewPtr(rtUiRectSize)
+        UiScreenBounds(dragBounds)
+        UiInsetRect(dragBounds, 4, 4)
+        UiDragWindow(wp, wherePt, dragBounds)
+        UiDisposePtr(dragBounds)
+        rtUiAfterFrontChange()
+    } else if part == 5 {
+        inst = rtUiWinstOf(wp)
+        if inst != ptr(0) {
+            rtUiHandleGrow(wp, inst, wherePt)
+        }
+    } else if part == 7 or part == 8 {
+        inst = rtUiWinstOf(wp)
+        if inst != ptr(0) {
+            rtUiHandleZoom(wp, inst, wherePt, part)
+        }
+    } else if part == 3 {
+        if wp != UiFrontWindow() {
+            UiSelectWindow(wp)
+            rtUiAfterFrontChange()
+        } else {
+            inst = rtUiWinstOf(wp)
+            if inst != ptr(0) {
+                modifiers = peekw(ev + 14)
+                shiftDown = (modifiers & 0x200) != 0
+                rtUiHandleContentClick(wp, inst, wherePt, shiftDown)
+            }
+        }
+    } else if part == 1 {
+        rtUiMenuDispatch(UiMenuSelect(wherePt))
+    }
+}
+
+// ================================================================
+// Keyboard (rt_ui.c:3557-3658). Task 8 adds the focused-TE ordering block
+// (rt_ui.c:3573-3641): cmdKey (above) -> a focused FIELD's Return/Enter
+// fires `enter` (no insertion) -> a focused TE's other keys go to TEKey
+// (including the four arrow codes -- TEKey itself special-cases those,
+// move/collapse the caret, no insertion) -> only THEN the pre-existing
+// default/cancel/generic-key chain. A focused TE swallows Return/typing
+// entirely; Escape is the one exception, left to fall through to the
+// Cancel-button check below even while a TE is focused. Every TEKey call
+// is followed by a scroll-sync (TEAutoView can move the view even for a
+// caret-only arrow key), but only a MUTATING key (not an arrow) goes
+// through rtUiTeMutated's change trace/event funnel. The modal-form
+// typing filter (rt_ui.c:3611-3629, a bound INT/FIXED field's char
+// whitelist, Task 10) runs just ahead of the plain TEKey call, below.
+// ================================================================
+
+func rtUiHandleKey(ev: ptr) {
+    var ch: int
+    var modifiers: int
+    var wp: ptr
+    var inst: ptr
+    var winIdx: int
+    var wIdxSlot: ptr
+    var wIdx: int
+    var w: RtUiWinst
+    var savedPort: ptr
+    var fieldIdx: int
+    var ftype: int
+
+    ch = peekb(ev + 5)
+    modifiers = peekw(ev + 14)
+    if (modifiers & 0x100) != 0 {
+        rtUiMenuDispatch(UiMenuKey(ch))
+        return
+    }
+    wp = UiFrontWindow()
+    inst = rtUiWinstOf(wp)
+    if inst == ptr(0) {
+        return
+    }
+    w = RtUiWinst(inst)
+    winIdx = w.winIdx
+
+    if w.focusIdx >= 0 {
+        if uidWidgetKind(winIdx, w.focusIdx) == rtUiKindField and (ch == 13 or ch == 3) {
+            rtUiTraceFire2(uidWinName(winIdx), uidWidgetName(winIdx, w.focusIdx), "enter")
+            UiFireWidget(winIdx, inst, w.focusIdx, rtUiWevEnter, 0, 0)
+            return
+        }
+        if ch != 27 {
+            // Modal-form typing filter (rt_ui.c:3611-3629, Task 10): a
+            // bound INT/FIXED field only accepts the characters
+            // rtUiFormCharOk allows -- every other keystroke that would
+            // otherwise INSERT (arrows/backspace are never filtered,
+            // they don't insert) beeps and is dropped before it ever
+            // reaches TEKey. A STR/CHAR/unbound field, or any field in a
+            // non-form window, is untouched (falls straight through to
+            // the plain TEKey call below).
+            if rtUiModalActive and rtUiModalInst == inst and ch != 8 and not (ch >= 28 and ch <= 31) {
+                fieldIdx = uidFormFindFieldIndex(uidWinFormOff(winIdx), w.focusIdx)
+                if fieldIdx != -1 {
+                    ftype = uidFieldFtype(uidFormLayoutOff(uidWinFormOff(winIdx)), fieldIdx)
+                    if (ftype == rtUiFtInt or ftype == rtUiFtFixed) and not rtUiFormCharOk(rtUiTeAt(w, w.focusIdx), ch, ftype) {
+                        UiSysBeep(1)
+                        return
+                    }
+                }
+            }
+
+            savedPort = rtUiGetPortSaved()
+            UiSetPort(wp)
+            UiTEKey(ch, rtUiTeAt(w, w.focusIdx))
+            if ch >= 28 and ch <= 31 {
+                rtUiTeScrollSync(inst, w.focusIdx) // caret move only: no change trace/event
+            } else {
+                rtUiTeMutated(inst, w.focusIdx, true) // USER edit
+            }
+            UiSetPort(savedPort)
+            return
+        }
+        // ch == 27 (Escape): falls through to the Cancel-button check below.
+    }
+
+    wIdxSlot = UiNewPtr(4)
+    if (ch == 13 or ch == 3) and rtUiFindFlagged(inst, rtUiFlagDefault, wIdxSlot) {
+        wIdx = peekl(wIdxSlot)
+        UiDisposePtr(wIdxSlot)
+        rtUiFireWidget(inst, wIdx)
+        return
+    }
+    if ch == 27 and rtUiFindFlagged(inst, rtUiFlagCancel, wIdxSlot) {
+        wIdx = peekl(wIdxSlot)
+        UiDisposePtr(wIdxSlot)
+        rtUiFireWidget(inst, wIdx)
+        return
+    }
+    UiDisposePtr(wIdxSlot)
+
+    rtUiTraceFire1(uidWinName(winIdx), "key")
+    UiFireWinEvent(winIdx, inst, rtUiEvKey, ch, 0)
+}
+
+// ================================================================
+// rtUiRun (rt_ui.c:4467-4517) -- the real (non-scripted) event loop is
+// UNTESTED by every one of this slice's required golden scenarios (all
+// of them are `--events`-driven, so `UiTestScript()` is always non-empty
+// and rtUiRunScripted (uiscript.cla) always takes over instead) -- ported
+// for contract completeness, not a byte-verified path (proven for real on
+// Snow instead, mac-resident-clarusc Task 12 -- see that task's report).
+// kHighLevelEvent (what == 23, Events.h's own kHighLevelEvent) is now
+// handled (REVISED, Task 12; was a documented no-op before): dispatched
+// to UiAEProcessEvent (a bare, per-backend extern -- AEProcessAppleEvent
+// isn't a plain A-line trap the ordinary `= trap` clause could call
+// directly from HERE even after the `seld0` clause landed, since this
+// file is shared by both backends and the cprint lane's own copy needs a
+// hand-written C body, same "UiLaunchReal stays bare" reasoning). This
+// arm only ever fires once nat_UiLaunchReal's real-build AE path has
+// installed handlers -- harmless to skip on every lane this slice's own
+// tests exercise (rt_ui.c's own comment: "harmless on System 6 ... no
+// such event is ever posted there either"), and dead code (never taken)
+// on the `--events` scripted lane regardless, since UiTestScript() being
+// non-empty returns out of this function before the loop below is ever
+// reached at all.
+// ================================================================
+
+func rtUiRun() {
+    var evBuf: ptr
+    var frontInst: ptr
+    var sleepTicks: int
+    var what: int
+    var gotEvent: bool
+
+    if peekb(UiTestScript()) != 0 {
+        rtUiRunScripted()
+        return
+    }
+
+    evBuf = UiNewPtr(16)
+    while true {
+        frontInst = rtUiWinstOf(UiFrontWindow())
+        if rtUiNEveryVal > 0 or (frontInst != ptr(0) and RtUiWinst(frontInst).focusIdx >= 0) {
+            sleepTicks = 1
+        } else {
+            sleepTicks = 30
+        }
+        gotEvent = UiWaitNextEvent(0xFFFF, evBuf, sleepTicks, ptr(0))
+        what = peekw(evBuf + 0)
+        if what == 1 {
+            rtUiHandleMouseDown(evBuf)
+        } else if what == 3 or what == 5 {
+            rtUiHandleKey(evBuf)
+        } else if what == 6 {
+            rtUiHandleUpdate(ptr(peekl(evBuf + 2)))
+        } else if what == 8 {
+            rtUiHandleActivate(ptr(peekl(evBuf + 2)), (peekw(evBuf + 14) & 0x1) != 0)
+        } else if what == 23 {
+            UiAEProcessEvent(evBuf)
+        }
+        rtUiEveryPump()
+        UiConnPump()
+        rtUiTeIdleFront()
+        rtUiFlushAllBuffered() // "returns control to the event loop" point, Ch11
+        rtUiTablesSync() // re-sync every table's LM row count before the next UiWaitNextEvent (Task 9, rt_ui.c:4515)
+    }
+}
+
+// ================================================================
+// rtUiLaunch (rt_ui.c:3919-4029) -- per Task 7 report log entry #3, only
+// the RT_MAC_TEST-equivalent script-scan branch is a real Clarus port
+// (every golden scenario exercises exactly this); the real-build branch
+// is UiLaunchReal, C-side glue (rt_ext_mac.inc). `UiTestScript()` empty
+// means "not a scripted build" -- the same heuristic log entry #3 already
+// worked out (and flagged its own caveat on).
+// ================================================================
+
+func rtUiLaunch() {
+    var script: ptr
+    var cursor: ptr
+    var lineStart: ptr
+    var lineLen: int
+    var isLaunchDoc: bool
+    var found: bool
+    var pathBuf: ptr
+    var pathLen: int
+
+    script = UiTestScript()
+    if peekb(script) == 0 {
+        UiLaunchReal()
+        return
+    }
+
+    found = false
+    cursor = script
+    while peekb(cursor) != 0 {
+        lineStart = cursor
+        while peekb(cursor) != 0 and peekb(cursor) != 10 {
+            cursor = cursor + 1
+        }
+        lineLen = int(cursor) - int(lineStart)
+        isLaunchDoc = false
+        if lineLen >= 10 {
+            if peekb(lineStart + 0) == int('l') and peekb(lineStart + 1) == int('a') and peekb(lineStart + 2) == int('u') and peekb(lineStart + 3) == int('n') and peekb(lineStart + 4) == int('c') and peekb(lineStart + 5) == int('h') and peekb(lineStart + 6) == int('d') and peekb(lineStart + 7) == int('o') and peekb(lineStart + 8) == int('c') and peekb(lineStart + 9) == int(' ') {
+                isLaunchDoc = true
+            }
+        }
+        if isLaunchDoc {
+            found = true
+            pathLen = lineLen - 10
+            if pathLen > 255 {
+                pathLen = 255
+            }
+            pathBuf = UiNewPtr(256)
+            UiBlockMoveData(lineStart + 10, pathBuf + 1, pathLen)
+            pokeb(pathBuf, pathLen)
+            rtUiTraceOpenDoc(lineStart + 10, pathLen)
+            UiFireLaunchDoc(pathBuf)
+            UiDisposePtr(pathBuf)
+        }
+        if peekb(cursor) == 10 {
+            cursor = cursor + 1
+        }
+    }
+    if not found {
+        UiFireStartEmpty()
+    }
+}

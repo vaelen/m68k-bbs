@@ -1,0 +1,490 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// list.cla: the ported List family (Plan 5b "Stage B/D" Task 10, runtime-
+// migration-wave1). Replaces runtime/host/rt_core.inc's rt_list_*
+// functions (struct rt_list ~:483-489, functions ~:491-577, growth policy
+// shared with text via rt_core_grow ~:246-255) for every emitted program --
+// like str.cla (Task 8) and text.cla (Task 9), this module is
+// UNCONDITIONAL: main.cla's manifest always includes it, spliced AFTER
+// text.cla (head-splice order: declare-before-use across runtime modules),
+// and cpListPorted (cprint.cla) is set true unconditionally alongside that,
+// same convention cpStrPorted/cpTextPorted established. Ported EXACTLY
+// against rt_core.inc:491-577, function by function; each function's doc
+// comment below cites its own line range.
+//
+// List layout (Ch5, rt_core.inc:483-489): `struct rt_list { int32_t rc;
+// Handle data; int32_t elemsize; int32_t count; int32_t cap; }` -- a
+// fixed-size box (never relocated: it's obtained via NewPtr in
+// rt_list_new) holding an rc, a relocatable data Handle whose block holds
+// `count` (of `cap` allocated) fixed-`elemsize` element slots back to back,
+// and the element size itself (needed at runtime since a Clarus List's
+// element type is monomorphic per list but this struct is untyped). RtList
+// (below) is an `overlay record` view of that exact layout (Ch13: Overlay
+// Records) -- rt_core.inc carries a byte-for-byte layout guard (the
+// rt_list_layout_check typedef, right after struct rt_list's own
+// definition, same placement/reasoning as rt_text_layout_check) so this
+// overlay and the real C struct can never drift.
+//
+// RC boundary (Plan 5c wave2a Task 3 update -- rc is now Clarus-owned for
+// list, same shape as text.cla's own Task 2 update): birth (rtListNew,
+// below) constructs the WHOLE box itself, via ListNewPtr + overlay pokes,
+// instead of delegating to C; rtListRetain/rtListRelease do the rc
+// arithmetic and the rc==0 dispose sequence here too, calling ListRcCheck
+// (a Task 1 waist extern) only on the cold over-release path (`rc <= 0`),
+// never unconditionally the way the C reference's rt_rc_check call does;
+// rtListLastref (`l != NULL and l.rc == 1`) is the null-safe "am I the
+// only owner" predicate cpEmitRelease's element-release walk gates on.
+// cprint.cla's cpListArcPorted flag (unconditional true) redirects every
+// List ARC emission site to clar_fn_rtListRetain/clar_fn_rtListRelease/
+// clar_fn_rtListLastref: the IRetain/IRelease/IListFreeVar intrinsics (via
+// cpEmitRetain/cpEmitRelease), fpRetainVal/fpHeapFn-composed retain/release,
+// the container-accessor `_retain` suffix calls (IListFirst/IListLast/
+// IMapGet/IMapGetDv/IMapGetDvBirth, KList element case only), and the three
+// `rt_list_lastref`-gated element-release walks inside cpEmitRelease. This
+// task ALSO adds rtListAt below (rt_core.inc's `list_slot` + bounds check,
+// the C `rt_list_at` function) -- but ONLY for the walk-INTERNAL element
+// accessor calls inside cpEmitRelease/cpEmitRetain's own List ARC element
+// loops, gated by the EXISTING cpListPorted flag (a plain interior-pointer
+// accessor, not an ARC operation itself). The four pure ADDRESSING sites
+// elsewhere in cprint.cla -- fpIndexRef's own `rt_list_at` (user-level
+// indexing), fpForListStmt's per-iteration deref, IListRemove's
+// old-value-read, and IListSet's ref -- all keep emitting a BARE
+// `rt_list_at` call regardless of either flag (5d codegen68k input, per
+// fpIndexRef's own doc comment in cprint.cla) -- deliberate exclusions, not
+// oversights. `rt_list_note` (the host-only debug ledger) is never called
+// from any redirected site and has no Clarus port -- it's a host-C-only
+// diagnostic, not part of the List family's public behavior.
+//
+// Relocation discipline: `data` is a Handle -- ListSetHandleSize (the
+// growth primitive) can move the block it points to, and on a real Memory
+// Manager a call to SetHandleSize can even move OTHER relocatable blocks
+// via heap compaction. Every function here re-derives ANY Handle-backed
+// master pointer it holds (via ListHandleDeref) AFTER a call that can
+// allocate/move memory (rtListGrow itself, or a call to it) -- never caches
+// a dereferenced pointer across such a call. The paranoid allocator
+// (CLARUS_MEM_PARANOID) catches violations of this rule in the leak-gated
+// test runs. Element moves (push/pop/shift/unshift/remove) go through
+// ListBlockMoveData with source/destination ranges computed from a single
+// freshly-dereferenced master pointer -- no scratch buffer is needed
+// anywhere in this module (unlike text.cla's concat/concatSl): every move
+// here is either non-overlapping or a plain shift-by-one-slot within the
+// SAME handle, which BlockMoveData (a memmove, not memcpy) already handles
+// correctly for overlapping ranges, exactly matching the C reference's own
+// direct BlockMoveData calls.
+//
+// Behavior contract (brief): matches the C reference exactly. pop/shift
+// panic ("pop on empty list"/"shift on empty list") rather than returning a
+// sentinel when count == 0; remove panics ("list index out of range") on an
+// out-of-range index (STRICT, same convention as rtStrIndex/rtTextIndex);
+// growth is the same shared amortized-doubling policy as str.cla/text.cla
+// (rt_core_grow, rt_core.inc:243-255) -- doubles cap (from 4 if currently
+// empty) until it covers `need`, specialized here with the list's own
+// per-instance elemsize (unlike text, where elemsize is always 1 byte).
+//
+// ListHandleDeref/ListSetHandleSize/ListBlockMoveData/ListNewPtr/
+// ListDisposePtr/ListNewHandle/ListDisposeHandle/ListRcCheck are list.cla's
+// OWN extern names, distinct from the public HandleDeref/BlockMoveData/
+// NewPtr names str.cla/text.cla/ser.cla and any user program might also
+// declare -- same collision hazard str.cla's own header comment documents
+// (checkFuncSig -> scopeDeclare keys purely on name, no signature
+// comparison), and the same fix: distinct List-prefixed names sidestep it.
+// Each is backed by an rt_ext_List* wrapper in BOTH
+// runtime/host/rt_ext_host.inc and runtime/mac/rt_ext_mac.inc,
+// delegating to the same underlying primitives the generic/Str/Text
+// wrappers already call. (ListNewRaw, the one-time "whole rt_list_new
+// delegation" birth-allocation wrapper, is gone as of Plan 5c wave2a Task
+// 3 -- birth moved into list.cla itself, built from ListNewPtr/
+// ListNewHandle below.) ListPanic, list.cla's own former extern for this
+// same reason, is gone as of Plan native-5d Task 3: list.cla calls
+// core.cla's rtPanic directly now (declare-before-use, core.cla is spliced
+// first) -- a plain intra-Clarus call, no extern/name-collision hazard to
+// sidestep at all.
+// Task 9 (native-5d): trap/inline clauses -- see text.cla's own header
+// comment for the trap-word verification table. rt_ext_ListNewPtr/
+// ListNewHandle panic on NULL inside the C wrapper (host only); the `reg`
+// clause has no such check, so rtListNew below guards the native path
+// itself too (Task 9 review fix, RESOLVED).
+external func ListHandleDeref(h: ptr): ptr = inline deref
+// `reg memerr`, not plain `reg` -- see text.cla's own TextSetHandleSize
+// doc comment (Task 14, native-5e) for why: SetHandleSize is a void
+// Pascal procedure, no result in D0.
+external func ListSetHandleSize(h: ptr, n: int): int = trap 0xA024 reg memerr
+external func ListBlockMoveData(src: ptr, dst: ptr, count: int) = trap 0xA22E reg
+// ListNewPtr/ListDisposePtr (Task 1, Plan 5c wave2a): the box allocator
+// rtListNew below uses, mirroring TextNewPtr's own oom-panic-at-the-
+// primitive placement exactly (text.cla) on host; rtListNew below now
+// guards the native path too.
+external func ListNewPtr(size: int): ptr = trap 0xA11E reg
+external func ListDisposePtr(p: ptr) = trap 0xA01F reg
+// ListNewHandle/ListDisposeHandle/ListRcCheck (Task 1, Plan 5c wave2a): the
+// ARC waist externs rtListNew/rtListRetain/rtListRelease below use, same
+// shape as text.cla's TextNewHandle/TextDisposeHandle/TextRcCheck.
+// ListNewHandle oom-panics on NULL itself on host; rtListNew below guards
+// the native path too.
+// ListRcCheck is the cold-path over-release guard: rtListRelease only
+// calls it once it has already determined `rc <= 0` itself (the host body
+// then prints "rt_rc: over-release at %s" and aborts; the Mac body is a
+// no-op) -- never called unconditionally the way the C reference's
+// rt_rc_check is.
+external func ListNewHandle(n: int): ptr = trap 0xA122 reg
+external func ListDisposeHandle(h: ptr) = trap 0xA023 reg
+external func ListRcCheck(box: ptr, rc: int) = inline nop
+
+// RtList (Ch13: Overlay Records) mirrors rt_core.inc:483-489's `struct
+// rt_list { int32_t rc; Handle data; int32_t elemsize; int32_t count;
+// int32_t cap; }` field-for-field -- rt_core.inc's rt_list_layout_check
+// typedef guards this layout stays exact.
+overlay record RtList {
+    rc: int
+    data: ptr
+    elemsize: int
+    count: int
+    cap: int
+}
+
+// rtListGrow (rt_core.inc:243-255, rt_core_grow specialized to a List's own
+// elemsize): shared amortized-doubling grower -- doubles cap (from 4 if
+// currently empty) until it covers `need`, then ListSetHandleSize once (in
+// BYTES, cap*elemsize -- unlike text's rtTextGrow, elemsize here is not
+// always 1). Callers that hold a master pointer derived from l.data before
+// calling this MUST re-derive it afterward (relocation discipline, module
+// header comment above) -- growth can move the block.
+func rtListGrow(l: ptr, need: int) {
+    var rl: RtList
+    var cap: int
+    var newcap: int
+    var elemsize: int
+    var err: int
+
+    rl = RtList(l)
+    cap = rl.cap
+    if need <= cap {
+        return
+    }
+    elemsize = rl.elemsize
+    if cap > 0 {
+        newcap = cap
+    } else {
+        newcap = 4
+    }
+    while newcap < need {
+        newcap = newcap * 2
+    }
+    err = ListSetHandleSize(rl.data, newcap * elemsize)
+    if err != 0 {
+        rtPanic("out of memory")
+    }
+    rl.cap = newcap
+}
+
+// rtListBoxSize is ListNewPtr's argument for rtListNew's box below --
+// mirrors text.cla's own rtTextBoxSize reasoning exactly: this language has
+// no sizeof operator, so it's a hand-derived constant rather than an exact
+// `sizeof(struct rt_list)`. rt_core.inc's own rt_list_layout_check pins
+// struct rt_list to exactly `{ int32_t rc; Handle data; int32_t elemsize;
+// int32_t count; int32_t cap; }` (five fields), but a Handle is a native
+// pointer, whose width (and the padding a natural-alignment C struct layout
+// inserts around it) differs by target -- 32 bytes measured on this repo's
+// x86_64/arm64 differential-test host (rc@0, 4 bytes padding, data@8,
+// elemsize@16, count@20, cap@24, padded to a 32-byte multiple-of-8 total),
+// 20 bytes on the real 4-byte-pointer 68k target (no padding needed
+// there). 40 (five fields, each conservatively budgeted a full 8-byte
+// pointer-width slot) safely covers both: ListNewPtr only guarantees "at
+// least this many bytes," so a little slack here is harmless, unlike an
+// UNDER-sized box, which would corrupt whatever heap memory follows it.
+const rtListBoxSize: int = 40
+
+// rtListNew (rt_core.inc:512-523, rt_list_new) -- Plan 5c wave2a Task 3:
+// birth allocation is now entirely Clarus-owned, mirroring the C reference
+// exactly (rc=1, elemsize/count/cap poked, data allocated last).
+// ListNewPtr/ListNewHandle's own C shim panics on NULL (host only -- Task 9
+// (native-5d) gave both a bare `reg` trap clause, which has no such check),
+// so these guards are dead on host, live on native -- same message the C
+// shim uses ("out of memory"), same `x == ptr(0)` idiom rtListRetain/etc.
+// already use.
+func rtListNew(elemsize: int): ptr {
+    var l: ptr
+    var rl: RtList
+
+    l = ListNewPtr(rtListBoxSize)
+    if l == ptr(0) {
+        rtPanic("out of memory")
+    }
+    rl = RtList(l)
+    rl.rc = 1
+    rl.elemsize = elemsize
+    rl.count = 0
+    rl.cap = 0
+    rl.data = ListNewHandle(0)
+    if rl.data == ptr(0) {
+        rtPanic("out of memory")
+    }
+    return l
+}
+
+// rtListRetain (rt_core.inc:819-823, rt_list_retain) -- Plan 5c wave2a Task
+// 3: null-safe increment, no over-release guard (same design decision as
+// text.cla's rtTextRetain -- the guard is a release-only cold path, see
+// ListRcCheck's own doc comment above and rtListRelease below).
+func rtListRetain(l: ptr) {
+    var rl: RtList
+
+    if l == ptr(0) {
+        return
+    }
+    rl = RtList(l)
+    rl.rc = rl.rc + 1
+}
+
+// rtListRelease (rt_core.inc:826-835, rt_list_release; the rt_list_free
+// alias, rt_core.inc:836, is exactly this function -- cprint.cla's
+// IListFreeVar reaches this through cpEmitRelease, no separate rtListFree
+// exists) -- Plan 5c wave2a Task 3: null-safe; the guard runs ONLY on the
+// cold `rc <= 0` path (ListRcCheck's own doc comment above) rather than
+// unconditionally the way the C reference's rt_rc_check call does;
+// decrements regardless; disposes the data Handle then the box itself once
+// rc reaches 0.
+func rtListRelease(l: ptr) {
+    var rl: RtList
+
+    if l == ptr(0) {
+        return
+    }
+    rl = RtList(l)
+    if rl.rc <= 0 {
+        ListRcCheck(l, rl.rc)
+    }
+    rl.rc = rl.rc - 1
+    if rl.rc == 0 {
+        ListDisposeHandle(rl.data)
+        ListDisposePtr(l)
+    }
+}
+
+// rtListLastref (rt_core.inc:794, rt_list_lastref) -- Plan 5c wave2a Task
+// 3: null-safe "is this the box's only live reference" predicate, same
+// contract as text.cla's rtTextLastref would be (Text has no element walk
+// to gate, so it never needed one) -- cpEmitRelease's element-release walk
+// gates on this, reading rc BEFORE cpEmitRelease's own rtListRelease call
+// runs, so two release call sites sharing one rc>=2 list never both walk
+// and re-release the same elements.
+func rtListLastref(l: ptr): bool {
+    return l != ptr(0) and RtList(l).rc == 1
+}
+
+// rtListAt (rt_core.inc's `list_slot` helper + the bounds-checked
+// `rt_list_at` C function) -- Plan 5c wave2a Task 3: ported ONLY for the
+// walk-INTERNAL element-accessor calls inside cpEmitRelease/cpEmitRetain's
+// own List ARC element loops (cpListPorted gate, list.cla's module header
+// comment above) -- the four pure ADDRESSING sites elsewhere in cprint.cla
+// (fpIndexRef, fpForListStmt, IListSet, IListRemove) still emit a bare
+// `rt_list_at` call (5d codegen68k input, per fpIndexRef's own doc
+// comment) and are UNCHANGED by this task. Bounds-checked, panics the same
+// message as the C reference; mp is derived fresh (no allocation happens
+// on this read-only path, so a single derivation is safe).
+func rtListAt(l: ptr, i: int): ptr {
+    var rl: RtList
+    var mp: ptr
+    var off: int
+
+    rl = RtList(l)
+    if i < 0 or i >= rl.count {
+        rtPanic("list index out of range")
+    }
+    mp = ListHandleDeref(rl.data)
+    off = i * rl.elemsize
+    return mp + off
+}
+
+// rtListPush (rt_core.inc:521-526): grow-then-append. mp is derived AFTER
+// rtListGrow (which can move l's block).
+func rtListPush(l: ptr, elem: ptr) {
+    var rl: RtList
+    var mp: ptr
+    var off: int
+
+    rl = RtList(l)
+    rtListGrow(l, rl.count + 1)
+    rl = RtList(l)
+    mp = ListHandleDeref(rl.data)
+    off = rl.count * rl.elemsize
+    ListBlockMoveData(elem, mp + off, rl.elemsize)
+    rl.count = rl.count + 1
+}
+
+// rtListPop (rt_core.inc:528-533): panics on an empty list -- never a
+// sentinel return, same contract the brief requires. No allocation happens
+// on this path, so mp is safely derived once.
+func rtListPop(l: ptr, out: ptr) {
+    var rl: RtList
+    var mp: ptr
+    var off: int
+
+    rl = RtList(l)
+    if rl.count == 0 {
+        rtPanic("pop on empty list")
+    }
+    rl.count = rl.count - 1
+    mp = ListHandleDeref(rl.data)
+    off = rl.count * rl.elemsize
+    ListBlockMoveData(mp + off, out, rl.elemsize)
+}
+
+// rtListShift (rt_core.inc:535-541): panics on an empty list, same as pop.
+// The slot-1..count-1 -> slot-0..count-2 shift is a single ListBlockMoveData
+// over a same-handle, overlapping (by one slot) range -- correct because
+// BlockMoveData is a memmove, not a memcpy (same as the C reference's own
+// direct BlockMoveData call).
+func rtListShift(l: ptr, out: ptr) {
+    var rl: RtList
+    var mp: ptr
+    var tailBytes: int
+
+    rl = RtList(l)
+    if rl.count == 0 {
+        rtPanic("shift on empty list")
+    }
+    mp = ListHandleDeref(rl.data)
+    ListBlockMoveData(mp, out, rl.elemsize)
+    tailBytes = (rl.count - 1) * rl.elemsize
+    ListBlockMoveData(mp + rl.elemsize, mp, tailBytes)
+    rl.count = rl.count - 1
+}
+
+// rtListUnshift (rt_core.inc:543-549): grow-then-shift-then-prepend. mp is
+// derived AFTER rtListGrow (which can move l's block); the shift (slot
+// 0..count-1 -> slot 1..count) is a same-handle overlapping BlockMoveData,
+// same reasoning as rtListShift above.
+func rtListUnshift(l: ptr, elem: ptr) {
+    var rl: RtList
+    var mp: ptr
+    var bodyBytes: int
+
+    rl = RtList(l)
+    rtListGrow(l, rl.count + 1)
+    rl = RtList(l)
+    mp = ListHandleDeref(rl.data)
+    bodyBytes = rl.count * rl.elemsize
+    ListBlockMoveData(mp, mp + rl.elemsize, bodyBytes)
+    ListBlockMoveData(elem, mp, rl.elemsize)
+    rl.count = rl.count + 1
+}
+
+// rtListFirst (rt_core.inc:551-555): panics on an empty list. Does NOT
+// remove the element -- a pure copy-out read (the caller, cprint.cla's
+// IListFirst/IListLast arm, retains the result itself when it's
+// heap-typed -- that `_retain` call stays bare C, per the RC-boundary rule
+// in the module header comment above).
+func rtListFirst(l: ptr, out: ptr) {
+    var rl: RtList
+    var mp: ptr
+
+    rl = RtList(l)
+    if rl.count == 0 {
+        rtPanic("first on empty list")
+    }
+    mp = ListHandleDeref(rl.data)
+    ListBlockMoveData(mp, out, rl.elemsize)
+}
+
+// rtListLast (rt_core.inc:557-561): same contract as rtListFirst, reading
+// the last slot instead of the first.
+func rtListLast(l: ptr, out: ptr) {
+    var rl: RtList
+    var mp: ptr
+    var off: int
+
+    rl = RtList(l)
+    if rl.count == 0 {
+        rtPanic("last on empty list")
+    }
+    mp = ListHandleDeref(rl.data)
+    off = (rl.count - 1) * rl.elemsize
+    ListBlockMoveData(mp + off, out, rl.elemsize)
+}
+
+// rtListRemove (rt_core.inc:563-573): panics (never clamps) on an
+// out-of-range index, same STRICT contract as rtStrIndex/rtTextIndex. The
+// tail (everything after slot i) shifts down by one slot via a single
+// same-handle overlapping ListBlockMoveData when there IS a tail; removing
+// the last element (tail == 0) skips the move entirely, matching the C
+// reference's own `if (tail > 0)` guard. The caller (cprint.cla's
+// IListRemove arm) reads+releases the OLD element via a bare `rt_list_at`
+// BEFORE calling this function -- that read stays C (RC boundary), this
+// function only ever performs the removal itself.
+func rtListRemove(l: ptr, i: int) {
+    var rl: RtList
+    var mp: ptr
+    var tail: int
+
+    rl = RtList(l)
+    if i < 0 or i >= rl.count {
+        rtPanic("list index out of range")
+    }
+    tail = rl.count - 1 - i
+    if tail > 0 {
+        mp = ListHandleDeref(rl.data)
+        ListBlockMoveData(mp + (i + 1) * rl.elemsize, mp + i * rl.elemsize, tail * rl.elemsize)
+    }
+    rl.count = rl.count - 1
+}
+
+// rtListCount (rt_core.inc:581).
+func rtListCount(l: ptr): int {
+    return RtList(l).count
+}
+
+// rtListClear (rt_core.inc:724, `rt_list_clear`): count = 0, capacity kept
+// -- backs `l.clear()` (layer1-compiler-perf phase Task 8, IListClear
+// intrinsic) on both the cprint and cg68k lanes. No element release: same
+// "hard reset" contract as rtMapClear/rtIntMapClear/rtSortedMapClear below.
+func rtListClear(l: ptr) {
+    var rl: RtList
+
+    rl = RtList(l)
+    rl.count = 0
+}
+
+// rtListClone (clir-load-perf: `l.clone()`, IListClone intrinsic) -- a
+// fresh whole-list copy of src's elements as ONE ListBlockMoveData, legal
+// precisely because the checker (check.cla's own "clone" arm,
+// formForFieldIsByValue) restricts clone() to a flat (no text/list/map
+// anywhere) element type: no element can own a handle, so no per-element
+// retain is ever needed here, unlike every other List call in this file
+// that touches a whole population (rtListRelease's element-release walk
+// callers, IListClearDeep). Mirrors rtTextTextAt's own dst-out-param ARC
+// convention exactly (text.cla): dst is caller-allocated (a fresh empty
+// list from rtListNew, cprint.cla's/cg68k's own clone arms), grown to
+// hold src's count elements, BOTH master pointers re-derived AFTER the
+// grow (relocation discipline, module header comment above -- growing
+// dst's own handle can move ANY relocatable block, including src's).
+// elemSize is passed explicitly by the caller (rather than read back off
+// src.elemsize/dst.elemsize, both already correct at this point) --
+// same "the call site already knows this constant" convention
+// rtTextTextAt's own `n` argument uses. Empty src does no copy at all
+// (dst.count set to 0 and returns immediately) -- rtListGrow(dst, 0)
+// would be a no-op anyway, but this skips the ListBlockMoveData call
+// entirely rather than moving zero bytes.
+func rtListClone(dst: ptr, src: ptr, elemSize: int) {
+    var rs: RtList
+    var rd: RtList
+    var n: int
+    var srcmp: ptr
+    var dstmp: ptr
+
+    rs = RtList(src)
+    n = rs.count
+    if n == 0 {
+        rd = RtList(dst)
+        rd.count = 0
+        return
+    }
+    rtListGrow(dst, n)
+    rs = RtList(src)
+    rd = RtList(dst)
+    srcmp = ListHandleDeref(rs.data)
+    dstmp = ListHandleDeref(rd.data)
+    ListBlockMoveData(srcmp, dstmp, n * elemSize)
+    rd.count = n
+}

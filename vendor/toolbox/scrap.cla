@@ -1,0 +1,56 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// toolbox/scrap.cla: curated Scrap Manager (desk scrap) declarations
+// (Inside Macintosh I, "The Scrap Manager"). All pascal-convention
+// (bit 11 set). TEFromScrap/TEToScrap are deliberately ABSENT: they are
+// glue routines with no trap word (see the cookbook's copy/paste
+// walkthrough), not Scrap Manager traps -- also confirmed by
+// runtime/clarus/uitext.cla's own doc comment, which found no
+// TE-prefixed entries in Retro68 multiversal/defs/ScrapMgr.yaml either.
+//
+// Provenance: ZeroScrap proven verbatim against runtime/clarus/ui.cla's
+// UiZeroScrap (0xA9FC). PutScrap (0xA9FE) and GetScrap (0xA9FD) were
+// originally verified against multiversal defs/ScrapMgr.yaml per
+// runtime/clarus/uitext.cla:144-145's comment. InfoScrap (0xA9F9),
+// LoadScrap (0xA9FB), UnloadScrap (0xA9FA), and the ScrapStuff
+// peek-offset table below were likewise originally checked only against
+// defs/ScrapMgr.yaml's own `function:`/`struct: ScrapStuff` entries.
+//
+// Apple-interfaces re-verification (toolbox-cookbook phase, 2026-08-07):
+// multiversal/defs/*.yaml is a third-party reconstruction and UNTRUSTED
+// WHEN CITED ALONE -- a citation it is the SOLE source for has never been
+// checked against Apple at all. (The anecdote that used to justify this
+// rule here -- that multiversal put Gestalt's `responsep` in the wrong
+// register -- was itself wrong, and pack3-standardfile Task 5a retired
+// it: multiversal's `Out<A0>` was RIGHT, and our A1 reading came from
+// taking `Gestalt.h`'s `#pragma parameter` line as the trap's contract
+// when it describes the INLINE GLUE. The sharper rule that survives:
+// decode the inline words -- a `TWOWORDINLINE` routine's second word is
+// glue you must reproduce or route around. See toolbox/osutils.cla.)
+// Every trap word and the ScrapStuff layout
+// below are now confirmed directly against Apple's own Universal
+// Interfaces 3.4 (Retro68/InterfacesAndLibraries/Interfaces): AIncludes/
+// Scrap.a confirms ZeroScrap $A9FC / GetScrap $A9FD / PutScrap $A9FE /
+// InfoScrap $A9F9 / LoadScrap $A9FB / UnloadScrap $A9FA, and CIncludes/
+// Scrap.h:125-131's `struct ScrapStuff` (scrapSize: SInt32, scrapHandle:
+// Handle, scrapCount: SInt16, scrapState: SInt16, scrapName: StringPtr,
+// declared in that order) lays out to the same sequential offsets/sizes
+// 0/4/8/$A/$C, size $10, listed below -- multiversal citations above are
+// secondary corroboration only, superseded by this direct check.
+//
+// InfoScrap returns a pointer to the ScrapStuff record; read it with
+// peek at these offsets (no extern-record conversion exists for a
+// returned ptr):
+//   +0  scrapSize    long   (peekl)
+//   +4  scrapHandle  Handle (peekl)
+//   +8  scrapCount   word   (peekw)
+//   +10 scrapState   word   (peekw)
+//   +12 scrapName    ptr    (peekl)
+
+external func ZeroScrap(): int = trap 0xA9FC
+external func PutScrap(length: int, theType: int, source: ptr): int = trap 0xA9FE
+external func GetScrap(hDest: ptr, theType: int, offset: ptr): int = trap 0xA9FD
+external func InfoScrap(): ptr = trap 0xA9F9
+external func LoadScrap(): int = trap 0xA9FB
+external func UnloadScrap(): int = trap 0xA9FA

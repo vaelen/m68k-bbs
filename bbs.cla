@@ -8,7 +8,7 @@
 include "scanner.cla"
 include "user.cla"
 include "termio.cla"
-include "clarus-src/toolbox/osutils.cla"   // DateTimeRec / SecondsToDate
+include "vendor/toolbox/osutils.cla"   // DateTimeRec / SecondsToDate
 
 app BBS {
     name: "68kBBS"

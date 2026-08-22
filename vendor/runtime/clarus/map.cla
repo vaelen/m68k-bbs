@@ -1,0 +1,1174 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// map.cla: the Map family, rewritten from a sorted parallel-array (binary
+// search, O(n) 256-byte-block memmove inserts) to an open-addressed
+// (linear-probe) HASHTABLE (map-hashtable phase, Task 5). The sorted
+// implementation is preserved verbatim as `sortedmap of T`
+// (sortedmap.cla, map-hashtable phase Tasks 1-3) for callers that need
+// ascending-key iteration; plain `map of T` no longer promises any
+// particular order, only that a given sequence of inserts/removes always
+// replays the same (implementation-defined) order deterministically.
+//
+// EXACT box layout / hash / probe / growth / remove rules are normative in
+// .superpowers/sdd/2026-08-10-map-hashtable/shared-design-constants.md --
+// this file and runtime/host/rt_core.inc's C twin both implement that
+// document verbatim, function by function, so the two lanes stay
+// byte-identical. This matters beyond aesthetics: cprint.cla's
+// fpUiEditStmt (the `edit F, mapVar` UI statement's map arm) and
+// runtime/host/rt_ser.inc's legacy load/save fallback both call the public
+// C `rt_map_*` functions directly (UNGATED by cpMapPorted/cpMapArcPorted)
+// against the SAME struct instances this Clarus module's `rtMap*`
+// functions create and mutate via `rtMapNew` -- a single running program
+// can read/write one map through EITHER lane, so any algorithmic drift
+// between them would corrupt live data, not just produce a cosmetic
+// difference.
+//
+// New box layout (RtMap below / `struct rt_map`, rt_core.inc): 13 fields
+// -- `rc`, `keys` (now an entry-META array, not raw key bytes -- see
+// below), `vals` (unchanged role), `valsize`, `count`, `cap`, `valcap`,
+// `keypool` (new: raw key content bytes, end-to-end), `poolused`,
+// `poolcap`, `index` (new: the open-addressing slot table), `indexcap`,
+// `tombs`. rt_core.inc's own rt_map_layout_check typedef guards this
+// overlay and the real C struct can never drift, same placement/reasoning
+// as before.
+//
+// Entries are DENSE: `keys` holds `count` fixed 12-byte meta records
+// {hash:int32, keyOff:int32, keyLen:int32} (MAP_ENTRY_STRIDE), index-
+// aligned with `vals`'s `count` fixed-`valsize` value slots -- same
+// index-alignment relationship the old sorted-array design had between
+// `keys` and `vals`, just with `keys` holding meta instead of full Str255
+// blocks now. A key's actual bytes live in `keypool`, referenced by each
+// entry's own (keyOff, keyLen) -- appended once (mapPoolAppend below) and
+// never moved or reclaimed by a later remove (an abandoned key's pool
+// bytes are simply dead weight until the whole map is released; the
+// shared design constants document this "abandon on remove" rule
+// explicitly, favoring an append-only pool over compaction complexity).
+//
+// `index` is the open-addressed lookup structure: `indexcap` (a power of
+// two, 0 until the very first insert) int32 slots, each holding an entry
+// index (>= 0), EMPTY (-1), or TOMB (-2, a removed entry's former slot,
+// kept so a later probe chain doesn't terminate early). mapHash (below)
+// computes a key's hash (djb2, masked to 31 bits after EVERY step -- see
+// its own doc comment); mapIndexFindSlot/mapIndexLookup/mapIndexSlotFor/
+// mapIndexInsert/mapIndexRepoint (below) implement the probe/match/insert/
+// repoint rules exactly as the shared design constants document. Growth:
+// mapEnsureIndexCapacity materializes indexcap=8 on the very first insert,
+// then mapRehash doubles + rebuilds whenever `(count + tombs) * 4 >=
+// indexcap * 3` (checked, per the shared design constants, using the
+// state BEFORE the pending insert) -- entries/vals/keypool grow via the
+// same amortized-doubling SetHandleSize pattern the old rtMapGrowKeys/
+// rtMapGrowVals already used (mapGrowEntries/mapGrowVals/mapGrowPool
+// below), unrelated to the index's own doubling.
+//
+// Remove is swap-with-last: TOMB the removed entry's index slot, then (if
+// it wasn't already the last dense entry) copy the last entry's meta+value
+// into the removed slot and re-point the MOVED entry's own index slot from
+// its old dense position to its new one (mapIndexRepoint below finds that
+// slot by matching the moved entry's OWN stored index value along its
+// hash's probe chain -- entry indices are unique among live entries, so
+// this is unambiguous and equivalent to, but simpler than, re-deriving and
+// comparing the moved entry's key bytes; see mapIndexRepoint's own doc
+// comment for why this is a deliberate simplification over the shared
+// design constants' literal "find it by ... key compare" phrasing, and why
+// it's still exactly reproducible between the two lanes). Iteration
+// (rtMapKeyAt/rtMapValAt) walks the dense arrays 0..count-1 directly, so
+// it visits entries in insertion order, perturbed by any removes --
+// unspecified but deterministic, never sorted.
+//
+// RC boundary (unchanged from the sorted implementation, Plan 5c wave2a
+// Task 4): birth (rtMapNew) constructs the WHOLE box itself (MapNewPtr +
+// overlay pokes + FOUR MapNewHandle(0) calls: keys, vals, keypool, index);
+// rtMapRetain/rtMapRelease do the rc arithmetic and the rc==0 dispose
+// sequence here too, calling MapRcCheck only on the cold over-release path
+// (`rc <= 0`); rtMapLastref (`m != NULL and m.rc == 1`) is the null-safe
+// "am I the only owner" predicate cpEmitRelease's element-release walk
+// gates on. rtMapRelease's rc==0 path now disposes FOUR handles before the
+// box (keys, vals, keypool, index, in that order) -- the same "extend the
+// existing dispose order" rule Task 5's brief calls for; every other ARC
+// wiring detail (cpMapArcPorted's redirect scope, fpUiEditStmt's STAYS-C
+// exclusion, cpMapPorted's own separate accessor gate) is UNCHANGED by
+// this rewrite -- see git history for the fuller account this header
+// comment used to carry about that wiring, still accurate today.
+//
+// Relocation discipline (UNCHANGED, still load-bearing): `keys`, `vals`,
+// `keypool`, and `index` are FOUR separate Handles, each grown and
+// potentially moved independently. Every access to any of them re-derives
+// that Handle's master pointer via MapHandleDeref on EVERY call (no
+// caching of a dereferenced pointer across any call that can allocate/move
+// memory) -- mapEntrySlot/mapValSlot/mapIndexSlot (below) are the fresh-
+// derivation points, mirroring the old mapKeySlot/mapValSlot exactly, now
+// joined by a third for the index and a fourth (inline in mapPoolAppend/
+// mapPoolKeyEq/rtMapKeyAt) for the keypool. The paranoid allocator
+// (CLARUS_MEM_PARANOID) catches violations of this rule in the leak-gated
+// test runs. Key/value/meta block moves go through MapBlockMoveData (a
+// BlockMoveData/memmove, not memcpy) with source/destination ranges
+// computed from freshly-derived slot pointers.
+//
+// Behavior contract (UNCHANGED from the sorted implementation): `get` on
+// an absent key panics ("map key not found"); `get_dv` returns false (out
+// untouched) on absent, true (out filled) on present; `remove` is silent
+// on an absent key; `key_at`/`val_at` panic ("map key not found") on an
+// out-of-range index; `clear` resets count to 0 (also tombs to 0, poolused
+// to 0, and every index slot to EMPTY), keeping every Handle's capacity --
+// same interface-parity reasoning as before (still unreachable from any
+// emitted program today, no `IMapClear` intrinsic exists).
+//
+// MapHandleDeref/MapSetHandleSize/MapBlockMoveData/MapNewPtr/
+// MapDisposePtr/MapNewHandle/MapDisposeHandle/MapRcCheck are unchanged
+// from the sorted implementation -- same externs, same name-collision
+// reasoning (distinct Map-prefixed names sidestep checkFuncSig's
+// name-only collision hazard), same rt_ext_Map* wrapper backing in both
+// runtime/host/rt_ext_host.inc and runtime/mac/rt_ext_mac.inc.
+external func MapHandleDeref(h: ptr): ptr = inline deref
+// `reg memerr`, not plain `reg` -- see text.cla's own TextSetHandleSize
+// doc comment (Task 14, native-5e) for why: SetHandleSize is a void
+// Pascal procedure, no result in D0.
+external func MapSetHandleSize(h: ptr, n: int): int = trap 0xA024 reg memerr
+external func MapBlockMoveData(src: ptr, dst: ptr, count: int) = trap 0xA22E reg
+external func MapNewPtr(size: int): ptr = trap 0xA11E reg
+external func MapDisposePtr(p: ptr) = trap 0xA01F reg
+external func MapNewHandle(n: int): ptr = trap 0xA122 reg
+external func MapDisposeHandle(h: ptr) = trap 0xA023 reg
+external func MapRcCheck(box: ptr, rc: int) = inline nop
+
+// MAP_ENTRY_STRIDE: byte width of one entry's meta record in `keys` --
+// {hash:int32, keyOff:int32, keyLen:int32} (shared design constants' own
+// "Entry meta stride" rule). Offsets within a record: hash at +0, keyOff
+// at +4, keyLen at +8.
+const MAP_ENTRY_STRIDE: int = 12
+
+// INDEX_EMPTY/INDEX_TOMB: the two negative sentinel values an `index` slot
+// can hold besides a non-negative entry index (shared design constants'
+// "Index slot values" rule). A fresh or just-grown index's slots are all
+// INDEX_EMPTY.
+const INDEX_EMPTY: int = -1
+const INDEX_TOMB: int = -2
+
+// RtMap (Ch13: Overlay Records) mirrors rt_core.inc's `struct rt_map`
+// field-for-field (13 fields) -- rt_core.inc's rt_map_layout_check
+// typedef guards this layout stays exact.
+overlay record RtMap {
+    rc: int
+    keys: ptr
+    vals: ptr
+    valsize: int
+    count: int
+    cap: int
+    valcap: int
+    keypool: ptr
+    poolused: int
+    poolcap: int
+    index: ptr
+    indexcap: int
+    tombs: int
+}
+
+// mapEntrySlot: the address of entry i's 12-byte meta record -- derives
+// the keys Handle's master pointer fresh on every call (relocation
+// discipline, module header comment above).
+func mapEntrySlot(m: ptr, i: int): ptr {
+    return MapHandleDeref(RtMap(m).keys) + i * MAP_ENTRY_STRIDE
+}
+
+// mapValSlot: the address of value entry i -- same role/discipline as the
+// old sorted implementation's own mapValSlot.
+func mapValSlot(m: ptr, i: int): ptr {
+    return MapHandleDeref(RtMap(m).vals) + i * RtMap(m).valsize
+}
+
+// mapIndexSlot: the address of index slot i (one int32 each) -- derives
+// the index Handle's master pointer fresh on every call.
+func mapIndexSlot(m: ptr, i: int): ptr {
+    return MapHandleDeref(RtMap(m).index) + i * 4
+}
+
+// mapEntryHash/mapEntryKeyOff/mapEntryKeyLen: read the three fields of
+// entry i's meta record.
+func mapEntryHash(m: ptr, i: int): int {
+    return peekl(mapEntrySlot(m, i))
+}
+func mapEntryKeyOff(m: ptr, i: int): int {
+    return peekl(mapEntrySlot(m, i) + 4)
+}
+func mapEntryKeyLen(m: ptr, i: int): int {
+    return peekl(mapEntrySlot(m, i) + 8)
+}
+
+// mapSetEntryMeta writes all three fields of entry i's meta record in one
+// call (a single freshly-derived slot address, then three pokes).
+func mapSetEntryMeta(m: ptr, i: int, hash: int, keyOff: int, keyLen: int) {
+    var slot: ptr
+
+    slot = mapEntrySlot(m, i)
+    pokel(slot, hash)
+    pokel(slot + 4, keyOff)
+    pokel(slot + 8, keyLen)
+}
+
+// mapHash (shared design constants' "Hash (map)" rule): djb2, masked to
+// 31 bits after EVERY step, not just at the end -- `h = 5381; for each
+// byte b: h = (((h << 5) + h) + b) and 0x7FFFFFFF`. Clarus's bitwise-AND
+// operator is `&` (`and`/`or` are the short-circuit BOOLEAN operators,
+// Ch4) -- the shared design constants' "and 0x7FFFFFFF" pseudocode is
+// this same mask, spelled with `&` here. `key` is a Pascal-string pointer
+// (peekb(key) = length, key+1.. = content bytes), the same shape every
+// other map key parameter in this file uses.
+func mapHash(key: ptr): int {
+    var klen: int
+    var i: int
+    var h: int
+    var b: int
+
+    klen = peekb(key)
+    h = 5381
+    i = 0
+    while i < klen {
+        b = peekb(key + 1 + i)
+        h = (h << 5) + h + b
+        h = h & 0x7FFFFFFF
+        i = i + 1
+    }
+    return h
+}
+
+// mapPoolKeyEq (shared design constants' "Match test (map)" rule, the
+// keyLen/byte-compare half -- the hash compare happens at each call site,
+// against the entry's own stored hash, before this is even called):
+// compares a candidate entry's own (keyOff, keyLen) pool range against
+// `key`/`klen` (a Pascal-string pointer + its length). keyLen != klen
+// short-circuits before any byte is touched.
+func mapPoolKeyEq(m: ptr, keyOff: int, keyLen: int, key: ptr, klen: int): bool {
+    var base: ptr
+    var i: int
+
+    if keyLen != klen {
+        return false
+    }
+    base = MapHandleDeref(RtMap(m).keypool) + keyOff
+    i = 0
+    while i < klen {
+        if peekb(base + i) != peekb(key + 1 + i) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// mapIndexFindSlot is the one shared probe loop mapIndexLookup (entry
+// index) and rtMapRemove (needs the INDEX SLOT itself, to TOMB it) both
+// build on -- shared design constants' "Probe" + "Match test" rules in
+// one place: starting at `hash & (indexcap - 1)`, step `+1 & (indexcap -
+// 1)` (linear); an EMPTY slot ends the search (return -1, key absent); a
+// TOMB slot is skipped; an occupied slot is a match iff its stored hash
+// equals `hash` AND its stored key equals `key` (mapPoolKeyEq). Returns
+// -1 immediately, without probing, when indexcap == 0 (nothing has ever
+// been inserted).
+func mapIndexFindSlot(m: ptr, hash: int, key: ptr): int {
+    var indexcap: int
+    var klen: int
+    var slot: int
+    var v: int
+
+    indexcap = RtMap(m).indexcap
+    if indexcap == 0 {
+        return -1
+    }
+    klen = peekb(key)
+    slot = hash & (indexcap - 1)
+    while true {
+        v = peekl(mapIndexSlot(m, slot))
+        if v == INDEX_EMPTY {
+            return -1
+        }
+        if v != INDEX_TOMB {
+            if mapEntryHash(m, v) == hash and mapPoolKeyEq(m, mapEntryKeyOff(m, v), mapEntryKeyLen(m, v), key, klen) {
+                return slot
+            }
+        }
+        slot = (slot + 1) & (indexcap - 1)
+    }
+}
+
+// mapIndexLookup (Interfaces: mapIndexLookup(m, hash, key) -> entryIdx or
+// -1): a thin wrapper over mapIndexFindSlot that reads the matched slot's
+// stored entry index. Used by Get/GetDv/Has/Set's upsert check.
+func mapIndexLookup(m: ptr, hash: int, key: ptr): int {
+    var slot: int
+
+    slot = mapIndexFindSlot(m, hash, key)
+    if slot < 0 {
+        return -1
+    }
+    return peekl(mapIndexSlot(m, slot))
+}
+
+// mapIndexSlotFor (Interfaces: mapIndexSlotFor(m, hash, key) -> slot, "the
+// insert position, reusing first tombstone"): probes the same sequence
+// mapIndexFindSlot would, remembering the first TOMB slot seen; returns
+// that reused TOMB slot if one was seen, else the terminating EMPTY slot.
+// Callers only ever call this once the key is already known absent
+// (rtMapSet, after its own mapIndexLookup missed) or where reinsertion is
+// by a live entry's own already-unique stored hash (mapRehash, where no
+// two live entries can collide on both hash AND key) -- so, unlike
+// mapIndexFindSlot, this never needs to compare `key` against an occupied
+// slot's stored key; `key` is accepted (not dropped) only to keep the same
+// call shape mapIndexLookup uses, matching the shared design constants'
+// Interfaces list exactly (rt_core.inc's C twin, map_index_slot_for, does
+// the same). mapRehash passes ptr(0) for `key` at its own call site.
+func mapIndexSlotFor(m: ptr, hash: int, key: ptr): int {
+    var indexcap: int
+    var slot: int
+    var firstTomb: int
+    var v: int
+
+    indexcap = RtMap(m).indexcap
+    slot = hash & (indexcap - 1)
+    firstTomb = -1
+    while true {
+        v = peekl(mapIndexSlot(m, slot))
+        if v == INDEX_EMPTY {
+            if firstTomb >= 0 {
+                return firstTomb
+            }
+            return slot
+        }
+        if v == INDEX_TOMB and firstTomb < 0 {
+            firstTomb = slot
+        }
+        slot = (slot + 1) & (indexcap - 1)
+    }
+}
+
+// mapIndexInsert (Interfaces: mapIndexInsert(m, hash, entryIdx)): writes
+// entryIdx into the slot mapIndexSlotFor finds for `hash`, decrementing
+// `tombs` if that slot was a reused TOMB (the one place tombs bookkeeping
+// happens on the insert side -- mapRehash's own tombs=0 reset means this
+// branch never actually fires during a rehash, since every slot it writes
+// into starts fresh EMPTY).
+func mapIndexInsert(m: ptr, hash: int, entryIdx: int) {
+    var rm: RtMap
+    var slot: int
+    var slotPtr: ptr
+    var old: int
+
+    rm = RtMap(m)
+    slot = mapIndexSlotFor(m, hash, ptr(0))
+    slotPtr = mapIndexSlot(m, slot)
+    old = peekl(slotPtr)
+    pokel(slotPtr, entryIdx)
+    if old == INDEX_TOMB {
+        rm.tombs = rm.tombs - 1
+    }
+}
+
+// mapIndexRepoint: after rtMapRemove copies the last dense entry down into
+// the removed entry's old slot, the MOVED entry's own index slot (which
+// still holds its OLD dense position, `oldIdx`) must be updated to point
+// at its NEW position, `newIdx`. This probes `hash`'s sequence (the moved
+// entry's own stored hash) for the slot whose CURRENT value is exactly
+// `oldIdx` -- entry indices are unique among live entries, so this is an
+// unambiguous match, simpler than (but equivalent to) re-deriving the
+// moved entry's key bytes and comparing them the way mapIndexFindSlot
+// does: whichever slot mapIndexInsert originally wrote `oldIdx` into for
+// this same hash is the one and only slot this probe can find holding
+// that value, by construction. A deliberate simplification over the
+// shared design constants' literal "find it by ... key compare" phrasing,
+// applied identically in rt_core.inc's C twin (map_index_repoint) so both
+// lanes stay in lockstep regardless.
+func mapIndexRepoint(m: ptr, hash: int, oldIdx: int, newIdx: int) {
+    var indexcap: int
+    var slot: int
+    var v: int
+
+    indexcap = RtMap(m).indexcap
+    slot = hash & (indexcap - 1)
+    while true {
+        v = peekl(mapIndexSlot(m, slot))
+        if v == oldIdx {
+            pokel(mapIndexSlot(m, slot), newIdx)
+            return
+        }
+        slot = (slot + 1) & (indexcap - 1)
+    }
+}
+
+// mapAllocIndex (re)sizes the index Handle to `newcap` int32 slots and
+// resets every slot to EMPTY -- used both to materialize the index on the
+// very first insert (indexcap 0 -> 8, mapEnsureIndexCapacity below) and,
+// from mapRehash, to grow it to double the old capacity before rebuilding.
+func mapAllocIndex(m: ptr, newcap: int) {
+    var rm: RtMap
+    var err: int
+    var mp: ptr
+    var i: int
+
+    rm = RtMap(m)
+    err = MapSetHandleSize(rm.index, newcap * 4)
+    if err != 0 {
+        rtPanic("out of memory")
+    }
+    rm.indexcap = newcap
+    mp = MapHandleDeref(rm.index)
+    i = 0
+    while i < newcap {
+        pokel(mp + i * 4, INDEX_EMPTY)
+        i = i + 1
+    }
+}
+
+// mapRehash (shared design constants' "Growth" rule, the doubling half):
+// doubles indexcap, resets every slot to EMPTY (via mapAllocIndex), resets
+// tombs to 0, then re-inserts every live dense entry (0..count-1) by its
+// OWN stored hash -- no key comparison needed (mapIndexSlotFor's own doc
+// comment above), so `key` is ptr(0) at every mapIndexInsert call this
+// makes.
+func mapRehash(m: ptr) {
+    var rm: RtMap
+    var newcap: int
+    var i: int
+    var h: int
+
+    rm = RtMap(m)
+    newcap = rm.indexcap * 2
+    mapAllocIndex(m, newcap)
+    rm = RtMap(m)
+    rm.tombs = 0
+    i = 0
+    while i < rm.count {
+        h = mapEntryHash(m, i)
+        mapIndexInsert(m, h, i)
+        i = i + 1
+    }
+}
+
+// mapEnsureIndexCapacity: materializes the index (indexcap 8, all EMPTY)
+// on the very first insert (indexcap == 0), or rehash-doubles it once the
+// shared design constants' load-factor threshold is crossed: `(count +
+// tombs) * 4 >= indexcap * 3`, checked (per that same document) using the
+// state BEFORE the pending insert. Called by rtMapSet before every INSERT
+// (never before an overwrite -- an overwrite touches no index slot at
+// all).
+func mapEnsureIndexCapacity(m: ptr) {
+    var rm: RtMap
+
+    rm = RtMap(m)
+    if rm.indexcap == 0 {
+        mapAllocIndex(m, 8)
+        return
+    }
+    if (rm.count + rm.tombs) * 4 >= rm.indexcap * 3 {
+        mapRehash(m)
+    }
+}
+
+// mapGrowEntries (Interfaces: mapGrowEntries(m, need)) -- the entry-meta
+// array's own amortized-doubling grower, same shape as the old sorted
+// implementation's rtMapGrowKeys (doubles cap from 4 if currently empty,
+// until it covers `need`, then MapSetHandleSize once, in bytes,
+// newcap*MAP_ENTRY_STRIDE). Callers that hold a master pointer derived
+// before calling this MUST re-derive it afterward (relocation discipline,
+// module header comment above) -- growth can move the block.
+func mapGrowEntries(m: ptr, need: int) {
+    var rm: RtMap
+    var cap: int
+    var newcap: int
+    var err: int
+
+    rm = RtMap(m)
+    cap = rm.cap
+    if need <= cap {
+        return
+    }
+    if cap > 0 {
+        newcap = cap
+    } else {
+        newcap = 4
+    }
+    while newcap < need {
+        newcap = newcap * 2
+    }
+    err = MapSetHandleSize(rm.keys, newcap * MAP_ENTRY_STRIDE)
+    if err != 0 {
+        rtPanic("out of memory")
+    }
+    rm.cap = newcap
+}
+
+// mapGrowVals: the vals Handle's own amortized-doubling grower --
+// otherwise identical in structure to mapGrowEntries above (unchanged role
+// and shape from the old sorted implementation's rtMapGrowVals).
+func mapGrowVals(m: ptr, need: int) {
+    var rm: RtMap
+    var cap: int
+    var newcap: int
+    var valsize: int
+    var err: int
+
+    rm = RtMap(m)
+    cap = rm.valcap
+    if need <= cap {
+        return
+    }
+    valsize = rm.valsize
+    if cap > 0 {
+        newcap = cap
+    } else {
+        newcap = 4
+    }
+    while newcap < need {
+        newcap = newcap * 2
+    }
+    err = MapSetHandleSize(rm.vals, newcap * valsize)
+    if err != 0 {
+        rtPanic("out of memory")
+    }
+    rm.valcap = newcap
+}
+
+// mapGrowPool: the keypool Handle's own amortized-doubling grower, in
+// BYTES rather than entries -- same doubling-from-4 shape as
+// mapGrowEntries/mapGrowVals (shared design constants: "Entry/vals/
+// keypool arrays grow by the existing doubling-SetHandleSize pattern").
+func mapGrowPool(m: ptr, need: int) {
+    var rm: RtMap
+    var cap: int
+    var newcap: int
+    var err: int
+
+    rm = RtMap(m)
+    cap = rm.poolcap
+    if need <= cap {
+        return
+    }
+    if cap > 0 {
+        newcap = cap
+    } else {
+        newcap = 4
+    }
+    while newcap < need {
+        newcap = newcap * 2
+    }
+    err = MapSetHandleSize(rm.keypool, newcap)
+    if err != 0 {
+        rtPanic("out of memory")
+    }
+    rm.poolcap = newcap
+}
+
+// mapPoolAppend (Interfaces: mapPoolAppend(m, key) -> keyOff): grows the
+// keypool (mapGrowPool) to fit one more key's CONTENT bytes if needed,
+// then appends them (NOT the Pascal length byte -- keyLen already lives in
+// the entry's own meta record; shared design constants: "raw key bytes
+// end-to-end") at the current poolused offset, advances poolused by klen,
+// and returns the offset the bytes were written at.
+func mapPoolAppend(m: ptr, key: ptr): int {
+    var rm: RtMap
+    var klen: int
+    var off: int
+    var mp: ptr
+
+    klen = peekb(key)
+    rm = RtMap(m)
+    mapGrowPool(m, rm.poolused + klen)
+    rm = RtMap(m)
+    off = rm.poolused
+    mp = MapHandleDeref(rm.keypool)
+    MapBlockMoveData(key + 1, mp + off, klen)
+    rm.poolused = off + klen
+    return off
+}
+
+// rtMapBoxSize is MapNewPtr's argument for rtMapNew's box below. The box
+// carries 13 real fields (RtMap above); this constant conservatively
+// budgets 14 x 8-byte slots (112 bytes) -- one slot more than the exact
+// field count -- for the same "a little slack here is harmless" reason
+// the old 56-byte constant (7 fields x 8) already documented: MapNewPtr
+// only guarantees "at least this many bytes," so slightly over-budgeting
+// is harmless, unlike an UNDER-sized box, which would corrupt whatever
+// heap memory follows it. (The shared design constants document states
+// this same 112-byte figure as "14 fields x 8-byte slots" -- the extra
+// slot beyond the 13 real fields is exactly this deliberate slack, not a
+// miscount.)
+const rtMapBoxSize: int = 112
+
+// rtMapNew: birth allocation is entirely Clarus-owned (rc=1, valsize/
+// count/cap/valcap/poolused/poolcap/indexcap/tombs poked, FOUR fresh empty
+// Handles: keys, vals, keypool, index). indexcap starts at 0 -- the index
+// itself is materialized on the very first insert (mapEnsureIndexCapacity
+// above), not here. MapNewPtr/MapNewHandle's own C shim panics on NULL
+// (host only), so these guards are dead on host, live on native -- same
+// "out of memory" message the C shim uses.
+func rtMapNew(valsize: int): ptr {
+    var m: ptr
+    var rm: RtMap
+
+    m = MapNewPtr(rtMapBoxSize)
+    if m == ptr(0) {
+        rtPanic("out of memory")
+    }
+    rm = RtMap(m)
+    rm.rc = 1
+    rm.keys = MapNewHandle(0)
+    if rm.keys == ptr(0) {
+        rtPanic("out of memory")
+    }
+    rm.vals = MapNewHandle(0)
+    if rm.vals == ptr(0) {
+        rtPanic("out of memory")
+    }
+    rm.valsize = valsize
+    rm.count = 0
+    rm.cap = 0
+    rm.valcap = 0
+    rm.keypool = MapNewHandle(0)
+    if rm.keypool == ptr(0) {
+        rtPanic("out of memory")
+    }
+    rm.poolused = 0
+    rm.poolcap = 0
+    rm.index = MapNewHandle(0)
+    if rm.index == ptr(0) {
+        rtPanic("out of memory")
+    }
+    rm.indexcap = 0
+    rm.tombs = 0
+    return m
+}
+
+// rtMapRetain: null-safe increment, no over-release guard -- unchanged
+// from the sorted implementation.
+func rtMapRetain(m: ptr) {
+    var rm: RtMap
+
+    if m == ptr(0) {
+        return
+    }
+    rm = RtMap(m)
+    rm.rc = rm.rc + 1
+}
+
+// rtMapRelease: null-safe; the over-release guard runs ONLY on the cold
+// `rc <= 0` path; decrements regardless; disposes FOUR handles then the
+// box itself once rc reaches 0 -- keys, vals, keypool, index, box, in that
+// order (extends the old three-handle dispose order with the two new
+// ones, appended at the end).
+func rtMapRelease(m: ptr) {
+    var rm: RtMap
+
+    if m == ptr(0) {
+        return
+    }
+    rm = RtMap(m)
+    if rm.rc <= 0 {
+        MapRcCheck(m, rm.rc)
+    }
+    rm.rc = rm.rc - 1
+    if rm.rc == 0 {
+        MapDisposeHandle(rm.keys)
+        MapDisposeHandle(rm.vals)
+        MapDisposeHandle(rm.keypool)
+        MapDisposeHandle(rm.index)
+        MapDisposePtr(m)
+    }
+}
+
+// rtMapLastref: null-safe "is this the box's only live reference"
+// predicate -- unchanged from the sorted implementation.
+func rtMapLastref(m: ptr): bool {
+    return m != ptr(0) and RtMap(m).rc == 1
+}
+
+// rtMapSet: upsert. mapIndexLookup finds an existing match first (an
+// overwrite touches only the value slot, no index/entry/pool mutation at
+// all). On a miss: mapEnsureIndexCapacity (materialize or rehash-grow the
+// index BEFORE this insert), grow the entries/vals arrays for one more
+// entry, append the key's content bytes to the pool, write the new dense
+// entry's meta + value at slot `count`, insert the new entry into the
+// index, then increment count.
+func rtMapSet(m: ptr, key: ptr, val: ptr) {
+    var rm: RtMap
+    var h: int
+    var idx: int
+    var klen: int
+    var keyOff: int
+
+    rm = RtMap(m)
+    h = mapHash(key)
+    idx = mapIndexLookup(m, h, key)
+    if idx >= 0 {
+        MapBlockMoveData(val, mapValSlot(m, idx), rm.valsize)
+        return
+    }
+
+    mapEnsureIndexCapacity(m)
+    mapGrowEntries(m, rm.count + 1)
+    mapGrowVals(m, rm.count + 1)
+
+    klen = peekb(key)
+    keyOff = mapPoolAppend(m, key)
+
+    idx = rm.count
+    mapSetEntryMeta(m, idx, h, keyOff, klen)
+    MapBlockMoveData(val, mapValSlot(m, idx), rm.valsize)
+    mapIndexInsert(m, h, idx)
+    rm.count = rm.count + 1
+}
+
+// rtMapGet: panics ("map key not found") on an absent key -- never a
+// sentinel return, matching the behavior contract exactly.
+func rtMapGet(m: ptr, key: ptr, out: ptr) {
+    var idx: int
+
+    idx = mapIndexLookup(m, mapHash(key), key)
+    if idx < 0 {
+        rtPanic("map key not found")
+    }
+    MapBlockMoveData(mapValSlot(m, idx), out, RtMap(m).valsize)
+}
+
+// rtMapGetDv: returns false and leaves `out` untouched on an absent key;
+// returns true and fills `out` on present.
+func rtMapGetDv(m: ptr, key: ptr, out: ptr): bool {
+    var idx: int
+
+    idx = mapIndexLookup(m, mapHash(key), key)
+    if idx < 0 {
+        return false
+    }
+    MapBlockMoveData(mapValSlot(m, idx), out, RtMap(m).valsize)
+    return true
+}
+
+// rtMapHas.
+func rtMapHas(m: ptr, key: ptr): bool {
+    return mapIndexLookup(m, mapHash(key), key) >= 0
+}
+
+// rtMapRemove: silent on an absent key. On a match: TOMB the found index
+// slot (mapIndexFindSlot gives the SLOT, not just the entry index, so it
+// can be overwritten directly), increment tombs, then (unless the removed
+// entry was already the last dense entry) copy the last entry's meta+
+// value down into the removed slot and re-point the moved entry's own
+// index slot (mapIndexRepoint) from its old dense position to its new
+// one, before decrementing count.
+func rtMapRemove(m: ptr, key: ptr) {
+    var rm: RtMap
+    var h: int
+    var slot: int
+    var idx: int
+    var lastIdx: int
+    var lastHash: int
+
+    rm = RtMap(m)
+    h = mapHash(key)
+    slot = mapIndexFindSlot(m, h, key)
+    if slot < 0 {
+        return
+    }
+    idx = peekl(mapIndexSlot(m, slot))
+    pokel(mapIndexSlot(m, slot), INDEX_TOMB)
+    rm.tombs = rm.tombs + 1
+
+    lastIdx = rm.count - 1
+    if idx != lastIdx {
+        MapBlockMoveData(mapEntrySlot(m, lastIdx), mapEntrySlot(m, idx), MAP_ENTRY_STRIDE)
+        MapBlockMoveData(mapValSlot(m, lastIdx), mapValSlot(m, idx), rm.valsize)
+        lastHash = mapEntryHash(m, idx)
+        mapIndexRepoint(m, lastHash, lastIdx, idx)
+    }
+    rm.count = rm.count - 1
+}
+
+// rtMapCount.
+func rtMapCount(m: ptr): int {
+    return RtMap(m).count
+}
+
+// rtMapClear (shared design constants' "clear" rule): count = 0, tombs =
+// 0, poolused = 0, every index slot reset to EMPTY -- every Handle's own
+// capacity kept. Backs `m.clear()` (layer1-compiler-perf phase Task 8,
+// IMapClear intrinsic) on both the cprint and cg68k lanes. No element
+// release -- a hard reset, not a per-entry remove loop.
+func rtMapClear(m: ptr) {
+    var rm: RtMap
+    var mp: ptr
+    var i: int
+
+    rm = RtMap(m)
+    rm.count = 0
+    rm.tombs = 0
+    rm.poolused = 0
+    if rm.indexcap > 0 {
+        mp = MapHandleDeref(rm.index)
+        i = 0
+        while i < rm.indexcap {
+            pokel(mp + i * 4, INDEX_EMPTY)
+            i = i + 1
+        }
+    }
+}
+
+// rtMapKeyAt (shared design constants' "Iteration contract" rule): panics
+// ("map key not found") on an out-of-range index. Copies the length byte
+// + that many content bytes from the keypool into the caller's Str255
+// (key255) -- a variable-length copy now, unlike the old sorted
+// implementation's fixed-256-byte block copy; fpForMapStmt's own call
+// site passes the address of a `cv_<name>` Str255-typed loop variable,
+// whose bytes past `1 + keyLen` are simply left whatever they already
+// were (never read by any correct caller, since keyLen is always read
+// alongside them).
+func rtMapKeyAt(m: ptr, i: int, key255: ptr) {
+    var rm: RtMap
+    var keyLen: int
+    var keyOff: int
+    var poolBase: ptr
+
+    rm = RtMap(m)
+    if i < 0 or i >= rm.count {
+        rtPanic("map key not found")
+    }
+    keyLen = mapEntryKeyLen(m, i)
+    keyOff = mapEntryKeyOff(m, i)
+    pokeb(key255, keyLen)
+    poolBase = MapHandleDeref(rm.keypool)
+    MapBlockMoveData(poolBase + keyOff, key255 + 1, keyLen)
+}
+
+// rtMapValAt: same out-of-range contract as rtMapKeyAt above.
+func rtMapValAt(m: ptr, i: int, out: ptr) {
+    var rm: RtMap
+
+    rm = RtMap(m)
+    if i < 0 or i >= rm.count {
+        rtPanic("map key not found")
+    }
+    MapBlockMoveData(mapValSlot(m, i), out, rm.valsize)
+}
+
+// ---------------------------------------------------------------------
+// rtIntMap* (Task 6, map-hashtable phase): the same open-addressed
+// hashtable machinery above, keyed by `int` with an identity hash instead
+// of a Pascal-string key hashed by content. Reuses the SAME `RtMap` box
+// layout and the SAME `keys`/`vals`/`keypool`/`index` Handles rtMapNew
+// already births -- `keypool`/`poolused`/`poolcap` are simply never
+// touched by any function below (an intmap key IS its own 4-byte meta
+// record, no pool bytes needed), but the keypool Handle is still birthed
+// (via a direct call into rtMapNew) so release stays uniform across both
+// families -- one dispose order, no int-map-specific special case.
+//
+// No C-lane twin: unlike `map`, no C code path ever touches an intmap --
+// no `edit F, intmapVar` UI-statement support in cprint.cla, no
+// rt_ser.inc legacy load/save fallback, no `rt_intmap_*` functions in
+// rt_core.inc at all. cprint.cla always emits calls to these Clarus
+// `clar_fn_rtIntMap*` functions directly; there is no ported/unported
+// split to gate the way rtMap's own C twin needs.
+//
+// Sharing decisions (helper-by-helper, against the map helpers above):
+// shared AS-IS (index-side code that never touches a key, only entry
+// indices/hashes already computed by the caller): mapIndexSlot,
+// mapIndexSlotFor (already ignores its `key` param entirely -- see its
+// own doc comment above), mapIndexInsert, mapIndexRepoint, mapAllocIndex,
+// mapGrowVals. Shared by direct delegation (box/refcount lifecycle and
+// dense-array bounds-checked value access have zero key-type dependence):
+// rtIntMapNew -> rtMapNew, rtIntMapRetain -> rtMapRetain, rtIntMapRelease
+// -> rtMapRelease, rtIntMapLastref -> rtMapLastref, rtIntMapCount ->
+// rtMapCount, rtIntMapClear -> rtMapClear, rtIntMapValAt -> rtMapValAt.
+// Duplicated (the entry meta layout differs -- 4-byte {key:int32} here vs
+// map's 12-byte {hash,keyOff,keyLen} -- so anything touching entry meta
+// or comparing keys needs its own small version rather than a contorted
+// shared one): the entry-slot/entry-key accessors, the probe loop that
+// compares a stored key (mapIndexFindSlot's map twin has to hash-then-
+// pool-compare; intmapIndexFindSlot just compares the stored int32),
+// the entries grower (stride differs), and rehash (map's rehash reads
+// each entry's STORED hash; intmap stores no hash field at all -- an
+// int's hash is cheap to recompute, so intmapRehash re-derives it from
+// the stored key instead).
+// ---------------------------------------------------------------------
+
+// INTMAP_ENTRY_STRIDE: byte width of one intmap entry's meta record in
+// `keys` -- just {key:int32}, no stored hash (identity hash is free to
+// recompute) and no keyOff/keyLen (no pool).
+const INTMAP_ENTRY_STRIDE: int = 4
+
+// intmapEntrySlot: the address of entry i's 4-byte meta record -- same
+// fresh-derivation discipline as mapEntrySlot above.
+func intmapEntrySlot(m: ptr, i: int): ptr {
+    return MapHandleDeref(RtMap(m).keys) + i * INTMAP_ENTRY_STRIDE
+}
+
+// intmapEntryKey/intmapSetEntryKey: read/write entry i's stored key.
+func intmapEntryKey(m: ptr, i: int): int {
+    return peekl(intmapEntrySlot(m, i))
+}
+func intmapSetEntryKey(m: ptr, i: int, key: int) {
+    pokel(intmapEntrySlot(m, i), key)
+}
+
+// intmapHash (shared design constants' "Hash (intmap)" rule): identity
+// hash, masked to 31 bits so it's always a valid non-negative probe seed
+// (same mask mapHash uses, just no byte-by-byte mixing needed).
+func intmapHash(key: int): int {
+    return key & 0x7FFFFFFF
+}
+
+// intmapIndexFindSlot: mapIndexFindSlot's twin, but the match test is a
+// direct stored-key compare (no hash+pool compare needed -- an intmap's
+// hash is fully determined by its key, so any two distinct keys that
+// reach this same occupied slot are conclusively distinguished by the
+// stored key alone). Same EMPTY-terminates / TOMB-skipped / indexcap==0
+// short-circuit shape as its map twin.
+func intmapIndexFindSlot(m: ptr, hash: int, key: int): int {
+    var indexcap: int
+    var slot: int
+    var v: int
+
+    indexcap = RtMap(m).indexcap
+    if indexcap == 0 {
+        return -1
+    }
+    slot = hash & (indexcap - 1)
+    while true {
+        v = peekl(mapIndexSlot(m, slot))
+        if v == INDEX_EMPTY {
+            return -1
+        }
+        if v != INDEX_TOMB {
+            if intmapEntryKey(m, v) == key {
+                return slot
+            }
+        }
+        slot = (slot + 1) & (indexcap - 1)
+    }
+}
+
+// intmapIndexLookup: mapIndexLookup's twin -- entry index or -1.
+func intmapIndexLookup(m: ptr, hash: int, key: int): int {
+    var slot: int
+
+    slot = intmapIndexFindSlot(m, hash, key)
+    if slot < 0 {
+        return -1
+    }
+    return peekl(mapIndexSlot(m, slot))
+}
+
+// intmapGrowEntries: mapGrowEntries's twin, stride INTMAP_ENTRY_STRIDE
+// instead of MAP_ENTRY_STRIDE -- otherwise the identical amortized-
+// doubling shape (and the same relocation-discipline note: callers must
+// re-derive any master pointer taken before calling this).
+func intmapGrowEntries(m: ptr, need: int) {
+    var rm: RtMap
+    var cap: int
+    var newcap: int
+    var err: int
+
+    rm = RtMap(m)
+    cap = rm.cap
+    if need <= cap {
+        return
+    }
+    if cap > 0 {
+        newcap = cap
+    } else {
+        newcap = 4
+    }
+    while newcap < need {
+        newcap = newcap * 2
+    }
+    err = MapSetHandleSize(rm.keys, newcap * INTMAP_ENTRY_STRIDE)
+    if err != 0 {
+        rtPanic("out of memory")
+    }
+    rm.cap = newcap
+}
+
+// intmapRehash: mapRehash's twin -- doubles indexcap, resets every slot
+// to EMPTY (mapAllocIndex, shared), resets tombs to 0, then re-inserts
+// every live dense entry 0..count-1 (mapIndexInsert, shared). Unlike
+// mapRehash, which reads each entry's STORED hash, this recomputes the
+// hash from the entry's stored key (intmapHash) -- intmap entries carry
+// no separate hash field to read.
+func intmapRehash(m: ptr) {
+    var rm: RtMap
+    var newcap: int
+    var i: int
+    var k: int
+    var h: int
+
+    rm = RtMap(m)
+    newcap = rm.indexcap * 2
+    mapAllocIndex(m, newcap)
+    rm = RtMap(m)
+    rm.tombs = 0
+    i = 0
+    while i < rm.count {
+        k = intmapEntryKey(m, i)
+        h = intmapHash(k)
+        mapIndexInsert(m, h, i)
+        i = i + 1
+    }
+}
+
+// intmapEnsureIndexCapacity: mapEnsureIndexCapacity's twin -- identical
+// load-factor rule, just calls intmapRehash instead of mapRehash.
+func intmapEnsureIndexCapacity(m: ptr) {
+    var rm: RtMap
+
+    rm = RtMap(m)
+    if rm.indexcap == 0 {
+        mapAllocIndex(m, 8)
+        return
+    }
+    if (rm.count + rm.tombs) * 4 >= rm.indexcap * 3 {
+        intmapRehash(m)
+    }
+}
+
+// rtIntMapNew: box/Handle birth has zero key-type dependence (four empty
+// Handles including keypool, birthed anyway so release stays uniform
+// across families) -- delegates straight into rtMapNew.
+func rtIntMapNew(valsize: int): ptr {
+    return rtMapNew(valsize)
+}
+
+// rtIntMapRetain: rc arithmetic has zero key-type dependence.
+func rtIntMapRetain(m: ptr) {
+    rtMapRetain(m)
+}
+
+// rtIntMapRelease: dispose order (keys, vals, keypool, index, box) has
+// zero key-type dependence -- keypool disposes an empty Handle here, same
+// as any other rtMapRelease call on a map that never grew its pool.
+func rtIntMapRelease(m: ptr) {
+    rtMapRelease(m)
+}
+
+// rtIntMapLastref: null-safe "only owner" predicate has zero key-type
+// dependence.
+func rtIntMapLastref(m: ptr): bool {
+    return rtMapLastref(m)
+}
+
+// rtIntMapSet: upsert, same shape as rtMapSet -- intmapIndexLookup finds
+// an existing match first (overwrite touches only the value slot); on a
+// miss, intmapEnsureIndexCapacity/intmapGrowEntries grow the index/entry
+// arrays (mapGrowVals, shared, grows vals), the new entry's key is
+// written directly (no pool append -- an int key IS its meta record),
+// then mapIndexInsert (shared) wires it into the index.
+func rtIntMapSet(m: ptr, key: int, val: ptr) {
+    var rm: RtMap
+    var h: int
+    var idx: int
+
+    rm = RtMap(m)
+    h = intmapHash(key)
+    idx = intmapIndexLookup(m, h, key)
+    if idx >= 0 {
+        MapBlockMoveData(val, mapValSlot(m, idx), rm.valsize)
+        return
+    }
+
+    intmapEnsureIndexCapacity(m)
+    intmapGrowEntries(m, rm.count + 1)
+    mapGrowVals(m, rm.count + 1)
+
+    idx = rm.count
+    intmapSetEntryKey(m, idx, key)
+    MapBlockMoveData(val, mapValSlot(m, idx), rm.valsize)
+    mapIndexInsert(m, h, idx)
+    rm.count = rm.count + 1
+}
+
+// rtIntMapGet: panics ("map key not found") on an absent key, matching
+// rtMapGet's contract exactly.
+func rtIntMapGet(m: ptr, key: int, out: ptr) {
+    var idx: int
+
+    idx = intmapIndexLookup(m, intmapHash(key), key)
+    if idx < 0 {
+        rtPanic("map key not found")
+    }
+    MapBlockMoveData(mapValSlot(m, idx), out, RtMap(m).valsize)
+}
+
+// rtIntMapGetDv: false/untouched on absent, true/filled on present.
+func rtIntMapGetDv(m: ptr, key: int, out: ptr): bool {
+    var idx: int
+
+    idx = intmapIndexLookup(m, intmapHash(key), key)
+    if idx < 0 {
+        return false
+    }
+    MapBlockMoveData(mapValSlot(m, idx), out, RtMap(m).valsize)
+    return true
+}
+
+// rtIntMapHas.
+func rtIntMapHas(m: ptr, key: int): bool {
+    return intmapIndexLookup(m, intmapHash(key), key) >= 0
+}
+
+// rtIntMapRemove: silent on an absent key; same swap-with-last dance as
+// rtMapRemove, re-deriving the moved entry's hash from its stored key
+// (intmapHash) rather than reading a stored hash field, then mapIndexRepoint
+// (shared) to fix up the moved entry's index slot.
+func rtIntMapRemove(m: ptr, key: int) {
+    var rm: RtMap
+    var h: int
+    var slot: int
+    var idx: int
+    var lastIdx: int
+    var lastKey: int
+    var lastHash: int
+
+    rm = RtMap(m)
+    h = intmapHash(key)
+    slot = intmapIndexFindSlot(m, h, key)
+    if slot < 0 {
+        return
+    }
+    idx = peekl(mapIndexSlot(m, slot))
+    pokel(mapIndexSlot(m, slot), INDEX_TOMB)
+    rm.tombs = rm.tombs + 1
+
+    lastIdx = rm.count - 1
+    if idx != lastIdx {
+        MapBlockMoveData(intmapEntrySlot(m, lastIdx), intmapEntrySlot(m, idx), INTMAP_ENTRY_STRIDE)
+        MapBlockMoveData(mapValSlot(m, lastIdx), mapValSlot(m, idx), rm.valsize)
+        lastKey = intmapEntryKey(m, idx)
+        lastHash = intmapHash(lastKey)
+        mapIndexRepoint(m, lastHash, lastIdx, idx)
+    }
+    rm.count = rm.count - 1
+}
+
+// rtIntMapCount: dense count read has zero key-type dependence.
+func rtIntMapCount(m: ptr): int {
+    return rtMapCount(m)
+}
+
+// rtIntMapClear: count/tombs/poolused reset + index-slots-to-EMPTY walk
+// has zero key-type dependence (poolused was already always 0 here).
+func rtIntMapClear(m: ptr) {
+    rtMapClear(m)
+}
+
+// rtIntMapKeyAt (shared design constants' "Iteration contract" rule):
+// RETURNS the key directly, unlike rtMapKeyAt's Str255 out-pointer --
+// same out-of-range ("map key not found") panic contract.
+func rtIntMapKeyAt(m: ptr, i: int): int {
+    var rm: RtMap
+
+    rm = RtMap(m)
+    if i < 0 or i >= rm.count {
+        rtPanic("map key not found")
+    }
+    return intmapEntryKey(m, i)
+}
+
+// rtIntMapValAt: bounds-checked value copy has zero key-type dependence.
+func rtIntMapValAt(m: ptr, i: int, out: ptr) {
+    rtMapValAt(m, i, out)
+}

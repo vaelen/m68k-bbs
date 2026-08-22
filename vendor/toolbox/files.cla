@@ -1,0 +1,189 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// toolbox/files.cla: curated File Manager declarations, pack3-standardfile
+// phase. DELIBERATELY THIN -- this catalog holds only what Standard
+// File's own SetVol step needs (a caller must set the default volume
+// before SFPutFile/SFGetFile so the dialog opens on the right disk); the
+// full File Manager fill belongs to a future file-abstraction phase.
+//
+// Every trap word and struct layout below is confirmed directly against
+// Apple's own Universal Interfaces 3.4 (Retro68/InterfacesAndLibraries/
+// Interfaces), the authoritative source in this repo -- Retro68's
+// multiversal yaml reconstruction is UNTRUSTED WHEN CITED ALONE (see
+// toolbox/osutils.cla for the Gestalt transcription mistake that
+// established this rule -- note the mistake was OURS, not multiversal's:
+// the real rule is "decode the inline words") and is not cited here.
+//
+//   PBSetVolSync  CIncludes/Files.h:1409-1412:
+//                 `#pragma parameter __D0 PBSetVolSync(__A0)` ...
+//                 `EXTERN_API( OSErr ) PBSetVolSync(ParmBlkPtr
+//                 paramBlock) ONEWORDINLINE(0xA015);` -- pb in A0, OSErr
+//                 result in D0, bit 11 clear (0xA015 & 0x0800 == 0) -->
+//                 OS/register convention, bare `reg` (default a0-in/
+//                 d0-out, same shape as toolbox/memory.cla's NewPtr/
+//                 DisposePtr comments). Corroborated in AIncludes/
+//                 Files.a:1546: `_PBSetVolSync: OPWORD $A015` (the
+//                 assembly-side label is `_PBSetVolSync`, not a bare
+//                 `_SetVol` -- no such label exists in Files.a; SetVol
+//                 the glue routine is a separate IMPORT_CFM_FUNCTION
+//                 entry at Files.a:2534 with no trap word of its own).
+//
+// VolumeParam layout, CIncludes/Files.h:470-494 (only the fields _SetVol
+// actually reads are declared; the rest of the real 64-byte struct --
+// filler2/ioVolIndex/dates/counts -- is captured as trailing `pad[40]`
+// filler and can be split out on demand):
+//   qLink@0(4) qType@4(2) ioTrap@6(2) ioCmdAddr@8(4) ioCompletion@12(4)
+//   ioResult@16(2) ioNamePtr@18(4) ioVRefNum@22(2), then pad[40] to the
+//   full 64-byte volume-variant size. _SetVol only reads ioNamePtr
+//   (StringPtr, pass ptr(0) for the current default volume's name) and
+//   ioVRefNum (set 0 to mean "use ioNamePtr" per Inside Macintosh's own
+//   SetVol semantics); every other field is call-time scratch this
+//   catalog never touches.
+
+extern record VolumeParam {
+    qLink: ptr
+    qType: word
+    ioTrap: word
+    ioCmdAddr: ptr
+    ioCompletion: ptr
+    ioResult: word
+    ioNamePtr: ptr
+    ioVRefNum: word
+    pad[40]
+}
+
+external func PBSetVolSync(paramBlock: ptr): int = trap 0xA015 reg
+
+// ---- PBGetFInfoSync / PBSetFInfoSync (task-6a, pack3-standardfile phase):
+// added to close a Finder-info gap found by the phase's own live-drive --
+// a file the native (emit68k) lane creates via `file.writeText` had blank
+// fdType/fdCreator, hiding it from Standard File's own 'TEXT' Open filter.
+// Retro68's own glue for the high-level Pascal `Create` routine
+// (multiversal/custom/glue.c:355-378, NOT cited as an Apple source -- it's
+// Retro68's own C, quoted here only to explain WHY these two traps are
+// the fix) is PBCreateSync followed by a get-modify-set FInfo dance
+// through exactly these two traps; a bare PBCreateSync has no type/
+// creator field of its own to set.
+//
+//   PBGetFInfoSync  CIncludes/Files.h:1615-1625:
+//                   `#pragma parameter __D0 PBGetFInfoSync(__A0)` ...
+//                   `EXTERN_API( OSErr ) PBGetFInfoSync(ParmBlkPtr
+//                   paramBlock) ONEWORDINLINE(0xA00C);` -- pb in A0,
+//                   OSErr result in D0, bit 11 clear (0xA00C & 0x0800 ==
+//                   0) --> OS/register convention, bare `reg`, same shape
+//                   as PBSetVolSync above. Corroborated in AIncludes/
+//                   Files.a:1886: `_PBGetFInfoSync: OPWORD $A00C`.
+//   PBSetFInfoSync  CIncludes/Files.h:1643-1653:
+//                   `#pragma parameter __D0 PBSetFInfoSync(__A0)` ...
+//                   `EXTERN_API( OSErr ) PBSetFInfoSync(ParmBlkPtr
+//                   paramBlock) ONEWORDINLINE(0xA00D);` -- same shape.
+//                   Corroborated in AIncludes/Files.a:1930:
+//                   `_PBSetFInfoSync: OPWORD $A00D`.
+//
+// FileParam layout, CIncludes/Files.h:441-465 (only the fields Get/
+// SetFInfo actually read or write are named; the rest of the real
+// 80-byte struct is captured as `pad` filler, same discipline as
+// VolumeParam above): qLink@0(4) qType@4(2) ioTrap@6(2) ioCmdAddr@8(4)
+// ioCompletion@12(4) ioResult@16(2) ioNamePtr@18(4) ioVRefNum@22(2)
+// ioFRefNum@24(2) [ioFVersNum/filler1@26(2), unused -- pad] ioFDirIndex@28(2)
+// [ioFlAttrib/ioFlVersNum@30(2), unused -- pad] ioFlFndrInfo@32: the FInfo
+// struct (Finder.h:298-305) itself starts fdType@0(4)/fdCreator@4(4) (so
+// fdType@32/fdCreator@36 here) followed by fdFlags/fdLocation/fdFldr
+// (8 more bytes, unused -- pad), then ioFlNum..ioFlMdDat (32 more bytes,
+// unused -- pad) to the full 80-byte size. ioFDirIndex MUST be poked 0
+// before PBGetFInfoSync (get-by-name, not get-by-index) -- Retro68's own
+// glue does exactly this (`pb.fileParam.ioFDirIndex = 0;`) right before
+// its own PBGetFInfoSync call.
+
+extern record FileParam {
+    qLink: ptr
+    qType: word
+    ioTrap: word
+    ioCmdAddr: ptr
+    ioCompletion: ptr
+    ioResult: word
+    ioNamePtr: ptr
+    ioVRefNum: word
+    ioFRefNum: word
+    pad[2]
+    ioFDirIndex: word
+    pad[2]
+    fdType: int
+    fdCreator: int
+    pad[40]
+}
+
+external func PBGetFInfoSync(paramBlock: ptr): int = trap 0xA00C reg
+external func PBSetFInfoSync(paramBlock: ptr): int = trap 0xA00D reg
+
+// ---- PBCreateSync / PBOpenRFSync / PBWriteSync / PBCloseSync (Task 7,
+// mac-resident-clarusc phase): fill out the File Manager's own create/
+// open-resource-fork/write/close family -- `file.writeRes`'s native
+// implementation (runtime/clarus/native.cla's natWriteRes) needs all
+// four, and the Toolbox-first principle (CLAUDE.md) says to enable the
+// rest of a manager's interface at the same time a new feature needs
+// one piece of it. All four are register (OS) convention, same as every
+// other PBxxxSync trap already in this file.
+//
+//   PBCreateSync   CIncludes/Files.h:1482-1484:
+//                  `#pragma parameter __D0 PBCreateSync(__A0)` ...
+//                  `EXTERN_API( OSErr ) PBCreateSync(ParmBlkPtr
+//                  paramBlock) ONEWORDINLINE(0xA008);` -- pb in A0,
+//                  OSErr in D0, bit 11 clear (0xA008 & 0x0800 == 0) -->
+//                  `reg`. Corroborated in AIncludes/Files.a:1657
+//                  `_PBCreateSync: OPWORD $A008`.
+//   PBOpenRFSync   CIncludes/Files.h:1566-1568:
+//                  `#pragma parameter __D0 PBOpenRFSync(__A0)` ...
+//                  `EXTERN_API( OSErr ) PBOpenRFSync(ParmBlkPtr
+//                  paramBlock) ONEWORDINLINE(0xA00A);` -- same shape.
+//                  Opens the RESOURCE fork of the file named at
+//                  ioNamePtr (same IOParam fields PBOpenSync/PBWriteSync/
+//                  PBCloseSync already use, below) instead of the data
+//                  fork; ioRefNum comes back keyed to that fork.
+//                  Corroborated in AIncludes/Files.a:1797
+//                  `_PBOpenRFSync: OPWORD $A00A`.
+//   PBWriteSync    CIncludes/Devices.h:1009-1012 (moved out of Files.h
+//                  into Devices.h per that header's own comment, same as
+//                  PBOpenSync/PBCloseSync below): `#pragma parameter
+//                  __D0 PBWriteSync(__A0)` ... `ONEWORDINLINE(0xA003)`.
+//                  Corroborated in AIncludes/Devices.a:1053
+//                  `_PBWriteSync: OPWORD $A003`.
+//   PBCloseSync    CIncludes/Devices.h:913-916: `#pragma parameter __D0
+//                  PBCloseSync(__A0)` ... `ONEWORDINLINE(0xA001)`.
+//                  Corroborated in AIncludes/Devices.a:917
+//                  `_PBCloseSync: OPWORD $A001`.
+//
+// IOParam layout, CIncludes/Files.h's own struct (verified against a
+// 68k target's natural field widths, same derivation runtime/clarus/
+// native.cla's own natFilePb header comment documents in full -- this
+// record mirrors it field-for-field, public-catalog spelling): qLink@0(4)
+// qType@4(2) ioTrap@6(2) ioCmdAddr@8(4) ioCompletion@12(4) ioResult@16(2)
+// ioNamePtr@18(4) ioVRefNum@22(2) ioRefNum@24(2) ioVersNum/ioPermssn@26
+// (2, only the low byte -- ioPermssn -- is ever set by this catalog's
+// callers) ioMisc@28(4) ioBuffer@32(4) ioReqCount@36(4) ioActCount@40(4)
+// ioPosMode@44(2) ioPosOffset@46(4) -- struct size 50.
+
+extern record IOParam {
+    qLink: ptr
+    qType: word
+    ioTrap: word
+    ioCmdAddr: ptr
+    ioCompletion: ptr
+    ioResult: word
+    ioNamePtr: ptr
+    ioVRefNum: word
+    ioRefNum: word
+    pad[2]
+    ioMisc: ptr
+    ioBuffer: ptr
+    ioReqCount: int
+    ioActCount: int
+    ioPosMode: word
+    ioPosOffset: int
+}
+
+external func PBCreateSync(paramBlock: ptr): int = trap 0xA008 reg
+external func PBOpenRFSync(paramBlock: ptr): int = trap 0xA00A reg
+external func PBWriteSync(paramBlock: ptr): int = trap 0xA003 reg
+external func PBCloseSync(paramBlock: ptr): int = trap 0xA001 reg
