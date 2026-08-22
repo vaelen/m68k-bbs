@@ -8,6 +8,7 @@
 include "scanner.cla"
 include "user.cla"
 include "termio.cla"
+include "clarus-src/toolbox/osutils.cla"   // DateTimeRec / SecondsToDate
 
 app BBS {
     name: "68kBBS"
@@ -57,17 +58,193 @@ func dataChar(c: char) {
     user.buffer = user.buffer + c
 }
 
+const crlf: string = "\x0D\x0A"
+
+func sendLine(s: string) {
+    modem.send(s + crlf)
+}
+
+// Decimal string of a non-negative int (no int-to-string builtin).
+func intStr(n: int): string {
+    var v: int = n
+    var s: string = ""
+    if v == 0 { return "0" }
+    while v > 0 {
+        s = char(int('0') + (v mod 10)) + s
+        v = v / 10
+    }
+    return s
+}
+
+func pad2(n: int): string {
+    if n < 10 { return "0" + intStr(n) }
+    return intStr(n)
+}
+
+// "[yyyy-mm-dd HH:MM:SS] " from the Mac clock. Built up in pieces:
+// the 68k backend caps string temps per statement.
+func timestamp(): string {
+    var rec: DateTimeRec
+    var s: string
+    SecondsToDate(now(), rec)
+    s = "[" + intStr(rec.year) + "-" + pad2(rec.month)
+    s = s + "-" + pad2(rec.day) + " " + pad2(rec.hour)
+    s = s + ":" + pad2(rec.minute) + ":" + pad2(rec.second) + "] "
+    return s
+}
+
+func upperStr(s: string): string {
+    var r: string = s
+    var i: int = 0
+    var c: char
+    while i < r.length {
+        c = r[i]
+        if c >= 'a' and c <= 'z' { r[i] = char(int(c) - 32) }
+        i = i + 1
+    }
+    return r
+}
+
+// --- Screens ----------------------------------------------------------
+// Each screen has a menu (drawn on entry and by "?") and a prompt
+// (redrawn after every input). gotoScreen is the one way to move
+// between screens; processInput routes completed input to the current
+// screen's handler.
+
+func displayMenu() {
+    switch user.screen {
+    case "terminal" { drawTerminalMenu() }
+    case "main"     { drawMainMenu() }
+    }
+}
+
+func displayPrompt() {
+    switch user.screen {
+    case "login"    { modem.send("Username: ") }
+    case "password" { modem.send("Password: ") }
+    case "terminal" { modem.send("Terminal type [4]> ") }
+    case "main"     { modem.send("Main Menu> ") }
+    }
+}
+
+func gotoScreen(s: string) {
+    user.screen = s
+    displayMenu()
+    displayPrompt()
+}
+
+func drawTerminalMenu() {
+    sendLine("")
+    sendLine("Terminal Types:")
+    sendLine("1. ASCII 80x24 No Color")
+    sendLine("2. ASCII 80x24 With Color")
+    sendLine("3. ANSI  80x24 (DOS/Windows)")
+    sendLine("4. VT100 80x24 (UNIX/Linux)")
+    sendLine("5. ASCII 40x24 No Color (APPLE II, etc)")
+}
+
+func drawMainMenu() {
+    sendLine("")
+    sendLine("?) Display This Menu")
+    sendLine("Q) Quit (Logoff)")
+    sendLine("")
+}
+
 // Act on one completed input (a line, or a single char in Character
 // mode) according to the screen the user is on.
 func processInput(input: string) {
     switch user.screen {
     case "login" {
-        // TODO: real login flow; just trace for now
-        log("login input: " + input)
+        if input == "" {
+            displayPrompt()
+        } else {
+            user.name = input
+            user.screen = "password"
+            displayPrompt()
+        }
     }
-    else {
-        log("input on unknown screen '" + user.screen + "': " + input)
+    case "password" {
+        // TODO: check the hash against a real user database once one
+        // exists; for now any password is accepted.
+        user.passwordHash = hashPassword(input)
+        user.authenticated = true
+        log("User logged in: " + user.name)
+        gotoScreen("terminal")
     }
+    case "terminal" { terminalChoice(input) }
+    case "main"     { mainChoice(input) }
+    case "logoff"   { }   // ignore trailing input (e.g. the modem's OK)
+    }
+}
+
+func termTypeName(t: TerminalType): string {
+    switch t {
+    case ASCII { return "ASCII" }
+    case ANSI  { return "ANSI" }
+    case VT100 { return "VT100" }
+    }
+    return ""
+}
+
+func applyTerminal(t: TerminalType, cols: int, colorOn: bool) {
+    var msg: string
+    terminal.type = t
+    terminal.columns = cols
+    terminal.rows = 24
+    terminal.color = colorOn
+    msg = "User: " + user.name + ", Terminal: " + termTypeName(t)
+    msg = msg + " " + intStr(terminal.columns) + "x" + intStr(terminal.rows)
+    log(msg)
+    gotoScreen("main")
+}
+
+// Invalid choice redraws the whole menu; empty input takes the default.
+func terminalChoice(input: string) {
+    switch input {
+    case "1"     { applyTerminal(ASCII, 80, false) }
+    case "2"     { applyTerminal(ASCII, 80, true) }
+    case "3"     { applyTerminal(ANSI, 80, true) }
+    case "", "4" { applyTerminal(VT100, 80, false) }
+    case "5"     { applyTerminal(ASCII, 40, false) }
+    else         { gotoScreen("terminal") }
+    }
+}
+
+// Invalid choice redraws only the prompt; "?" redraws the menu.
+func mainChoice(input: string) {
+    switch upperStr(input) {
+    case "?" {
+        displayMenu()
+        displayPrompt()
+    }
+    case "Q" { logoff() }
+    else     { displayPrompt() }
+    }
+}
+
+// --- Logoff / hang-up -------------------------------------------------
+// The bridge hangs up on "+++" then "ATH", each needing ~1s of line
+// silence around it (Hayes guard time), so the sequence is paced by the
+// once-a-second timer below.
+
+var hangupPhase: int = 0
+
+func logoff() {
+    sendLine("")
+    sendLine("Goodbye!")
+    user.authenticated = false
+    user.screen = "logoff"
+    hangupPhase = 1
+}
+
+every 60 ticks {
+    if hangupPhase > 0 {
+        hangupPhase = hangupPhase + 1
+        if hangupPhase == 3 { modem.send("+++") }       // ~2s of silence first
+        if hangupPhase == 5 {                            // ~2s after +++
+            modem.send("ATH\x0D")
+            hangupPhase = 0
+        }
     }
 }
 
@@ -76,13 +253,16 @@ func connected() {
     isConnected = true
     user = new User          // fresh session: login screen, Line mode
     terminal = new Terminal  // fresh session: 80x24 ASCII, no color
+    hangupPhase = 0
     log("Caller connected.")
-    modem.send("Welcome to 68kBBS!\x0D\x0A")
+    sendLine("Welcome to 68kBBS!")
+    displayPrompt()
 }
 
 // Called by scanner.cla's feedChar on a full "\r\nNO CARRIER\r\n".
 func disconnected() {
     isConnected = false
+    hangupPhase = 0
     log("Caller disconnected.")
 }
 
@@ -107,7 +287,7 @@ func appendLog(chunk: text) {
 // Every log(...) call lands here (after reaching the diagnostic stream)
 // and is appended to the log window.
 on App.log(line: string) {
-    appendLog(line + "\n")
+    appendLog(timestamp() + line + "\n")
 }
 
 on App.launch {
@@ -122,7 +302,6 @@ on modem.opened {
 
 on modem.received(data: text) {
     var i: int = 0
-    appendLog(data)
     while i < data.length {
         feedChar(data[i])
         i = i + 1
@@ -135,4 +314,8 @@ on modem.failed(err: error) {
 
 extend File {
     on Quit.select { quit }
+}
+
+extend Main {
+    on closed { quit }       // closing the log window exits the app
 }
