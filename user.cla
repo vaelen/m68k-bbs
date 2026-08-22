@@ -1,0 +1,31 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// Session state for the connected caller.
+
+enum InputMode { Line, Character }
+
+record User {
+    name:          string(31)
+    authenticated: bool
+    passwordHash:  int
+    screen:        string(31) = "login"
+    mode:          InputMode          // defaults to Line
+    buffer:        string(255)
+}
+
+var user: User
+
+// djb2 hash of a password, masked positive -- the same per-byte step
+// the runtime's text.hashStep uses.
+// ponytail: not cryptographic; fine for a hobby BBS on a 68k. If real
+// secrecy ever matters, store salted hashes with a proper KDF instead.
+func hashPassword(p: string): int {
+    var h: int = 5381
+    var i: int = 0
+    while i < p.length {
+        h = ((h << 5) + h + int(p[i])) & 0x7FFFFFFF
+        i = i + 1
+    }
+    return h
+}

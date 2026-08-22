@@ -6,6 +6,8 @@
 // into the log (read-only, nothing written back yet).
 
 include "scanner.cla"
+include "user.cla"
+include "termio.cla"
 
 app BBS {
     name: "68kBBS"
@@ -32,19 +34,6 @@ menu Edit { standard edit }
 var modem: connection
 var isConnected: bool = false
 
-// --- Session state ----------------------------------------------------
-
-enum InputMode { Line, Character }
-
-record User {
-    name:          string(31)
-    authenticated: bool
-    screen:        string(31) = "login"
-    mode:          InputMode          // defaults to Line
-    buffer:        string(255)
-}
-
-var user: User
 
 // Collect connected-caller input, one char at a time. Called by
 // scanner.cla with every byte it releases as ordinary data (result-code
@@ -86,6 +75,7 @@ func processInput(input: string) {
 func connected() {
     isConnected = true
     user = new User          // fresh session: login screen, Line mode
+    terminal = new Terminal  // fresh session: 80x24 ASCII, no color
     log("Caller connected.")
     modem.send("Welcome to 68kBBS!\x0D\x0A")
 }

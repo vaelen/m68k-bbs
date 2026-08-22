@@ -1,0 +1,74 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// Terminal details for the connected caller -- drives how we emit
+// colors and line-drawing characters per client later on.
+
+enum TerminalType { ASCII, ANSI, VT100 }
+
+record Terminal {
+    columns: int = 80
+    rows:    int = 24
+    color:   bool                     // defaults false
+    type:    TerminalType             // defaults to ASCII
+}
+
+var terminal: Terminal
+
+// The 16 primary terminal colors, in ANSI order (value mod 8 = the
+// ANSI color code offset; 8 and up are the bright variants).
+enum Color {
+    Black, Red, Green, Yellow, Blue, Magenta, Cyan, White
+    BrightBlack, BrightRed, BrightGreen, BrightYellow
+    BrightBlue, BrightMagenta, BrightCyan, BrightWhite
+}
+
+// ANSI sequence for a foreground color. Bright variants use bold+color
+// ("\x1B[1;3Xm") rather than 90-97m, which VT100-era clients lack;
+// normal variants turn bold off with 22 (not 0, which would also wipe
+// the background).
+func colorSeq(color: Color): string {
+    switch color {
+    case Black         { return "\x1B[22;30m" }
+    case Red           { return "\x1B[22;31m" }
+    case Green         { return "\x1B[22;32m" }
+    case Yellow        { return "\x1B[22;33m" }
+    case Blue          { return "\x1B[22;34m" }
+    case Magenta       { return "\x1B[22;35m" }
+    case Cyan          { return "\x1B[22;36m" }
+    case White         { return "\x1B[22;37m" }
+    case BrightBlack   { return "\x1B[1;30m" }
+    case BrightRed     { return "\x1B[1;31m" }
+    case BrightGreen   { return "\x1B[1;32m" }
+    case BrightYellow  { return "\x1B[1;33m" }
+    case BrightBlue    { return "\x1B[1;34m" }
+    case BrightMagenta { return "\x1B[1;35m" }
+    case BrightCyan    { return "\x1B[1;36m" }
+    case BrightWhite   { return "\x1B[1;37m" }
+    }
+    return ""
+}
+
+// ANSI sequence for a background color.
+// ponytail: bright backgrounds render as their basic color -- there is
+// no portable bright-background SGR (100-107 is aixterm-only, 5;4Xm
+// blinks on non-iCE clients); switch to 100-107 if we ever require
+// modern clients.
+func backgroundSeq(color: Color): string {
+    switch color {
+    case Black,   BrightBlack   { return "\x1B[40m" }
+    case Red,     BrightRed     { return "\x1B[41m" }
+    case Green,   BrightGreen   { return "\x1B[42m" }
+    case Yellow,  BrightYellow  { return "\x1B[43m" }
+    case Blue,    BrightBlue    { return "\x1B[44m" }
+    case Magenta, BrightMagenta { return "\x1B[45m" }
+    case Cyan,    BrightCyan    { return "\x1B[46m" }
+    case White,   BrightWhite   { return "\x1B[47m" }
+    }
+    return ""
+}
+
+// Default foreground (with bold off, since bright colors set bold) and
+// default background.
+const clearColorSeq:      string = "\x1B[22;39m"
+const clearBackgroundSeq: string = "\x1B[49m"

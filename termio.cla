@@ -1,0 +1,31 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// Connection-facing wrappers over terminal.cla's pure sequence
+// builders. Split out because the host (CLI test) emit lane cannot
+// compile connection method calls yet -- tests include terminal.cla,
+// the app includes this file.
+
+include "terminal.cla"
+
+// The send wrappers: no-ops unless the terminal reports color support.
+
+func setColor(conn: connection, color: Color) {
+    if not terminal.color { return }
+    conn.send(colorSeq(color))
+}
+
+func clearColor(conn: connection) {
+    if not terminal.color { return }
+    conn.send(clearColorSeq)
+}
+
+func setBackground(conn: connection, color: Color) {
+    if not terminal.color { return }
+    conn.send(backgroundSeq(color))
+}
+
+func clearBackground(conn: connection) {
+    if not terminal.color { return }
+    conn.send(clearBackgroundSeq)
+}

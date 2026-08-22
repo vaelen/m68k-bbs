@@ -1,0 +1,62 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for terminal.cla's escape-sequence builders. Run on
+// the host:
+//   ~/repos/clarus/scripts/clarus-run.sh tests/terminal-test.cla
+// Exits 0 on pass, 1 on the first failure.
+
+include "../terminal.cla"
+
+var failures: int = 0
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+on App.startCLI(args: list of string) {
+    var i: int = 0
+    var digit: char
+    var want: string
+
+    // All 16 foreground sequences: values 0-7 are "\x1B[22;3Xm",
+    // 8-15 are the same X with bold ("\x1B[1;3Xm").
+    for i in 0 to 15 {
+        digit = char(int('0') + (i mod 8))
+        if i < 8 {
+            want = "\x1B[22;3" + digit + "m"
+        } else {
+            want = "\x1B[1;3" + digit + "m"
+        }
+        expect(colorSeq(Color(i)) == want, "colorSeq " + digit)
+    }
+
+    // All 16 background sequences: bright falls back to basic, so both
+    // halves map to "\x1B[4Xm".
+    for i in 0 to 15 {
+        digit = char(int('0') + (i mod 8))
+        want = "\x1B[4" + digit + "m"
+        expect(backgroundSeq(Color(i)) == want, "backgroundSeq " + digit)
+    }
+
+    // Spot-check the enum order actually matches ANSI color numbering.
+    expect(colorSeq(Black)      == "\x1B[22;30m", "Black is 30")
+    expect(colorSeq(Yellow)     == "\x1B[22;33m", "Yellow is 33")
+    expect(colorSeq(BrightCyan) == "\x1B[1;36m",  "BrightCyan is bold 36")
+    expect(backgroundSeq(BrightRed) == backgroundSeq(Red), "bright bg falls back")
+
+    expect(clearColorSeq      == "\x1B[22;39m", "clearColorSeq")
+    expect(clearBackgroundSeq == "\x1B[49m",    "clearBackgroundSeq")
+
+    if failures > 0 {
+        log("terminal-test: FAILED")
+        quit 1
+    }
+    log("terminal-test: all passed")
+    quit
+}
