@@ -237,11 +237,11 @@ func logoff() {
     hangupPhase = 1
 }
 
-every 60 ticks {
+every 30 ticks {
     if hangupPhase > 0 {
         hangupPhase = hangupPhase + 1
-        if hangupPhase == 3 { modem.send("+++") }       // ~2s of silence first
-        if hangupPhase == 5 {                            // ~2s after +++
+        if hangupPhase == 3 { modem.send("+++") }       // ~1s of silence first
+        if hangupPhase == 5 {                            // ~1s after +++
             modem.send("ATH\x0D")
             hangupPhase = 0
         }

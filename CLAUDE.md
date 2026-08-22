@@ -101,6 +101,68 @@ can be left half-written. Files the emulated Mac writes to "BBS HD"
 persist in the image and can be pulled out with `hcopy` after Snow exits.
 Full background: `docs/snow-hdd-howto.md`.
 
+## Reading the Mac-side log
+
+`log(...)` lines land in the app's log window (timestamped) and in the
+runtime's exit log, which the Mac writes to a file named `out` on
+"BBS HD" when the app quits. To read it after quitting Snow cleanly:
+`HOME=scratch hmount snow/BBSHD.hda && hcopy -t :out ./out.txt && humount`.
+The file also contains the runtime's UI trace (`T OPEN ...`) and exit
+code — useful for verifying a session after the fact.
+
+## Architecture
+
+The received-byte path is:
+`modem.received → feedChar (scanner.cla) → dataChar (bbs.cla) → processInput`.
+
+- `scanner.cla` — a state machine that watches the raw stream for the
+  Hayes result codes `\r\nCONNECT <digits>\r\n` / `\r\nNO CARRIER\r\n`
+  (state persists across chunks). It is also a *filter*: bytes it
+  releases as ordinary data go to `dataChar`; candidate result-code
+  bytes are held and either discarded (match → calls `connected()` /
+  `disconnected()`) or replayed (mismatch). CR/LF always pass through
+  immediately, so the one hang-up artifact is a single empty line just
+  before disconnect. The including program defines `connected`,
+  `disconnected`, and `dataChar`.
+- `user.cla` — `User` record (name, authenticated, passwordHash,
+  screen, input mode, buffer) + global `user`; `hashPassword` (djb2,
+  non-cryptographic). `terminal.cla` — `Terminal` record (columns,
+  rows, color, type: ASCII/ANSI/VT100) + global `terminal`, `Color`
+  enum, and pure ANSI sequence builders (`colorSeq`, `backgroundSeq`,
+  clear consts). `termio.cla` — modem-facing send wrappers over those
+  (gated on `terminal.color`).
+- `bbs.cla` — app/UI declarations, session flow. `dataChar` assembles
+  input (Line mode: buffer until CR; Character mode: each char).
+  `processInput` dispatches on `user.screen`: login → password →
+  terminal-type menu → main menu. Menu conventions: `gotoScreen(s)`
+  sets the screen and draws menu + prompt; `displayMenu`/`displayPrompt`
+  switch on `user.screen`; choices are case-insensitive (`upperStr`);
+  `?` redraws the menu; invalid main-menu input redraws only the
+  prompt; the terminal menu redraws fully and defaults to VT100 on
+  empty input. Logoff paces `+++` / `ATH` through a `every 30 ticks`
+  timer (`hangupPhase`) to honor the Hayes guard time; the resulting
+  NO CARRIER resets the session. Sessions reset in `connected()`
+  (`new User` / `new Terminal`).
+
+Tests (`tests/*.cla`, run by `scripts/test.sh`) are host-lane CLI
+programs that include a module and assert on it; they can only include
+files with no UI and no connection method calls — which is why
+`terminal.cla` (pure) and `termio.cla` (modem I/O) are separate files.
+
+## Known compiler limitations (workarounds in use)
+
+Tracked in `docs/language-gaps.md` (which also specs the positioned
+file I/O needed for the planned vDB database — see `~/repos/libvdb/db.md`):
+
+- Method calls on a connection held in a parameter/local don't compile
+  ("receiver kind 13") — use the global `modem`.
+- `emit68k` caps string temps per statement ("bump cgBigTmpSlots") —
+  split long `+` chains across statements.
+- The host emit lane can't compile UI programs or connection calls, so
+  `bbs.cla` itself can't run on the host — only the emulator.
+- `include "toolbox/..."` doesn't resolve against the compiler's
+  catalog — include `vendor/toolbox/...` instead.
+
 ## Commits
 
 Commit messages are short — one sentence preferred, two or three at most —
@@ -108,6 +170,10 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
 
 ## Layout
 
-- `bbs.cla` — the application (single file for now)
-- `docs/` — language reference + emulator how-to (symlinks)
-- `snow/` — emulator, ROM, boot disk, workspace
+- `bbs.cla` — app entry: UI, session flow, menus (includes the rest)
+- `scanner.cla`, `user.cla`, `terminal.cla`, `termio.cla` — modules above
+- `tests/` — host-lane test suites; `scripts/` — build/test/deploy
+- `bin/`, `vendor/` — pinned compiler + runtime/toolbox snapshot
+- `docs/` — language reference + Snow how-to (symlinks), language-gaps.md
+- `snow/` — emulator, ROM, boot disk, workspace, BBSHD.hda (untracked)
+- `simple-modem-emulator/` — Hayes modem bridge (tracked in this repo)
