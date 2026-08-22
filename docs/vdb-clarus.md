@@ -17,6 +17,7 @@ deliberately. Where this spec is silent, `docs/vdb.md` governs
 | 3 | Strings on disk are **Pascal strings** (length byte + chars) | What Clarus produces natively; no NUL scanning. Same byte budgets as v1. |
 | 4 | `last_compacted` is **Mac-epoch seconds** (what `now()` returns) | Display-only metadata; avoids epoch conversion. |
 | 5 | Leaf-page capacity is a **byte budget**, not a key count | The v1 doc's 60-keys × 60-values caps cannot fit a 512-byte page; v1's packed writer can overrun. v2 makes "it must fit the page" the rule. |
+| 6 | DBIndexInfo records the field's **byte offset** (name shrinks to 28 bytes) | Without it, no code can extract index keys from record bytes — the reason libvdb's secondary-index maintenance was never implemented. |
 
 A v2 reader MUST reject any file whose version is not 2 (or whose
 signature doesn't match) with `lastError` set. No v1 compatibility —
@@ -66,9 +67,18 @@ there are no v1 files to migrate; add conversion only when one exists.
 
 | Offset | Size | Field | Notes |
 |-------:|-----:|-------|-------|
-| 0 | 30 | field_name | Pascal string, ≤ 29 chars |
+| 0 | 28 | field_name | Pascal string, ≤ 27 chars |
+| 28 | 2 | field_offset | u16, byte offset of the field in the record |
 | 30 | 1 | index_type | 0 = IT_ID (i32 field), 1 = IT_STRING |
 | 31 | 1 | index_number | 0–14, names the `.I??` file |
+
+`field_offset` is a v2 addition (v1 spent all 30 leading bytes on the
+name): recording where the field lives is what lets the db module
+extract keys from record bytes itself — so add/update/delete keep
+every secondary index current automatically, the piece libvdb never
+implemented because its metadata couldn't support it. Index updates
+are NOT journaled; crash recovery rebuilds every index from the data
+file, per the design.
 
 ### Page 1 — free list
 

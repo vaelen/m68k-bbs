@@ -12,11 +12,13 @@
 // and the names needed to reopen/rebuild files.
 //
 // Implemented: create/open/close, add/find/update/delete by record ID,
-// free-page reuse, the journal protocol, and crash recovery (replay +
-// primary index and free list rebuilt by scanning the data file).
-// Skipped, as in the C library today: secondary indexes and
-// find-by-string (libvdb's FindRecordByString is a stub and its
-// add/update/delete never touch the .I?? files), and compaction.
+// secondary indexes (self-maintaining: each DBIndexInfo records its
+// field's offset, so add/update/delete extract keys and keep every
+// .I?? file current; lookups via dbFindByString/dbFindByInt verify the
+// field to weed out CRC16 collisions), free-page reuse, the journal
+// protocol, and crash recovery (replay, then primary AND secondary
+// indexes plus the free list rebuilt by scanning the data file --
+// index updates themselves are never journaled). Skipped: compaction.
 
 include "btree.cla"
 
@@ -32,6 +34,10 @@ const psContinuation: int = 2
 const joUpdate: int = 1
 const joDelete: int = 2
 const joAdd: int = 3
+
+const itID: int = 0        // index on an i32 field
+const itString: int = 1    // index on a 64-byte Pascal string field
+const dbMaxIndexes: int = 15
 
 // Handle for one open database. All fields nil/empty on failure --
 // test with dbIsOpen. Copies share the same open files.
@@ -229,6 +235,192 @@ func dbWriteRecordPages(db: Database, firstPage: int, id: int, data: text, pages
     return true
 }
 
+// Read a record's `size` bytes from its page run, verifying id and
+// status per page. Empty text on any mismatch or I/O error.
+func dbReadRecordAt(db: Database, firstPage: int, id: int, size: int): text {
+    var f: filehandle = db.data
+    var out: text
+    var none: text
+    var page: text
+    var pages: int = dbPagesNeeded(size)
+    var want: int
+    var n: int
+    var i: int = 0
+    while i < pages {
+        if not f.readAt((firstPage + i) * dbPageSize, dbPageSize, page) { return none }
+        if page.length != dbPageSize { return none }
+        if page.intAt(0) != id { return none }
+        want = psContinuation
+        if i == 0 { want = psActive }
+        if int(page[4]) != want { return none }
+        n = size - out.length
+        if n > dbPageDataSize { n = dbPageDataSize }
+        out.append(page.textAt(6, n))
+        i = i + 1
+    }
+    return out
+}
+
+// --- Secondary indexes ------------------------------------------------
+// Metadata lives in page 0's index list: 32-byte DBIndexInfo slots at
+// offset 32 + 32*slot -- field_name (Pascal, 28 bytes), field_offset
+// (u16 at 28), index_type (30), index_number (31). The recorded
+// offset is what lets the module extract keys from record bytes and
+// maintain the .I?? B-trees itself.
+
+func dbIndexPath(name: string, number: int): string {
+    return name + ".I" + char(int('0') + number / 10) + char(int('0') + number mod 10)
+}
+
+// A record image exactly record_size long (input clamped/zero-padded),
+// so field extraction is always in bounds of a well-formed layout.
+func dbCanonRecord(data: text, size: int): text {
+    var t: text
+    var n: int = data.length
+    if n > size { n = size }
+    if n > 0 { t.append(data.textAt(0, n)) }
+    while t.length < size {
+        t.append(char(0))
+    }
+    return t
+}
+
+// The Pascal string field at `offset`; empty on malformed lengths
+// rather than a runtime error, since record bytes are caller data.
+func dbExtractString(rec: text, offset: int): string {
+    var len: int
+    if offset >= rec.length { return "" }
+    len = int(rec[offset])
+    if len > 63 or offset + 1 + len > rec.length { return "" }
+    return rec[offset + 1, len]
+}
+
+func dbExtractKey(rec: text, offset: int, itype: int): int {
+    if itype == itID {
+        if offset + 4 > rec.length { return 0 }
+        return rec.intAt(offset)
+    }
+    return stringKey(dbExtractString(rec, offset))
+}
+
+func dbStrEqCI(a: string, b: string): bool {
+    var i: int = 0
+    var ca: char
+    var cb: char
+    if a.length != b.length { return false }
+    while i < a.length {
+        ca = a[i]
+        cb = b[i]
+        if ca >= 'A' and ca <= 'Z' { ca = char(int(ca) + 32) }
+        if cb >= 'A' and cb <= 'Z' { cb = char(int(cb) + 32) }
+        if ca != cb { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// Slot of the index on `fieldName` (exact match), or -1.
+func dbFindIndexSlot(hdr: text, fieldName: string): int {
+    var count: int = int(hdr[23])
+    var i: int = 0
+    while i < count {
+        if hdr.stringAt(32 + i * 32) == fieldName { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+// (Re)create one .I?? file and fill it from every active record.
+func dbBuildIndex(db: Database, number: int, itype: int, offset: int, size: int): bool {
+    var f: filehandle = db.data
+    var idx: filehandle
+    var st: text
+    var rec: text
+    var pageCount: int
+    var p: int = 2
+    var ok: bool = true
+    idx = btCreate(dbIndexPath(db.name, number), "VDBi", db.creator)
+    if idx == nil { return false }
+    pageCount = f.size() / dbPageSize
+    while p < pageCount and ok {
+        if not f.readAt(p * dbPageSize, 6, st) { ok = false }
+        if ok and st.length >= 6 and int(st[4]) == psActive {
+            rec = dbReadRecordAt(db, p, st.intAt(0), size)
+            if rec.length == size {
+                ok = btInsert(idx, dbExtractKey(rec, offset, itype), st.intAt(0))
+            } else {
+                ok = false
+            }
+        }
+        p = p + 1
+    }
+    idx.close()
+    return ok
+}
+
+// Insert `rec`'s key into every secondary index (record add).
+func dbIndexInsertAll(db: Database, hdr: text, rec: text, id: int): bool {
+    var idx: filehandle
+    var count: int = int(hdr[23])
+    var i: int = 0
+    var base: int
+    var ok: bool
+    while i < count {
+        base = 32 + i * 32
+        idx = btOpen(dbIndexPath(db.name, int(hdr[base + 31])))
+        if idx == nil { return false }
+        ok = btInsert(idx, dbExtractKey(rec, hdr.wordAt(base + 28), int(hdr[base + 30])), id)
+        idx.close()
+        if not ok { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// Re-key every secondary index whose field changed (record update).
+func dbIndexUpdateAll(db: Database, hdr: text, oldRec: text, newRec: text, id: int): bool {
+    var idx: filehandle
+    var count: int = int(hdr[23])
+    var i: int = 0
+    var base: int
+    var oldKey: int
+    var newKey: int
+    var ok: bool
+    while i < count {
+        base = 32 + i * 32
+        oldKey = dbExtractKey(oldRec, hdr.wordAt(base + 28), int(hdr[base + 30]))
+        newKey = dbExtractKey(newRec, hdr.wordAt(base + 28), int(hdr[base + 30]))
+        if oldKey != newKey {
+            idx = btOpen(dbIndexPath(db.name, int(hdr[base + 31])))
+            if idx == nil { return false }
+            btDeleteValue(idx, oldKey, id)
+            ok = btInsert(idx, newKey, id)
+            idx.close()
+            if not ok { return false }
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// Drop `rec`'s key from every secondary index (record delete). A
+// missing entry is not an error -- recovery's rebuild self-heals.
+func dbIndexDeleteAll(db: Database, hdr: text, rec: text, id: int) {
+    var idx: filehandle
+    var count: int = int(hdr[23])
+    var i: int = 0
+    var base: int
+    while i < count {
+        base = 32 + i * 32
+        idx = btOpen(dbIndexPath(db.name, int(hdr[base + 31])))
+        if idx != nil {
+            btDeleteValue(idx, dbExtractKey(rec, hdr.wordAt(base + 28), int(hdr[base + 30])), id)
+            idx.close()
+        }
+        i = i + 1
+    }
+}
+
 // --- Journal ----------------------------------------------------------
 
 // A 518-byte entry: op(1), page_num(4), record_id(4), data(507),
@@ -340,8 +532,17 @@ func dbReplayJournal(db: Database): bool {
         p = p + 1
     }
     idx.close()
-    if not dbUpdateFreePages(db) { return false }
+    // rebuild every secondary index the same way
     if not dbReadHeader(db, hdr) { return false }
+    i = 0
+    while i < int(hdr[23]) {
+        p = 32 + i * 32
+        if not dbBuildIndex(db, int(hdr[p + 31]), int(hdr[p + 30]), hdr.wordAt(p + 28), hdr.wordAt(8)) {
+            return false
+        }
+        i = i + 1
+    }
+    if not dbUpdateFreePages(db) { return false }
     if not dbCommit(db, hdr) { return false }
     return f.flush()
 }
@@ -447,12 +648,14 @@ func dbClose(db: Database) {
 // up to record_size bytes (short data is zero-padded).
 func dbAdd(db: Database, data: text): int {
     var hdr: text
+    var rec: text
     var id: int
     var pages: int
     var firstPage: int
     if not dbIsOpen(db) { return -1 }
     if not dbReadHeader(db, hdr) { return -1 }
     id = hdr.intAt(14)
+    rec = dbCanonRecord(data, hdr.wordAt(8))
     pages = dbPagesNeeded(hdr.wordAt(8))
     if not dbSetPending(db, hdr, true) { return -1 }
     firstPage = dbAllocatePages(db, pages)
@@ -460,15 +663,19 @@ func dbAdd(db: Database, data: text): int {
         dbRollback(db, hdr)
         return -1
     }
-    if not dbJournalRecord(db, joAdd, firstPage, id, data, pages) {
+    if not dbJournalRecord(db, joAdd, firstPage, id, rec, pages) {
         dbRollback(db, hdr)
         return -1
     }
-    if not dbWriteRecordPages(db, firstPage, id, data, pages) {
+    if not dbWriteRecordPages(db, firstPage, id, rec, pages) {
         dbRollback(db, hdr)
         return -1
     }
     if not btInsert(db.index, id, firstPage) {
+        dbRollback(db, hdr)
+        return -1
+    }
+    if not dbIndexInsertAll(db, hdr, rec, id) {
         dbRollback(db, hdr)
         return -1
     }
@@ -489,55 +696,44 @@ func dbFirstPage(db: Database, id: int): int {
 // Fetch a record by ID. Returns exactly record_size bytes, or an
 // empty text if the record does not exist (or on error).
 func dbFind(db: Database, id: int): text {
-    var f: filehandle
-    var out: text
     var none: text
     var hdr: text
-    var page: text
+    var firstPage: int
+    if not dbIsOpen(db) { return none }
+    if not dbReadHeader(db, hdr) { return none }
+    firstPage = dbFirstPage(db, id)
+    if firstPage < 2 { return none }
+    return dbReadRecordAt(db, firstPage, id, hdr.wordAt(8))
+}
+
+// Overwrite an existing record's data in place, re-keying any
+// secondary index whose field changed.
+func dbUpdate(db: Database, id: int, data: text): bool {
+    var hdr: text
+    var oldRec: text
+    var rec: text
     var firstPage: int
     var pages: int
     var size: int
-    var want: int
-    var n: int
-    var i: int = 0
-    if not dbIsOpen(db) { return none }
-    if not dbReadHeader(db, hdr) { return none }
-    f = db.data
-    firstPage = dbFirstPage(db, id)
-    if firstPage < 2 { return none }
-    size = hdr.wordAt(8)
-    pages = dbPagesNeeded(size)
-    while i < pages {
-        if not f.readAt((firstPage + i) * dbPageSize, dbPageSize, page) { return none }
-        if page.length != dbPageSize { return none }
-        if page.intAt(0) != id { return none }
-        want = psContinuation
-        if i == 0 { want = psActive }
-        if int(page[4]) != want { return none }
-        n = size - out.length
-        if n > dbPageDataSize { n = dbPageDataSize }
-        out.append(page.textAt(6, n))
-        i = i + 1
-    }
-    return out
-}
-
-// Overwrite an existing record's data in place.
-func dbUpdate(db: Database, id: int, data: text): bool {
-    var hdr: text
-    var firstPage: int
-    var pages: int
     if not dbIsOpen(db) { return false }
     if not dbReadHeader(db, hdr) { return false }
     firstPage = dbFirstPage(db, id)
     if firstPage < 2 { return false }
-    pages = dbPagesNeeded(hdr.wordAt(8))
+    size = hdr.wordAt(8)
+    oldRec = dbReadRecordAt(db, firstPage, id, size)
+    if oldRec.length != size { return false }
+    rec = dbCanonRecord(data, size)
+    pages = dbPagesNeeded(size)
     if not dbSetPending(db, hdr, true) { return false }
-    if not dbJournalRecord(db, joUpdate, firstPage, id, data, pages) {
+    if not dbJournalRecord(db, joUpdate, firstPage, id, rec, pages) {
         dbRollback(db, hdr)
         return false
     }
-    if not dbWriteRecordPages(db, firstPage, id, data, pages) {
+    if not dbWriteRecordPages(db, firstPage, id, rec, pages) {
+        dbRollback(db, hdr)
+        return false
+    }
+    if not dbIndexUpdateAll(db, hdr, oldRec, rec, id) {
         dbRollback(db, hdr)
         return false
     }
@@ -545,18 +741,23 @@ func dbUpdate(db: Database, id: int, data: text): bool {
 }
 
 // Delete a record: journal it, mark its pages empty, drop it from the
-// primary index.
+// primary and every secondary index.
 func dbDelete(db: Database, id: int): bool {
     var hdr: text
     var e: text
+    var oldRec: text
     var j: filehandle
     var firstPage: int
     var pages: int
+    var size: int
     if not dbIsOpen(db) { return false }
     if not dbReadHeader(db, hdr) { return false }
     firstPage = dbFirstPage(db, id)
     if firstPage < 2 { return false }
-    pages = dbPagesNeeded(hdr.wordAt(8))
+    size = hdr.wordAt(8)
+    oldRec = dbReadRecordAt(db, firstPage, id, size)
+    if oldRec.length != size { return false }
+    pages = dbPagesNeeded(size)
     if not dbSetPending(db, hdr, true) { return false }
     j = db.journal
     e = dbJournalEntry(joDelete, firstPage, id, psEmpty, e, 0)
@@ -572,6 +773,7 @@ func dbDelete(db: Database, id: int): bool {
         dbRollback(db, hdr)
         return false
     }
+    dbIndexDeleteAll(db, hdr, oldRec, id)
     hdr.setIntAt(10, hdr.intAt(10) - 1)    // record_count
     return dbCommit(db, hdr)
 }
@@ -582,4 +784,104 @@ func dbRecordCount(db: Database): int {
     if not dbIsOpen(db) { return -1 }
     if not dbReadHeader(db, hdr) { return -1 }
     return hdr.intAt(10)
+}
+
+// --- Secondary index API ----------------------------------------------
+
+// Create an index on the field at `offset` (itID: an i32; itString: a
+// 64-byte Pascal string). Existing records are indexed immediately.
+// The header is updated only after the build succeeds, so a crash
+// mid-build leaves at worst an orphaned .I?? file.
+func dbAddIndex(db: Database, fieldName: string, itype: int, offset: int): bool {
+    var hdr: text
+    var count: int
+    var base: int
+    var size: int
+    var width: int
+    var i: int
+    if not dbIsOpen(db) { return false }
+    if fieldName.length < 1 or fieldName.length > 27 { return false }
+    if itype != itID and itype != itString { return false }
+    if not dbReadHeader(db, hdr) { return false }
+    count = int(hdr[23])
+    if count >= dbMaxIndexes { return false }
+    if dbFindIndexSlot(hdr, fieldName) >= 0 { return false }
+    size = hdr.wordAt(8)
+    width = 4
+    if itype == itString { width = 64 }
+    if offset < 0 or offset + width > size { return false }
+    if not dbBuildIndex(db, count, itype, offset, size) { return false }
+    base = 32 + count * 32
+    hdr[base] = char(fieldName.length)
+    i = 0
+    while i < fieldName.length {
+        hdr[base + 1 + i] = fieldName[i]
+        i = i + 1
+    }
+    hdr.setWordAt(base + 28, offset)
+    hdr[base + 30] = char(itype)
+    hdr[base + 31] = char(count)
+    hdr[23] = char(count + 1)
+    return dbWriteHeader(db, hdr)
+}
+
+// Find the first record whose indexed string field equals `value`
+// (case-insensitive, like the index itself). Each CRC16 hit is
+// verified against the actual field. Returns the record ID, or -1.
+func dbFindByString(db: Database, fieldName: string, value: string): int {
+    var hdr: text
+    var rec: text
+    var ids: list of int
+    var idx: filehandle
+    var slot: int
+    var base: int
+    var offset: int
+    var i: int = 0
+    if not dbIsOpen(db) { return -1 }
+    if not dbReadHeader(db, hdr) { return -1 }
+    slot = dbFindIndexSlot(hdr, fieldName)
+    if slot < 0 { return -1 }
+    base = 32 + slot * 32
+    if int(hdr[base + 30]) != itString { return -1 }
+    offset = hdr.wordAt(base + 28)
+    idx = btOpen(dbIndexPath(db.name, int(hdr[base + 31])))
+    if idx == nil { return -1 }
+    btFind(idx, stringKey(value), ids)
+    idx.close()
+    while i < ids.count {
+        rec = dbFind(db, ids[i])
+        if rec.length > 0 and dbStrEqCI(dbExtractString(rec, offset), value) { return ids[i] }
+        i = i + 1
+    }
+    return -1
+}
+
+// Find the first record whose indexed i32 field equals `value`.
+// Returns the record ID, or -1.
+func dbFindByInt(db: Database, fieldName: string, value: int): int {
+    var hdr: text
+    var rec: text
+    var ids: list of int
+    var idx: filehandle
+    var slot: int
+    var base: int
+    var offset: int
+    var i: int = 0
+    if not dbIsOpen(db) { return -1 }
+    if not dbReadHeader(db, hdr) { return -1 }
+    slot = dbFindIndexSlot(hdr, fieldName)
+    if slot < 0 { return -1 }
+    base = 32 + slot * 32
+    if int(hdr[base + 30]) != itID { return -1 }
+    offset = hdr.wordAt(base + 28)
+    idx = btOpen(dbIndexPath(db.name, int(hdr[base + 31])))
+    if idx == nil { return -1 }
+    btFind(idx, value, ids)
+    idx.close()
+    while i < ids.count {
+        rec = dbFind(db, ids[i])
+        if rec.length > 0 and dbExtractKey(rec, offset, itID) == value { return ids[i] }
+        i = i + 1
+    }
+    return -1
 }

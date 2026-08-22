@@ -35,6 +35,19 @@ func patternData(n: int): text {
     return t
 }
 
+// A user record for the index tests: 64-byte Pascal name at offset 0,
+// i32 age at offset 64 (record_size 96 leaves slack).
+func mkUser(name: string, age: int): text {
+    var t: text
+    t.append(char(name.length))
+    t.append(name)
+    while t.length < 64 {
+        t.append(char(0))
+    }
+    btAppendInt(t, age)
+    return t
+}
+
 on App.startCLI(args: list of string) {
     var db: Database
     var r: text
@@ -142,6 +155,51 @@ on App.startCLI(args: list of string) {
     id2 = dbAdd(db, "dddd")
     r = dbFind(db, id2)
     expect(r[0, 4] == "dddd", "database usable after recovery")
+    dbClose(db)
+
+    // 9. secondary indexes
+    db = dbCreate("VDBT4", 96, "68BB")
+    id1 = dbAdd(db, mkUser("alice", 30))
+    id2 = dbAdd(db, mkUser("Bob", 42))
+    expect(dbAddIndex(db, "Username", itString, 0), "string index built over existing records")
+    expect(dbAddIndex(db, "Age", itID, 64), "int index added")
+    expect(not dbAddIndex(db, "Username", itString, 0), "duplicate index name rejected")
+    expect(not dbAddIndex(db, "Oops", itString, 40), "field past record end rejected")
+    expect(dbFindByString(db, "Username", "alice") == id1, "find by string field")
+    expect(dbFindByString(db, "Username", "ALICE") == id1, "string lookup case-insensitive")
+    expect(dbFindByString(db, "Username", "bob") == id2, "mixed-case stored name found")
+    expect(dbFindByString(db, "Username", "carol") == -1, "missing name not found")
+    expect(dbFindByInt(db, "Age", 42) == id2, "find by int field")
+    expect(dbFindByInt(db, "Age", 99) == -1, "missing int value not found")
+    expect(dbFindByInt(db, "Username", 1) == -1, "type mismatch rejected")
+    id3 = dbAdd(db, mkUser("carol", 25))
+    expect(dbFindByString(db, "Username", "carol") == id3, "indexes maintained on add")
+    expect(dbUpdate(db, id3, mkUser("carla", 26)), "update of indexed record")
+    expect(dbFindByString(db, "Username", "carla") == id3, "new name indexed after update")
+    expect(dbFindByString(db, "Username", "carol") == -1, "old name unindexed after update")
+    expect(dbFindByInt(db, "Age", 26) == id3, "int index re-keyed by update")
+    expect(dbDelete(db, id2), "delete of indexed record")
+    expect(dbFindByString(db, "Username", "bob") == -1, "deleted name unindexed")
+    expect(dbFindByInt(db, "Age", 42) == -1, "deleted int value unindexed")
+    dbClose(db)
+    db = dbOpen("VDBT4", "68BB")
+    expect(dbFindByString(db, "Username", "alice") == id1, "index metadata survives reopen")
+    dbClose(db)
+
+    // 10. recovery rebuilds secondaries: journal an update renaming
+    //     alice -> zelda (her record is page 2), crash, reopen
+    e = dbJournalEntry(joUpdate, 2, id1, psActive, mkUser("zelda", 30), 0)
+    f = file.open("VDBT4.JNL")
+    f.append(e)
+    f.close()
+    f = file.open("VDBT4.DAT")
+    f.writeAt(22, "\x01")       // journal_pending = true
+    f.close()
+    db = dbOpen("VDBT4", "68BB")
+    expect(dbIsOpen(db), "reopen with pending journal succeeds")
+    expect(dbFindByString(db, "Username", "zelda") == id1, "secondary rebuilt to journaled state")
+    expect(dbFindByString(db, "Username", "alice") == -1, "stale index entry gone after rebuild")
+    expect(dbFindByInt(db, "Age", 30) == id1, "int index also rebuilt")
     dbClose(db)
 
     if failures > 0 {
