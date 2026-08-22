@@ -48,14 +48,16 @@ a newer runtime can mismatch):
 `cp clarus-src/build-run/clarusc bin/clarusc && cp clarus-src/runtime/clarus/*.cla vendor/runtime/clarus/ && cp clarus-src/runtime/host/rt* vendor/runtime/host/ && cp clarus-src/toolbox/*.cla vendor/toolbox/`
 
 ```sh
-bin/clarusc bbs.cla   # check only
+bin/clarusc --rtdir vendor/runtime/clarus/ bbs.cla   # check only
 scripts/build.sh      # 68k Mac app -> build/68kBBS.bin (MacBinary)
 scripts/test.sh       # run every tests/*.cla on the host lane
 scripts/deploy.sh     # build + refresh snow/BBSHD.hda + restart Snow
 ```
 
-Toolbox includes come from the snapshot too
-(`include "vendor/toolbox/osutils.cla"`). The live-repo wrapper scripts
+Always pass `--rtdir vendor/runtime/clarus/` (the scripts do): the
+pinned binary can't find the runtime on its own from this repo, and
+`include "toolbox/..."` resolves against the rtdir's `../../toolbox/`
+sibling — i.e. `vendor/toolbox/`. The live-repo wrapper scripts
 (`clarus-src/scripts/build-68k.sh`, `clarus-run.sh`) still work but
 bootstrap the live compiler — only reach for them when testing new
 compiler features. (The old `./clarus` symlink to the frozen Go host
@@ -129,8 +131,8 @@ The received-byte path is:
   non-cryptographic). `terminal.cla` — `Terminal` record (columns,
   rows, color, type: ASCII/ANSI/VT100) + global `terminal`, `Color`
   enum, and pure ANSI sequence builders (`colorSeq`, `backgroundSeq`,
-  clear consts). `termio.cla` — modem-facing send wrappers over those
-  (gated on `terminal.color`).
+  clear consts). `termio.cla` — connection-facing send wrappers over
+  those (take a `connection` parameter, gated on `terminal.color`).
 - `bbs.cla` — app/UI declarations, session flow. `dataChar` assembles
   input (Line mode: buffer until CR; Character mode: each char).
   `processInput` dispatches on `user.screen`: login → password →
@@ -145,23 +147,18 @@ The received-byte path is:
   (`new User` / `new Terminal`).
 
 Tests (`tests/*.cla`, run by `scripts/test.sh`) are host-lane CLI
-programs that include a module and assert on it; they can only include
-files with no UI and no connection method calls — which is why
-`terminal.cla` (pure) and `termio.cla` (modem I/O) are separate files.
+programs that include a module and assert on it; pure modules test
+best, which is why `terminal.cla` (pure sequence builders) and
+`termio.cla` (connection I/O) are separate files.
 
-## Known compiler limitations (workarounds in use)
+## Compiler limitations
 
-Tracked in `docs/language-gaps.md` (which also specs the positioned
-file I/O needed for the planned vDB database — see `~/repos/libvdb/db.md`):
-
-- Method calls on a connection held in a parameter/local don't compile
-  ("receiver kind 13") — use the global `modem`.
-- `emit68k` caps string temps per statement ("bump cgBigTmpSlots") —
-  split long `+` chains across statements.
-- The host emit lane can't compile UI programs or connection calls, so
-  `bbs.cla` itself can't run on the host — only the emulator.
-- `include "toolbox/..."` doesn't resolve against the compiler's
-  catalog — include `vendor/toolbox/...` instead.
+None currently. Every gap this project filed (positioned file I/O via
+`filehandle`, `crc16`, LE/word `text` accessors and `set*At` writers,
+`string(n)`, toolbox include resolution via rtdir, connection-typed
+parameters, the 68k string-temp cap) shipped and is in the pinned
+toolchain — see `docs/language-gaps.md` for the record. vDB
+(`~/repos/libvdb/db.md`) is now implementable in pure Clarus.
 
 ## Commits
 

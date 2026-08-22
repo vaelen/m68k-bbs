@@ -1,35 +1,31 @@
 // Copyright 2026, Andrew C. Young <andrew@vaelen.org>
 // SPDX-License-Identifier: MIT
 
-// Modem-facing wrappers over terminal.cla's pure sequence builders.
-// Split from terminal.cla so the host-lane tests (which cannot compile
-// connection method calls) can include the pure part alone.
-//
-// These send on the global `modem` rather than taking a connection
-// parameter: clarusc does not yet implement method calls on a
-// connection held in a parameter ("receiver kind 13"), on either
-// backend. Restore the (conn: connection, ...) signatures when it does.
+// Connection-facing wrappers over terminal.cla's pure sequence
+// builders. Split from terminal.cla so the host-lane tests (which
+// cannot compile connection method calls) can include the pure part
+// alone.
 
 include "terminal.cla"
 
 // No-ops unless the terminal reports color support.
 
-func setColor(color: Color) {
+func setColor(conn: connection, color: Color) {
     if not terminal.color { return }
-    modem.send(colorSeq(color))
+    conn.send(colorSeq(color))
 }
 
-func clearColor() {
+func clearColor(conn: connection) {
     if not terminal.color { return }
-    modem.send(clearColorSeq)
+    conn.send(clearColorSeq)
 }
 
-func setBackground(color: Color) {
+func setBackground(conn: connection, color: Color) {
     if not terminal.color { return }
-    modem.send(backgroundSeq(color))
+    conn.send(backgroundSeq(color))
 }
 
-func clearBackground() {
+func clearBackground(conn: connection) {
     if not terminal.color { return }
-    modem.send(clearBackgroundSeq)
+    conn.send(clearBackgroundSeq)
 }
