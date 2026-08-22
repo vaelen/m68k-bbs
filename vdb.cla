@@ -1,0 +1,585 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// vDB: a simple page-oriented database, v2 on-disk format
+// (docs/vdb-clarus.md; design in docs/vdb.md). Fixed-size records in
+// 512-byte pages, a write-ahead journal for crash recovery, and a
+// primary B-tree index mapping record ID -> first page number.
+//
+// Like btree.cla, all mutable state lives on disk: every operation
+// reads the header/free-list pages it needs and writes changes back
+// immediately. The Database record only carries the open file handles
+// and the names needed to reopen/rebuild files.
+//
+// Implemented: create/open/close, add/find/update/delete by record ID,
+// free-page reuse, the journal protocol, and crash recovery (replay +
+// primary index and free list rebuilt by scanning the data file).
+// Skipped, as in the C library today: secondary indexes and
+// find-by-string (libvdb's FindRecordByString is a stub and its
+// add/update/delete never touch the .I?? files), and compaction.
+
+include "btree.cla"
+
+const dbPageSize: int = 512
+const dbPageDataSize: int = 506
+const dbMaxFreePages: int = 127
+const dbJournalEntrySize: int = 518
+
+const psEmpty: int = 0
+const psActive: int = 1
+const psContinuation: int = 2
+
+const joUpdate: int = 1
+const joDelete: int = 2
+const joAdd: int = 3
+
+// Handle for one open database. All fields nil/empty on failure --
+// test with dbIsOpen. Copies share the same open files.
+record Database {
+    name: string
+    creator: string(4)
+    data: filehandle
+    journal: filehandle
+    index: filehandle
+}
+
+func dbIsOpen(db: Database): bool {
+    return db.data != nil
+}
+
+func dbPagesNeeded(recordSize: int): int {
+    return (recordSize + dbPageDataSize - 1) / dbPageDataSize
+}
+
+// --- Header (page 0) and free list (page 1) ---------------------------
+
+// Reads and validates page 0 into hdr. Field offsets per the spec:
+// sig 0, version 4, page_size 6, record_size 8, record_count 10,
+// next_record_id 14, last_compacted 18, journal_pending 22,
+// index_count 23, index list 32.
+func dbReadHeader(db: Database, hdr: text): bool {
+    var f: filehandle = db.data
+    if not f.readAt(0, dbPageSize, hdr) { return false }
+    if hdr.length != dbPageSize { return false }
+    if hdr[0] != 'V' or hdr[1] != 'D' or hdr[2] != 'B' or int(hdr[3]) != 0 { return false }
+    if hdr.wordAt(4) != 2 { return false }
+    if hdr.wordAt(6) != dbPageSize { return false }
+    return true
+}
+
+func dbWriteHeader(db: Database, hdr: text): bool {
+    var f: filehandle = db.data
+    return f.writeAt(0, hdr)
+}
+
+func dbReadFreeList(db: Database, fl: text): bool {
+    var f: filehandle = db.data
+    if not f.readAt(dbPageSize, dbPageSize, fl) { return false }
+    return fl.length == dbPageSize
+}
+
+func dbWriteFreeList(db: Database, fl: text): bool {
+    var f: filehandle = db.data
+    return f.writeAt(dbPageSize, fl)
+}
+
+// --- Page allocation --------------------------------------------------
+
+// Find `count` numerically consecutive pages held in adjacent free-list
+// slots (the C library's rule). Returns the array slot, or -1.
+func dbFindRun(fl: text, count: int): int {
+    var len: int = fl.wordAt(2)
+    var i: int = 0
+    var j: int
+    var run: int
+    if count == 1 {
+        if len > 0 { return 0 }
+        return -1
+    }
+    while i < len {
+        run = 1
+        j = i + 1
+        while j < len and fl.intAt(4 + j * 4) == fl.intAt(4 + i * 4) + run {
+            run = run + 1
+            if run == count { return i }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// Remove `count` entries starting at slot `slot` and decrement both
+// counters, then write the free list back.
+func dbTakeRun(db: Database, fl: text, slot: int, count: int): bool {
+    var len: int = fl.wordAt(2)
+    var j: int = slot
+    while j < len - count {
+        fl.setIntAt(4 + j * 4, fl.intAt(4 + (j + count) * 4))
+        j = j + 1
+    }
+    fl.setWordAt(2, len - count)
+    fl.setWordAt(0, fl.wordAt(0) - count)
+    return dbWriteFreeList(db, fl)
+}
+
+// Rescan the data file for empty pages and rebuild the free list.
+func dbUpdateFreePages(db: Database): bool {
+    var f: filehandle = db.data
+    var fl: text
+    var st: text
+    var pageCount: int
+    var p: int = 2
+    var found: int = 0
+    var listed: int = 0
+    pageCount = f.size() / dbPageSize
+    fl.append("\x00\x00\x00\x00")
+    while p < pageCount {
+        if not f.readAt(p * dbPageSize + 4, 1, st) { return false }
+        if st.length == 1 and int(st[0]) == psEmpty {
+            found = found + 1
+            if listed < dbMaxFreePages {
+                btAppendInt(fl, p)
+                listed = listed + 1
+            }
+        }
+        p = p + 1
+    }
+    btZeroFill(fl)
+    fl.setWordAt(0, found)
+    fl.setWordAt(2, listed)
+    return dbWriteFreeList(db, fl)
+}
+
+// Pick the first page of a run of `count` pages: from the free list if
+// possible, else at the end of the file. Returns -1 on I/O error.
+func dbAllocatePages(db: Database, count: int): int {
+    var f: filehandle = db.data
+    var fl: text
+    var slot: int
+    var first: int
+    if not dbReadFreeList(db, fl) { return -1 }
+    if fl.wordAt(0) >= count and fl.wordAt(2) == 0 {
+        if not dbUpdateFreePages(db) { return -1 }
+        if not dbReadFreeList(db, fl) { return -1 }
+    }
+    if fl.wordAt(0) >= count {
+        slot = dbFindRun(fl, count)
+        if slot >= 0 {
+            first = fl.intAt(4 + slot * 4)
+            if not dbTakeRun(db, fl, slot, count) { return -1 }
+            return first
+        }
+    }
+    return f.size() / dbPageSize
+}
+
+// Mark `count` pages empty and return them to the free list. Every
+// page is listed individually (libvdb lists only the first, but its
+// run-finder needs adjacent entries, so freed runs were never reused
+// until a rescan; listing them all matches what dbUpdateFreePages
+// produces anyway).
+func dbFreePages(db: Database, firstPage: int, count: int): bool {
+    var f: filehandle = db.data
+    var fl: text
+    var i: int = 0
+    while i < count {
+        if not f.writeAt((firstPage + i) * dbPageSize + 4, "\x00") { return false }
+        i = i + 1
+    }
+    if not dbReadFreeList(db, fl) { return false }
+    fl.setWordAt(0, fl.wordAt(0) + count)
+    i = 0
+    while i < count and fl.wordAt(2) < dbMaxFreePages {
+        fl.setIntAt(4 + fl.wordAt(2) * 4, firstPage + i)
+        fl.setWordAt(2, fl.wordAt(2) + 1)
+        i = i + 1
+    }
+    return dbWriteFreeList(db, fl)
+}
+
+// --- Record page I/O --------------------------------------------------
+
+// One data page: id, status, reserved, then up to 506 record bytes
+// taken from `data` starting at `off` (zero-padded past the end).
+func dbBuildPage(id: int, status: int, data: text, off: int): text {
+    var page: text
+    var n: int = data.length - off
+    if n > dbPageDataSize { n = dbPageDataSize }
+    btAppendInt(page, id)
+    page.append(char(status))
+    page.append(char(0))
+    if n > 0 { page.append(data.textAt(off, n)) }
+    btZeroFill(page)
+    return page
+}
+
+func dbWriteRecordPages(db: Database, firstPage: int, id: int, data: text, pages: int): bool {
+    var f: filehandle = db.data
+    var i: int = 0
+    var status: int
+    while i < pages {
+        status = psContinuation
+        if i == 0 { status = psActive }
+        if not f.writeAt((firstPage + i) * dbPageSize, dbBuildPage(id, status, data, i * dbPageDataSize)) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// --- Journal ----------------------------------------------------------
+
+// A 518-byte entry: op(1), page_num(4), record_id(4), data(507),
+// checksum(2). data holds the page's 506 record bytes plus the page
+// status in its final byte (v2 addition -- lets replay restore
+// continuation pages correctly). Checksum: crc16 of bytes 0-515.
+func dbJournalEntry(op: int, pageNum: int, id: int, status: int, data: text, off: int): text {
+    var e: text
+    var n: int = data.length - off
+    if n > dbPageDataSize { n = dbPageDataSize }
+    if n < 0 { n = 0 }
+    e.append(char(op))
+    btAppendInt(e, pageNum)
+    btAppendInt(e, id)
+    if n > 0 { e.append(data.textAt(off, n)) }
+    while e.length < 515 {
+        e.append(char(0))
+    }
+    e.append(char(status))
+    btAppendWord(e, e.crc16(0, 0, 516))
+    return e
+}
+
+func dbAppendJournal(db: Database, e: text): bool {
+    var j: filehandle = db.journal
+    return j.append(e)
+}
+
+// Journal one entry per page of a record write (add or update).
+func dbJournalRecord(db: Database, op: int, firstPage: int, id: int, data: text, pages: int): bool {
+    var j: filehandle = db.journal
+    var i: int = 0
+    var status: int
+    while i < pages {
+        status = psContinuation
+        if i == 0 { status = psActive }
+        if not dbAppendJournal(db, dbJournalEntry(op, firstPage + i, id, status, data, i * dbPageDataSize)) {
+            return false
+        }
+        i = i + 1
+    }
+    return j.flush()
+}
+
+func dbSetPending(db: Database, hdr: text, pending: bool): bool {
+    hdr[22] = char(0)
+    if pending { hdr[22] = char(1) }
+    return dbWriteHeader(db, hdr)
+}
+
+// Clear the pending flag and empty the journal. `hdr` carries any
+// counter updates the operation made.
+func dbCommit(db: Database, hdr: text): bool {
+    var j: filehandle = db.journal
+    if not dbSetPending(db, hdr, false) { return false }
+    return j.setSize(0)
+}
+
+func dbRollback(db: Database, hdr: text) {
+    var j: filehandle = db.journal
+    dbSetPending(db, hdr, false)
+    j.setSize(0)
+}
+
+// Replay a pending journal, then rebuild the primary index and free
+// list by scanning the data file (safer than trusting partial
+// updates). Entries with bad checksums are skipped.
+func dbReplayJournal(db: Database): bool {
+    var f: filehandle = db.data
+    var j: filehandle = db.journal
+    var idx: filehandle
+    var hdr: text
+    var e: text
+    var page: text
+    var st: text
+    var entries: int
+    var i: int = 0
+    var op: int
+    var pageCount: int
+    var p: int
+    entries = j.size() / dbJournalEntrySize
+    while i < entries {
+        if not j.readAt(i * dbJournalEntrySize, dbJournalEntrySize, e) { return false }
+        if e.length == dbJournalEntrySize and e.crc16(0, 0, 516) == e.wordAt(516) {
+            op = int(e[0])
+            if op == joUpdate or op == joAdd {
+                page = dbBuildPage(e.intAt(5), int(e[515]), e.textAt(9, dbPageDataSize), 0)
+                if not f.writeAt(e.intAt(1) * dbPageSize, page) { return false }
+            }
+            if op == joDelete {
+                if not f.writeAt(e.intAt(1) * dbPageSize + 4, "\x00") { return false }
+            }
+        }
+        i = i + 1
+    }
+    // rebuild the primary index from the surviving pages
+    idx = btCreate(db.name + ".IDX", "VDBi", db.creator)
+    if idx == nil { return false }
+    pageCount = f.size() / dbPageSize
+    p = 2
+    while p < pageCount {
+        if not f.readAt(p * dbPageSize, 6, st) { return false }
+        if st.length >= 6 and int(st[4]) == psActive {
+            if not btInsert(idx, st.intAt(0), p) {
+                idx.close()
+                return false
+            }
+        }
+        p = p + 1
+    }
+    idx.close()
+    if not dbUpdateFreePages(db) { return false }
+    if not dbReadHeader(db, hdr) { return false }
+    if not dbCommit(db, hdr) { return false }
+    return f.flush()
+}
+
+// --- Open / create / close -------------------------------------------
+
+// Create NAME.DAT, NAME.IDX, and NAME.JNL. recordSize is fixed for
+// the database's life (1-65535 bytes). Returns a closed (all-nil)
+// Database on failure.
+func dbCreate(name: string, recordSize: int, creator: string): Database {
+    var db: Database
+    var none: Database
+    var hdr: text
+    var fl: text
+    var idx: filehandle
+    if recordSize < 1 or recordSize > 65535 { return none }
+    db.name = name
+    db.creator = creator
+    db.data = file.create(name + ".DAT", "VDBd", creator)
+    if db.data == nil { return none }
+    hdr.append("VDB")
+    hdr.append(char(0))
+    btAppendWord(hdr, 2)             // version
+    btAppendWord(hdr, dbPageSize)    // page_size
+    btAppendWord(hdr, recordSize)
+    btAppendInt(hdr, 0)              // record_count
+    btAppendInt(hdr, 1)              // next_record_id
+    btAppendInt(hdr, 0)              // last_compacted
+    btZeroFill(hdr)                  // pending, index_count, reserved, index list
+    btZeroFill(fl)                   // empty free list
+    if not dbWriteHeader(db, hdr) or not dbWriteFreeList(db, fl) {
+        dbClose(db)
+        return none
+    }
+    idx = btCreate(name + ".IDX", "VDBi", creator)
+    if idx == nil {
+        dbClose(db)
+        return none
+    }
+    db.index = idx
+    db.journal = file.create(name + ".JNL", "VDBj", creator)
+    if db.journal == nil {
+        dbClose(db)
+        return none
+    }
+    return db
+}
+
+// Open an existing database, replaying the journal if a crash left it
+// pending. Returns a closed (all-nil) Database on failure.
+func dbOpen(name: string, creator: string): Database {
+    var db: Database
+    var none: Database
+    var hdr: text
+    var idx: filehandle
+    db.name = name
+    db.creator = creator
+    db.data = file.open(name + ".DAT")
+    if db.data == nil { return none }
+    if not dbReadHeader(db, hdr) {
+        dbClose(db)
+        return none
+    }
+    db.journal = file.open(name + ".JNL")
+    if db.journal == nil {
+        db.journal = file.create(name + ".JNL", "VDBj", creator)
+    }
+    if db.journal == nil {
+        dbClose(db)
+        return none
+    }
+    if int(hdr[22]) != 0 {
+        log("vdb: replaying journal for " + name)
+        if not dbReplayJournal(db) {
+            dbClose(db)
+            return none
+        }
+    }
+    idx = btOpen(name + ".IDX")
+    if idx == nil {
+        dbClose(db)
+        return none
+    }
+    db.index = idx
+    return db
+}
+
+func dbClose(db: Database) {
+    var f: filehandle = db.data
+    var j: filehandle = db.journal
+    var idx: filehandle = db.index
+    if f != nil {
+        f.flush()
+        f.close()
+    }
+    if j != nil { j.close() }
+    if idx != nil { idx.close() }
+}
+
+// --- Record operations ------------------------------------------------
+
+// Add a record; returns its new ID, or -1 on failure. `data` supplies
+// up to record_size bytes (short data is zero-padded).
+func dbAdd(db: Database, data: text): int {
+    var hdr: text
+    var id: int
+    var pages: int
+    var firstPage: int
+    if not dbIsOpen(db) { return -1 }
+    if not dbReadHeader(db, hdr) { return -1 }
+    id = hdr.intAt(14)
+    pages = dbPagesNeeded(hdr.wordAt(8))
+    if not dbSetPending(db, hdr, true) { return -1 }
+    firstPage = dbAllocatePages(db, pages)
+    if firstPage < 2 {
+        dbRollback(db, hdr)
+        return -1
+    }
+    if not dbJournalRecord(db, joAdd, firstPage, id, data, pages) {
+        dbRollback(db, hdr)
+        return -1
+    }
+    if not dbWriteRecordPages(db, firstPage, id, data, pages) {
+        dbRollback(db, hdr)
+        return -1
+    }
+    if not btInsert(db.index, id, firstPage) {
+        dbRollback(db, hdr)
+        return -1
+    }
+    hdr.setIntAt(10, hdr.intAt(10) + 1)    // record_count
+    hdr.setIntAt(14, id + 1)               // next_record_id
+    if not dbCommit(db, hdr) { return -1 }
+    return id
+}
+
+// Look up a record's first page via the primary index; -1 if absent.
+func dbFirstPage(db: Database, id: int): int {
+    var pages: list of int
+    if not btFind(db.index, id, pages) { return -1 }
+    if pages.count == 0 { return -1 }
+    return pages[0]
+}
+
+// Fetch a record by ID. Returns exactly record_size bytes, or an
+// empty text if the record does not exist (or on error).
+func dbFind(db: Database, id: int): text {
+    var f: filehandle
+    var out: text
+    var none: text
+    var hdr: text
+    var page: text
+    var firstPage: int
+    var pages: int
+    var size: int
+    var want: int
+    var n: int
+    var i: int = 0
+    if not dbIsOpen(db) { return none }
+    if not dbReadHeader(db, hdr) { return none }
+    f = db.data
+    firstPage = dbFirstPage(db, id)
+    if firstPage < 2 { return none }
+    size = hdr.wordAt(8)
+    pages = dbPagesNeeded(size)
+    while i < pages {
+        if not f.readAt((firstPage + i) * dbPageSize, dbPageSize, page) { return none }
+        if page.length != dbPageSize { return none }
+        if page.intAt(0) != id { return none }
+        want = psContinuation
+        if i == 0 { want = psActive }
+        if int(page[4]) != want { return none }
+        n = size - out.length
+        if n > dbPageDataSize { n = dbPageDataSize }
+        out.append(page.textAt(6, n))
+        i = i + 1
+    }
+    return out
+}
+
+// Overwrite an existing record's data in place.
+func dbUpdate(db: Database, id: int, data: text): bool {
+    var hdr: text
+    var firstPage: int
+    var pages: int
+    if not dbIsOpen(db) { return false }
+    if not dbReadHeader(db, hdr) { return false }
+    firstPage = dbFirstPage(db, id)
+    if firstPage < 2 { return false }
+    pages = dbPagesNeeded(hdr.wordAt(8))
+    if not dbSetPending(db, hdr, true) { return false }
+    if not dbJournalRecord(db, joUpdate, firstPage, id, data, pages) {
+        dbRollback(db, hdr)
+        return false
+    }
+    if not dbWriteRecordPages(db, firstPage, id, data, pages) {
+        dbRollback(db, hdr)
+        return false
+    }
+    return dbCommit(db, hdr)
+}
+
+// Delete a record: journal it, mark its pages empty, drop it from the
+// primary index.
+func dbDelete(db: Database, id: int): bool {
+    var hdr: text
+    var e: text
+    var j: filehandle
+    var firstPage: int
+    var pages: int
+    if not dbIsOpen(db) { return false }
+    if not dbReadHeader(db, hdr) { return false }
+    firstPage = dbFirstPage(db, id)
+    if firstPage < 2 { return false }
+    pages = dbPagesNeeded(hdr.wordAt(8))
+    if not dbSetPending(db, hdr, true) { return false }
+    j = db.journal
+    e = dbJournalEntry(joDelete, firstPage, id, psEmpty, e, 0)
+    if not dbAppendJournal(db, e) or not j.flush() {
+        dbRollback(db, hdr)
+        return false
+    }
+    if not dbFreePages(db, firstPage, pages) {
+        dbRollback(db, hdr)
+        return false
+    }
+    if not btDeleteValue(db.index, id, firstPage) {
+        dbRollback(db, hdr)
+        return false
+    }
+    hdr.setIntAt(10, hdr.intAt(10) - 1)    // record_count
+    return dbCommit(db, hdr)
+}
+
+// Active-record count, from the header; -1 on error.
+func dbRecordCount(db: Database): int {
+    var hdr: text
+    if not dbIsOpen(db) { return -1 }
+    if not dbReadHeader(db, hdr) { return -1 }
+    return hdr.intAt(10)
+}

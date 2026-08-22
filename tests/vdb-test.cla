@@ -1,0 +1,153 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for the vDB database module (vdb.cla, v2 format).
+// Run by scripts/test.sh from a scratch directory; the database files
+// created here land there and are cleaned up with it.
+// Exits 0 on pass, 1 on the first failure.
+
+include "../vdb.cla"
+
+var failures: int = 0
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+func dataSize(db: Database): int {
+    var f: filehandle = db.data
+    return f.size()
+}
+
+// A recognizable multi-page payload: byte i is (i mod 251) + 1.
+func patternData(n: int): text {
+    var t: text
+    var i: int = 0
+    while i < n {
+        t.append(char(i mod 251 + 1))
+        i = i + 1
+    }
+    return t
+}
+
+on App.startCLI(args: list of string) {
+    var db: Database
+    var r: text
+    var e: text
+    var f: filehandle
+    var id1: int
+    var id2: int
+    var id3: int
+    var size: int
+
+    // 1. create: header + free list on disk, no records
+    db = dbCreate("VDBT", 32, "68BB")
+    expect(dbIsOpen(db), "create opens a database")
+    expect(dataSize(db) == 1024, "fresh .DAT is header + free list")
+    expect(dbRecordCount(db) == 0, "fresh database is empty")
+
+    // 2. add and find single-page records
+    id1 = dbAdd(db, "alice")
+    id2 = dbAdd(db, "bob")
+    expect(id1 == 1 and id2 == 2, "record IDs assigned in order")
+    expect(dbRecordCount(db) == 2, "record count tracks adds")
+    r = dbFind(db, id1)
+    expect(r.length == 32, "find returns record_size bytes")
+    expect(r[0, 5] == "alice" and int(r[5]) == 0, "record data zero-padded")
+    r = dbFind(db, id2)
+    expect(r[0, 3] == "bob", "second record found")
+    r = dbFind(db, 99)
+    expect(r.length == 0, "missing ID returns empty")
+
+    // 3. update in place
+    expect(dbUpdate(db, id1, "carol"), "update succeeds")
+    r = dbFind(db, id1)
+    expect(r[0, 5] == "carol", "update visible")
+    expect(not dbUpdate(db, 99, "nope"), "update of missing ID fails")
+
+    // 4. delete, and page reuse on the next add
+    size = dataSize(db)
+    expect(dbDelete(db, id1), "delete succeeds")
+    expect(dbFind(db, id1).length == 0, "deleted record gone")
+    expect(dbRecordCount(db) == 1, "count tracks delete")
+    expect(not dbDelete(db, id1), "second delete fails")
+    id3 = dbAdd(db, "dave")
+    expect(id3 == 3, "IDs never reused")
+    expect(dataSize(db) == size, "freed page reused, file did not grow")
+    r = dbFind(db, id3)
+    expect(r[0, 4] == "dave", "record in reused page found")
+
+    // 5. persistence across close/reopen
+    dbClose(db)
+    db = dbOpen("VDBT", "68BB")
+    expect(dbIsOpen(db), "reopen succeeds")
+    expect(dbRecordCount(db) == 2, "count survives reopen")
+    r = dbFind(db, id2)
+    expect(r[0, 3] == "bob", "records survive reopen")
+    dbClose(db)
+
+    // 6. bad opens fail cleanly
+    db = dbOpen("VDBT-missing", "68BB")
+    expect(not dbIsOpen(db), "open of missing database fails")
+    f = file.create("BAD.DAT", "TEXT", "68BB")
+    f.writeAt(0, "not a database at all, sorry")
+    f.close()
+    db = dbOpen("BAD", "68BB")
+    expect(not dbIsOpen(db), "open rejects a non-vdb file")
+
+    // 7. multi-page records (600 bytes -> 2 pages each)
+    db = dbCreate("VDBT2", 600, "68BB")
+    id1 = dbAdd(db, patternData(600))
+    expect(id1 == 1, "multi-page add succeeds")
+    r = dbFind(db, id1)
+    expect(r.length == 600, "multi-page find returns full record")
+    expect(int(r[0]) == 1 and int(r[505]) == 4 and int(r[506]) == 5 and int(r[599]) == 98,
+        "bytes correct across the page boundary")
+    size = dataSize(db)
+    expect(dbDelete(db, id1), "multi-page delete succeeds")
+    id2 = dbAdd(db, patternData(600))
+    expect(dataSize(db) == size, "freed 2-page run reused")
+    r = dbFind(db, id2)
+    expect(r.length == 600 and int(r[599]) == 98, "record in reused run intact")
+    dbClose(db)
+
+    // 8. crash recovery: hand-craft a pending journal, then reopen.
+    //    The journal holds a valid update for record 1 and a second,
+    //    corrupted entry that must be skipped.
+    db = dbCreate("VDBT3", 16, "68BB")
+    id1 = dbAdd(db, "aaaa")
+    dbClose(db)
+    e = dbJournalEntry(joUpdate, 2, id1, psActive, "bbbb", 0)
+    f = file.open("VDBT3.JNL")
+    f.append(e)
+    e = dbJournalEntry(joUpdate, 2, id1, psActive, "cccc", 0)
+    e.setIntAt(100, 12345)      // corrupt after checksum was computed
+    f.append(e)
+    f.close()
+    f = file.open("VDBT3.DAT")
+    f.writeAt(22, "\x01")       // journal_pending = true
+    f.close()
+    db = dbOpen("VDBT3", "68BB")
+    expect(dbIsOpen(db), "open with pending journal succeeds")
+    r = dbFind(db, id1)
+    expect(r[0, 4] == "bbbb", "valid journal entry replayed")
+    expect(r[0, 4] != "cccc", "corrupted journal entry skipped")
+    f = db.journal
+    expect(f.size() == 0, "journal truncated after replay")
+    id2 = dbAdd(db, "dddd")
+    r = dbFind(db, id2)
+    expect(r[0, 4] == "dddd", "database usable after recovery")
+    dbClose(db)
+
+    if failures > 0 {
+        log("vdb-test: FAILED")
+        quit 1
+    }
+    log("vdb-test: all passed")
+    quit
+}

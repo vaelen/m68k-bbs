@@ -76,7 +76,7 @@ there are no v1 files to migrate; add conversion only when one exists.
 |-------:|-----:|-------|-------|
 | 0 | 2 | free_page_count | u16, total free pages in file |
 | 2 | 2 | free_page_list_len | u16, valid entries below, 0–127 |
-| 4 | 508 | free_pages | i32[127], LIFO stack of first-page numbers |
+| 4 | 508 | free_pages | i32[127], stack of free page numbers, each listed individually (v2: v1 listed only a run's first page, but its allocator needed every page as an entry to find a run, so freed runs were never reused until a rescan) |
 
 Semantics (identical to v1): the array is a cache of up to 127 known
 free pages; `free_page_count` is the true total. Count > 0 with an
@@ -171,7 +171,7 @@ A sequence of fixed 518-byte entries, appended in order, truncated to
 | 0 | 1 | operation | 0 = none, 1 = update, 2 = delete, 3 = add |
 | 1 | 4 | page_num | i32, −1 for add |
 | 5 | 4 | record_id | i32 |
-| 9 | 507 | data | page data (506) + 1 reserved byte, zero |
+| 9 | 507 | data | page data (506), then the page's status byte (v2: was reserved in v1 — recording the status lets replay restore continuation pages correctly, which v1 could not) |
 | 516 | 2 | checksum | u16 |
 
 **Checksum**: `crc16` of the entry's first 516 bytes exactly as laid
