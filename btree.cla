@@ -6,18 +6,25 @@
 // reusable: includes nothing, knows nothing about vDB.
 //
 // The handle is the filehandle itself; there is no in-memory tree
-// state. Every operation reads the header and root pages it needs and
-// writes changes back immediately, so the file is always current.
-// Close with f.close().
+// state. Every operation reads the header and the pages on its
+// descent path and writes changes back immediately, so the file is
+// always current. Close with f.close().
 //
-// Current implementation (same practical limitation as libvdb): the
-// root is a single leaf page. An insert that would not fit the leaf's
-// 505-byte entry budget fails. Internal and overflow pages are
-// reserved for the growth path.
+// A full multi-level tree: leaves split when their 505-byte entry
+// budget overflows (separator promoted to the parent), internal nodes
+// split at 63 keys (median promoted), and the root grows upward, so
+// every leaf stays at the same depth. Deletion is lazy: entries are
+// removed but nodes are never merged, and empty leaves stay in place
+// -- rebuild the tree (vDB does this on compaction/recovery) to
+// reclaim the space. Leaves form a sorted next_leaf chain for range
+// scans. Overflow pages (type 4) are still reserved, so one key's
+// value list must fit its leaf (~123 values).
 
 const btPageSize: int = 512
 const btLeafHeaderSize: int = 7    // page_type(1) + key_count(2) + next_leaf(4)
 const btLeafBudget: int = 505     // btPageSize - btLeafHeaderSize
+const btMaxInternalKeys: int = 63 // 3 + (8*63 + 4) <= 512
+const btMaxDepth: int = 32        // corruption guard on descent
 
 const btPtInternal: int = 2
 const btPtLeaf: int = 3
@@ -43,7 +50,7 @@ func btAppendWord(t: text, v: int) {
     t.setWordAt(p, v)
 }
 
-// A brand-new entry: key, one value, no overflow page.
+// A brand-new leaf entry: key, one value, no overflow page.
 func btAppendNewEntry(t: text, key: int, value: int) {
     btAppendInt(t, key)
     btAppendWord(t, 1)
@@ -51,7 +58,28 @@ func btAppendNewEntry(t: text, key: int, value: int) {
     btAppendInt(t, 0)
 }
 
-// --- Open / create ----------------------------------------------------
+func btMakeLeaf(entries: text, keyCount: int, nextLeaf: int): text {
+    var p: text
+    p.append(char(btPtLeaf))
+    btAppendWord(p, keyCount)
+    btAppendInt(p, nextLeaf)
+    p.append(entries)
+    btZeroFill(p)
+    return p
+}
+
+// An internal page: child i at offset 3 + 8i, key i at 7 + 8i.
+// `region` is that child0 [key child]... run (8n + 4 bytes for n keys).
+func btWriteInternal(f: filehandle, pageNum: int, region: text, keyCount: int): bool {
+    var pg: text
+    pg.append(char(btPtInternal))
+    btAppendWord(pg, keyCount)
+    pg.append(region)
+    btZeroFill(pg)
+    return f.writeAt(pageNum * btPageSize, pg)
+}
+
+// --- Header -----------------------------------------------------------
 
 // Reads and validates the header page; returns the root page number,
 // or -1 if the file is not a v2 B-tree (or cannot be read).
@@ -63,6 +91,29 @@ func btRootPage(f: filehandle): int {
     if hdr.wordAt(4) != 2 { return -1 }
     return hdr.intAt(8)
 }
+
+func btSetRoot(f: filehandle, pageNum: int): bool {
+    var hdr: text
+    if not f.readAt(0, btPageSize, hdr) { return false }
+    if hdr.length != btPageSize { return false }
+    hdr.setIntAt(8, pageNum)
+    return f.writeAt(0, hdr)
+}
+
+// Allocate the next page number (from the header's page_count).
+// Returns -1 on I/O error.
+func btAllocPage(f: filehandle): int {
+    var hdr: text
+    var n: int
+    if not f.readAt(0, btPageSize, hdr) { return -1 }
+    if hdr.length != btPageSize { return -1 }
+    n = hdr.intAt(16)
+    hdr.setIntAt(16, n + 1)
+    if not f.writeAt(0, hdr) { return -1 }
+    return n
+}
+
+// --- Open / create ----------------------------------------------------
 
 // Create-or-truncate a B-tree file: header page + empty root leaf.
 // Returns the open handle, or nil (see lastError).
@@ -108,17 +159,41 @@ func btOpen(path: string): filehandle {
     return f
 }
 
-// --- Internal leaf I/O ------------------------------------------------
+// --- Descent ----------------------------------------------------------
 
-func btReadLeaf(f: filehandle, pageNum: int, page: text): bool {
-    if not f.readAt(pageNum * btPageSize, btPageSize, page) { return false }
-    if page.length != btPageSize { return false }
-    if int(page[0]) != btPtLeaf { return false }
-    return true
+// The child an internal page routes `key` to: child i holds keys
+// below key i, the last child everything else.
+func btChildFor(page: text, key: int): int {
+    var n: int = page.wordAt(1)
+    var i: int = 0
+    while i < n {
+        if key < page.intAt(7 + 8 * i) { return page.intAt(3 + 8 * i) }
+        i = i + 1
+    }
+    return page.intAt(3 + 8 * n)
+}
+
+// Walk from the root to the leaf that owns `key`. Fills `path` with
+// the page numbers visited (root first, leaf last) and leaves the
+// leaf's content in `page`.
+func btDescend(f: filehandle, key: int, path: list of int, page: text): bool {
+    var p: int = btRootPage(f)
+    path.clear()
+    if p < 0 { return false }
+    while path.count < btMaxDepth {
+        if not f.readAt(p * btPageSize, btPageSize, page) { return false }
+        if page.length != btPageSize { return false }
+        path.add(p)
+        if int(page[0]) == btPtLeaf { return true }
+        if int(page[0]) != btPtInternal { return false }
+        p = btChildFor(page, key)
+        if p < 1 { return false }
+    }
+    return false
 }
 
 // Reassemble a leaf from its old header (page_type + next_leaf kept)
-// and a rebuilt entries region; fails if the entries exceed the page.
+// and a rebuilt entries region.
 func btWriteLeaf(f: filehandle, pageNum: int, oldPage: text, entries: text, keyCount: int): bool {
     var page: text
     if entries.length > btLeafBudget { return false }
@@ -129,15 +204,90 @@ func btWriteLeaf(f: filehandle, pageNum: int, oldPage: text, entries: text, keyC
     return f.writeAt(pageNum * btPageSize, page)
 }
 
+// --- Split propagation ------------------------------------------------
+
+// After the page at the end of `path` split, hang (sep, newPage) off
+// its parent, splitting internal nodes upward as needed; a root split
+// grows a new root and repoints the header.
+func btInsertUp(f: filehandle, path: list of int, sep: int, newPage: int): bool {
+    var page: text
+    var region: text
+    var leftR: text
+    var rightR: text
+    var rootR: text
+    var level: int
+    var childPage: int
+    var k: int = sep
+    var nc: int = newPage
+    var p: int
+    var n: int
+    var s: int
+    var i: int
+    var h: int
+    var k2: int
+    var np: int
+    childPage = path[path.count - 1]
+    level = path.count - 2
+    while level >= 0 {
+        p = path[level]
+        if not f.readAt(p * btPageSize, btPageSize, page) { return false }
+        if page.length != btPageSize or int(page[0]) != btPtInternal { return false }
+        n = page.wordAt(1)
+        // find childPage's slot, then splice (k, nc) in after it
+        s = -1
+        i = 0
+        while i <= n {
+            if page.intAt(3 + 8 * i) == childPage {
+                s = i
+                break
+            }
+            i = i + 1
+        }
+        if s < 0 { return false }
+        region = page.textAt(3, 8 * s + 4)
+        btAppendInt(region, k)
+        btAppendInt(region, nc)
+        region.append(page.textAt(3 + 8 * s + 4, 8 * n + 4 - (8 * s + 4)))
+        n = n + 1
+        if n <= btMaxInternalKeys {
+            return btWriteInternal(f, p, region, n)
+        }
+        // split this internal node: median key h promotes upward
+        h = n / 2
+        k2 = region.intAt(8 * h + 4)
+        leftR = region.textAt(0, 8 * h + 4)
+        rightR = region.textAt(8 * h + 8, 8 * n + 4 - (8 * h + 8))
+        np = btAllocPage(f)
+        if np < 0 { return false }
+        if not btWriteInternal(f, np, rightR, n - h - 1) { return false }
+        if not btWriteInternal(f, p, leftR, h) { return false }
+        k = k2
+        nc = np
+        childPage = p
+        level = level - 1
+    }
+    // the root itself split: grow a new root above it
+    np = btAllocPage(f)
+    if np < 0 { return false }
+    btAppendInt(rootR, childPage)
+    btAppendInt(rootR, k)
+    btAppendInt(rootR, nc)
+    if not btWriteInternal(f, np, rootR, 1) { return false }
+    return btSetRoot(f, np)
+}
+
 // --- Operations -------------------------------------------------------
 
 // Insert a key/value pair. Duplicate keys collect multiple values on
-// one entry; duplicate values under a key are allowed. Fails if the
-// tree file is invalid, on I/O error, or if the leaf page is full.
+// one entry; duplicate values under a key are allowed. Fails only on
+// I/O error, an invalid file, or a single entry outgrowing a page.
 func btInsert(f: filehandle, key: int, value: int): bool {
     var page: text
     var out: text
-    var root: int
+    var leftE: text
+    var rightE: text
+    var path: list of int
+    var leaf: int
     var n: int
     var off: int
     var i: int = 0
@@ -145,11 +295,14 @@ func btInsert(f: filehandle, key: int, value: int): bool {
     var vc: int
     var esz: int
     var epos: int
+    var half: int
+    var cut: int
+    var leftCnt: int
+    var newPage: int
     var added: bool = false
     var merged: bool = false
-    root = btRootPage(f)
-    if root < 0 { return false }
-    if not btReadLeaf(f, root, page) { return false }
+    if not btDescend(f, key, path, page) { return false }
+    leaf = path[path.count - 1]
     n = page.wordAt(1)
     off = btLeafHeaderSize
     while i < n {
@@ -179,14 +332,39 @@ func btInsert(f: filehandle, key: int, value: int): bool {
         added = true
     }
     if added { n = n + 1 }
-    return btWriteLeaf(f, root, page, out, n)
+    if out.length <= btLeafBudget {
+        return btWriteLeaf(f, leaf, page, out, n)
+    }
+    // split the leaf near the byte midpoint (entries vary in size),
+    // keeping at least one entry on each side
+    if n < 2 { return false }    // one entry over a page: needs overflow pages
+    half = out.length / 2
+    cut = 0
+    leftCnt = 0
+    while leftCnt < n - 1 and (leftCnt == 0 or cut < half) {
+        vc = out.wordAt(cut + 4)
+        cut = cut + 10 + vc * 4
+        leftCnt = leftCnt + 1
+    }
+    leftE = out.textAt(0, cut)
+    rightE = out.textAt(cut, out.length - cut)
+    if leftE.length > btLeafBudget or rightE.length > btLeafBudget { return false }
+    newPage = btAllocPage(f)
+    if newPage < 0 { return false }
+    if not f.writeAt(newPage * btPageSize, btMakeLeaf(rightE, n - leftCnt, page.intAt(3))) {
+        return false
+    }
+    if not f.writeAt(leaf * btPageSize, btMakeLeaf(leftE, leftCnt, newPage)) {
+        return false
+    }
+    return btInsertUp(f, path, rightE.intAt(0), newPage)
 }
 
 // Find all values for a key; fills `values` (cleared first).
 // Returns true if the key exists.
 func btFind(f: filehandle, key: int, values: list of int): bool {
     var page: text
-    var root: int
+    var path: list of int
     var n: int
     var off: int
     var i: int = 0
@@ -194,9 +372,7 @@ func btFind(f: filehandle, key: int, values: list of int): bool {
     var vc: int
     var j: int
     values.clear()
-    root = btRootPage(f)
-    if root < 0 { return false }
-    if not btReadLeaf(f, root, page) { return false }
+    if not btDescend(f, key, path, page) { return false }
     n = page.wordAt(1)
     off = btLeafHeaderSize
     while i < n {
@@ -217,13 +393,15 @@ func btFind(f: filehandle, key: int, values: list of int): bool {
     return false
 }
 
-// Shared removal walk. valueOnly: remove the first occurrence of
-// `value` under `key` (dropping the entry if it was the last value);
-// otherwise remove the whole entry. Returns false if nothing matched.
+// Shared removal walk (lazy: no merging, an emptied leaf stays).
+// valueOnly: remove the first occurrence of `value` under `key`
+// (dropping the entry if it was the last value); otherwise remove the
+// whole entry. Returns false if nothing matched.
 func btRemove(f: filehandle, key: int, value: int, valueOnly: bool): bool {
     var page: text
     var out: text
-    var root: int
+    var path: list of int
+    var leaf: int
     var n: int
     var off: int
     var i: int = 0
@@ -234,9 +412,8 @@ func btRemove(f: filehandle, key: int, value: int, valueOnly: bool): bool {
     var hit: int
     var drops: int = 0
     var found: bool = false
-    root = btRootPage(f)
-    if root < 0 { return false }
-    if not btReadLeaf(f, root, page) { return false }
+    if not btDescend(f, key, path, page) { return false }
+    leaf = path[path.count - 1]
     n = page.wordAt(1)
     off = btLeafHeaderSize
     while i < n {
@@ -279,7 +456,7 @@ func btRemove(f: filehandle, key: int, value: int, valueOnly: bool): bool {
         i = i + 1
     }
     if not found { return false }
-    return btWriteLeaf(f, root, page, out, n - drops)
+    return btWriteLeaf(f, leaf, page, out, n - drops)
 }
 
 // Delete a key and all its values.

@@ -140,16 +140,40 @@ Packed leaf entry (variable length, `10 + 4*value_count` bytes):
 | 4 | overflow_page | i32, 0 = none |
 
 **Capacity rule (v2)**: the serialized entries MUST fit in
-512 − 7 = 505 bytes. An insert that would overflow the page fails
-(returns false, `lastError` set) until node splitting or overflow
-pages are implemented — same practical limitation as v1, but stated
-as the byte budget it actually is rather than fixed counts that
-don't fit.
+512 − 7 = 505 bytes. A leaf whose entries would overflow the budget
+splits near its byte midpoint (each side keeps at least one entry),
+the right half moving to a new page whose first key is promoted to
+the parent as a separator; `next_leaf` keeps the leaves a sorted
+chain. One *entry* larger than the budget (a key with ~124+ values)
+cannot split and the insert fails — that is what overflow pages are
+reserved for.
 
-**Internal** (type 2) and **overflow** (type 4) pages are reserved
-for the same future growth path as v1 (overflow: u16 value_count at
-1, i32 next_overflow at 3, then packed i32 values). A v2 reader may
-treat encountering them as an error until implemented.
+**Internal** (type 3 = leaf's sibling, type 2):
+
+| Offset | Size | Field | Notes |
+|-------:|-----:|-------|-------|
+| 0 | 1 | page_type | = 2 |
+| 1 | 2 | key_count | u16, n = 1–63 |
+| 3 + 8i | 4 | child i | i32 page number, i = 0…n |
+| 7 + 8i | 4 | key i | i32, i = 0…n−1 |
+
+Child i routes keys below key i; the last child routes the rest.
+Max 63 keys (3 + 8·63 + 4 = 511 bytes). An internal node past 63
+keys splits with its median key *promoted* (not copied down); when
+the root splits, a new one-key root is allocated and the header's
+`root_page` repointed — so the tree grows at the top and every leaf
+sits at the same depth. New pages come from the header's
+`page_count`; `next_free_page` stays 0 (unused).
+
+**Deletion is lazy**: entries are removed from their leaf, but nodes
+are never merged and an emptied leaf stays in place (separator keys
+in internal nodes need not exist as live keys). The space comes back
+when the tree is rebuilt — which vDB does on crash recovery, and
+compaction will do wholesale.
+
+**Overflow** (type 4) pages are still reserved, unimplemented
+(u16 value_count at 1, i32 next_overflow at 3, then packed i32
+values).
 
 ### Key generation
 
