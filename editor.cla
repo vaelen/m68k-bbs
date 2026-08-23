@@ -16,6 +16,7 @@ var editPending: char = ' '     // 'E'/'I': next line replaces/inserts;
                                 // 'T': awaiting its Replacement
 var editPendingLine: int = 0
 var editOriginal: string
+var editTarget: char = 'P'      // 'P' board post, 'M' private mail
 
 // ponytail: 100 lines max; raise if real posts ever hit it.
 const editMaxLines: int = 100
@@ -33,6 +34,7 @@ func sendEditorBanner(title: string) {
 }
 
 func startNewPost() {
+    editTarget = 'P'
     editThread = 0
     editSubject = ""
     editLines.clear()
@@ -46,6 +48,7 @@ func startNewPost() {
 // thread is the original's thread (its own id if it's the starter).
 func startReply() {
     var sub: string = post.subject
+    editTarget = 'P'
     if post.threadId == 0 {
         editThread = post.id
     } else {
@@ -93,6 +96,11 @@ func editSubjectInput(input: string) {
 }
 
 func abortEditor() {
+    if editTarget == 'M' {
+        sendLine("Message aborted.")
+        backToInbox()
+        return
+    }
     sendLine("Post aborted.")
     backToPosts()
 }
@@ -293,6 +301,15 @@ func saveEditor() {
     while i < editLines.count {
         body = body + editLines[i] + "\n"
         i = i + 1
+    }
+    if editTarget == 'M' {
+        if sendMail(user.name, user.id, mailToName, mailToId, editSubject, body) >= 1 {
+            sendLine("Message sent.")
+        } else {
+            sendLine("Send failed: " + lastError.message)
+        }
+        backToInbox()
+        return
     }
     if addPost(user.name, editThread, editSubject, body) >= 1 {
         sendLine("Post saved.")

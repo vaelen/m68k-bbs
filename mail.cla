@@ -27,17 +27,17 @@ func loadInbox() {
     }
 }
 
-// Content widths: narrow (<80) is #/new/Subject (total 32), wide adds
-// From and Date (total 66).
+// Content widths: narrow (<80) is #/new/Subject (total 30, 40 cols
+// with borders and padding), wide adds From and Date (total 64 = 80).
 func inboxWidths(w: list of int) {
     w.clear()
     w.add(3)
     w.add(1)
     if terminal.columns < 80 {
-        w.add(28)
+        w.add(26)
         return
     }
-    w.add(29)
+    w.add(27)
     w.add(16)
     w.add(17)
 }
@@ -310,11 +310,70 @@ func delMailConfirm(input: string) {
     displayPrompt()
 }
 
-// Placeholders completed in Task 4.
+// --- Compose / reply ---------------------------------------------------
+// The To: prompt resolves a local username (case-insensitive) and
+// rejects anything else; the subject/body prompts are editor.cla's,
+// retargeted with editTarget = 'M'.
+
+var mailToId: int = 0
+var mailToName: string(63)
+
 func startNewMail() {
+    editTarget = 'M'
+    editThread = 0
+    editSubject = ""
+    editLines.clear()
+    editPending = ' '
+    mailToId = 0
+    mailToName = ""
+    sendEditorBanner("New Message")
+    user.screen = "mailto"
     displayPrompt()
 }
 
+// Empty To: cancels; an unknown name re-prompts.
+func mailToInput(input: string) {
+    var id: int
+    var rec: text
+    if input == "" or upperStr(input) == "/A" {
+        abortEditor()
+        return
+    }
+    id = findUserId(trimStr(input))
+    if id < 1 {
+        sendLine("No such user.")
+        displayPrompt()
+        return
+    }
+    rec = dbFind(usersDb, id)
+    mailToId = id
+    mailToName = dbExtractString(rec, uOffName)
+    sendLine("To: " + mailToName)
+    user.screen = "editsubject"
+    displayPrompt()
+}
+
+// Reply to the message on screen: To = its sender, subject Re: <orig>.
 func startMailReply() {
+    var sub: string = message.subject
+    var rec: text = dbFind(usersDb, message.fromUserId)
+    if message.fromUserId < 1 or rec.length != userRecordSize {
+        sendLine("The sender is no longer a user here.")
+        displayPrompt()
+        return
+    }
+    editTarget = 'M'
+    editThread = 0
+    mailToId = message.fromUserId
+    mailToName = dbExtractString(rec, uOffName)
+    if sub.length < 4 or sub[0, 4] != "Re: " {
+        if sub.length > 59 { sub = sub[0, 59] }
+        sub = "Re: " + sub
+    }
+    editSubject = sub
+    editLines.clear()
+    editPending = ' '
+    sendEditorBanner("Reply to " + mailToName)
+    user.screen = "editsubject"
     displayPrompt()
 }

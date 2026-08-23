@@ -222,6 +222,7 @@ func displayPrompt() {
     case "posts", "postview" { postsPrompt() }
     case "mail", "mailview" { mailPrompt() }
     case "delmailconfirm" { modem.send("Delete this message? (Y/N): ") }
+    case "mailto" { modem.send("To: ") }
     case "editsubject" { editSubjectPrompt() }
     case "editbody"    { editBodyPrompt() }
     case "delpostnum"     { modem.send("Delete post #: ") }
@@ -299,6 +300,7 @@ func processInput(input: string) {
     case "mail" { mailChoice(input) }
     case "mailview" { mailViewChoice(input) }
     case "delmailconfirm" { delMailConfirm(input) }
+    case "mailto" { mailToInput(input) }
     case "editsubject" { editSubjectInput(input) }
     case "editbody"    { editBodyInput(input) }
     case "delpostnum"     { delPostNumInput(input) }
