@@ -254,12 +254,19 @@ best, which is why `terminal.cla` (pure sequence builders) and
 
 ## Compiler limitations
 
-None currently. Every gap this project filed (positioned file I/O via
-`filehandle`, `crc16`, LE/word `text` accessors and `set*At` writers,
-`string(n)`, toolbox include resolution via rtdir, connection-typed
-parameters, the 68k string-temp cap) shipped and is in the pinned
-toolchain — see `docs/language-gaps.md` for the record. vDB
-(`~/repos/libvdb/db.md`) is now implementable in pure Clarus.
+None block current features: every gap this project filed for the
+message-base and mail work (positioned file I/O via `filehandle`,
+`crc16`, LE/word `text` accessors and `set*At` writers, `string(n)`,
+toolbox include resolution via rtdir, connection-typed parameters, the
+68k string-temp cap) shipped and is in the pinned toolchain. vDB
+(`~/repos/libvdb/db.md`) is implementable in pure Clarus.
+
+The **next** file-area steps (upload/download, sysop import, area-folder
+management, deletion cleanup, MacBinary preservation) do need runtime
+features that are not there yet — directory listing, file metadata
+query, file delete, arbitrary-file resource-fork bytes, set
+type/creator, mkdir, rename. Plain data-fork transfers need none of
+them. The full list, with what each unlocks, is `docs/language-gaps.md`.
 
 ## Commits
 
