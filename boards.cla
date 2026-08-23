@@ -163,7 +163,7 @@ func postsPrompt() {
 func postsChoice(input: string) {
     var n: int = parseIntStr(input)
     if n >= 1 and n <= postIds.count {
-        stubOption("Show Post")
+        showPost(n)
         return
     }
     if input == "" or input == "+" {
@@ -195,6 +195,152 @@ func postsChoice(input: string) {
     case "Q" {
         postsClose()
         gotoScreen("boards")
+    }
+    else { displayPrompt() }
+    }
+}
+
+// --- Post view ---------------------------------------------------------
+// Option-B frame: subject title bar, From/Date meta rows, body wrapped
+// inside the border and paged, "Post N - Page X of Y" footer.
+
+var postNum: int = 0            // display number in the current list page
+var bodyLines: list of string
+var bodyPage: int = 1
+var bodyPages: int = 1
+
+// Single-span content width for the post frame.
+func postViewWidths(w: list of int) {
+    w.clear()
+    if terminal.columns < 80 {
+        w.add(36)
+        return
+    }
+    w.add(76)
+}
+
+func showPost(n: int) {
+    var w: list of int
+    postViewWidths(w)
+    if not loadPost(postIds[n - 1]) {
+        sendLine("Post unavailable.")
+        displayPrompt()
+        return
+    }
+    postNum = n
+    wrapText(postBody(post.id), w[0], bodyLines)
+    bodyPage = 1
+    user.screen = "postview"
+    drawPostView()
+    displayPrompt()
+}
+
+func drawPostView() {
+    var w: list of int
+    var cells: list of string
+    var pageRows: int = 0
+    var i: int = 0
+    var last: int = 0
+    var d: string = dateTimeStr(post.created)
+
+    postViewWidths(w)
+    // Frame from the top rule down: 8 lines plus one per meta row
+    // (top, title, joint, meta, joint, joint, footer, bottom, prompt).
+    if terminal.columns < 80 {
+        pageRows = terminal.rows - 10
+    } else {
+        pageRows = terminal.rows - 9
+    }
+    bodyPages = (bodyLines.count + pageRows - 1) / pageRows
+    if bodyPages < 1 { bodyPages = 1 }
+    if bodyPage > bodyPages { bodyPage = bodyPages }
+    if bodyPage < 1 { bodyPage = 1 }
+
+    sendTableTitle(post.subject, w)
+    cells.clear()
+    if terminal.columns < 80 {
+        cells.add("From: " + post.sender)
+        sendLine(rowLine(cells, w))
+        cells.clear()
+        cells.add("Date: " + d)
+        sendLine(rowLine(cells, w))
+    } else {
+        cells.add(pad("From: " + post.sender, w[0] - 23) + "Date: " + d)
+        sendLine(rowLine(cells, w))
+    }
+    sendRule(CenterLeft, Center, CenterRight, w)
+    i = (bodyPage - 1) * pageRows
+    last = i + pageRows
+    while i < bodyLines.count and i < last {
+        cells.clear()
+        cells.add(bodyLines[i])
+        sendLine(rowLine(cells, w))
+        i = i + 1
+    }
+    sendTableFooter("Post " + intStr(postNum) + " - Page " + intStr(bodyPage) + " of " + intStr(bodyPages), w)
+}
+
+func drawPostViewMenu() {
+    sendLine("")
+    sendLine("+) Next Page (or Enter)")
+    sendLine("-) Previous Page")
+    sendLine(">) Next Post (or .)")
+    sendLine("<) Previous Post (or ,)")
+    sendLine("L) Redraw This Page")
+    sendLine("R) Reply")
+    sendLine("Q) Return to Post List")
+    sendLine("")
+}
+
+// +/Enter/- page within the post; >/. and </, move between posts in
+// list order; all quietly re-prompt at their ends.
+func postViewChoice(input: string) {
+    if input == "" or input == "+" {
+        if bodyPage < bodyPages {
+            bodyPage = bodyPage + 1
+            drawPostView()
+        }
+        displayPrompt()
+        return
+    }
+    if input == "-" {
+        if bodyPage > 1 {
+            bodyPage = bodyPage - 1
+            drawPostView()
+        }
+        displayPrompt()
+        return
+    }
+    if input == ">" or input == "." {
+        if postNum < postIds.count {
+            showPost(postNum + 1)
+        } else {
+            displayPrompt()
+        }
+        return
+    }
+    if input == "<" or input == "," {
+        if postNum > 1 {
+            showPost(postNum - 1)
+        } else {
+            displayPrompt()
+        }
+        return
+    }
+    switch upperStr(input) {
+    case "?" {
+        displayMenu()
+        displayPrompt()
+    }
+    case "L" {
+        drawPostView()
+        displayPrompt()
+    }
+    case "R" { stubOption("Reply") }
+    case "Q" {
+        user.screen = "posts"
+        drawPostList()
+        displayPrompt()
     }
     else { displayPrompt() }
     }

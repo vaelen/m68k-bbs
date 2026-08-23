@@ -167,6 +167,7 @@ func displayMenu() {
     case "sysopusers"  { drawSysopUsersMenu() }
     case "boards"      { drawBoardPicker() }
     case "posts"       { drawPostsMenu() }
+    case "postview"    { drawPostViewMenu() }
     }
 }
 
@@ -195,7 +196,7 @@ func displayPrompt() {
     case "deluserconfirm"  { modem.send("Delete this user? (Y/N): ") }
     case "delboardconfirm" { modem.send("Delete this board? (Y/N): ") }
     case "boards" { modem.send("Board ID> ") }
-    case "posts"  { postsPrompt() }
+    case "posts", "postview" { postsPrompt() }
     }
 }
 
@@ -257,6 +258,7 @@ func processInput(input: string) {
     case "delboardconfirm" { delBoardConfirm(input) }
     case "boards" { boardPickerInput(input) }
     case "posts"  { postsChoice(input) }
+    case "postview" { postViewChoice(input) }
     case "logoff"   { }   // ignore trailing input (e.g. the modem's OK)
     }
 }

@@ -25,6 +25,7 @@ on App.startCLI(args: list of string) {
     var want: string
     var w: list of int
     var cells: list of string
+    var lines: list of string
 
     // All 16 foreground sequences: values 0-7 are "\x1B[22;3Xm",
     // 8-15 are the same X with bold ("\x1B[1;3Xm").
@@ -158,6 +159,24 @@ on App.startCLI(args: list of string) {
     // spanWidth: the one-column content width that renders the same
     // total width as the given columns ([1,1] table is 9 wide).
     expect(spanWidth(w) == 5, "spanWidth of two columns")
+
+    // wrapText: word-wrap a body to a width, honoring CR breaks.
+    wrapText("The quick brown fox jumps", 10, lines)
+    expect(lines.count == 3, "wrap: 3 lines")
+    expect(lines.count == 3 and lines[0] == "The quick" and lines[1] == "brown fox" and lines[2] == "jumps",
+           "wrap: on word boundaries")
+    wrapText("12345 678", 5, lines)
+    expect(lines.count == 2 and lines[0] == "12345" and lines[1] == "678", "wrap: exact-fit word")
+    wrapText("abcdefghijxyz", 5, lines)
+    expect(lines.count == 3 and lines[0] == "abcde" and lines[1] == "fghij" and lines[2] == "xyz",
+           "wrap: hard-break long word")
+    wrapText("one\x0D\x0Dtwo", 20, lines)
+    expect(lines.count == 3 and lines[0] == "one" and lines[1] == "" and lines[2] == "two",
+           "wrap: CR breaks and blank line kept")
+    wrapText("a\x0D\x0Ab", 20, lines)
+    expect(lines.count == 2 and lines[0] == "a" and lines[1] == "b", "wrap: LF ignored (CRLF)")
+    wrapText("", 20, lines)
+    expect(lines.count == 0, "wrap: empty body")
 
     // VT100: rules are bare DEC letters (caller wraps via sendDrawing);
     // rows carry SO/SI around each bar.

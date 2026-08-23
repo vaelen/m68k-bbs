@@ -217,6 +217,70 @@ func pad(s: string, width: int): string {
     return out
 }
 
+// Word-wrap `body` into lines no wider than `width`: breaks on
+// spaces, hard-breaks words longer than a line, keeps CR line breaks
+// (blank lines included), drops LFs (CRLF input works).
+func wrapText(body: text, width: int, lines: list of string) {
+    var line: string = ""
+    var word: string = ""
+    var i: int = 0
+    var c: char
+    var joined: string
+    lines.clear()
+    if width < 1 { return }
+    while i < body.length {
+        c = body[i]
+        i = i + 1
+        if c == '\x0A' { continue }
+        if c == '\x0D' or c == ' ' {
+            // flush the pending word onto the line
+            if word != "" {
+                if line == "" {
+                    joined = word
+                } else {
+                    joined = line + " " + word
+                }
+                if joined.length <= width {
+                    line = joined
+                } else {
+                    lines.add(line)
+                    line = word
+                }
+                word = ""
+            }
+            if c == '\x0D' {
+                lines.add(line)
+                line = ""
+            }
+        } else {
+            word = word + c
+            if word.length == width {
+                // a full-width word gets a line of its own
+                if line != "" {
+                    lines.add(line)
+                    line = ""
+                }
+                lines.add(word)
+                word = ""
+            }
+        }
+    }
+    if word != "" {
+        if line == "" {
+            joined = word
+        } else {
+            joined = line + " " + word
+        }
+        if joined.length <= width {
+            line = joined
+        } else {
+            lines.add(line)
+            line = word
+        }
+    }
+    if line != "" { lines.add(line) }
+}
+
 // Right-align s in a field of `width` spaces, truncating if longer.
 func padLeft(s: string, width: int): string {
     var out: string = s
