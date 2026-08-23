@@ -130,30 +130,8 @@ func accessName(a: char): string {
 // boxed table drawn a page at a time, records read straight off the
 // database (the session's `user` global is never touched). `listFromId`
 // is the paging cursor; each list has its own draw/input/start funcs.
-
-func sendRule(l: BoxPiece, m: BoxPiece, r: BoxPiece, w: list of int) {
-    sendDrawing(modem, ruleLine(l, m, r, w))
-    modem.send(terminal.eol)
-}
-
-// Top of a boxed table: rule, centered title bar, joint rule.
-func sendTableTitle(title: string, w: list of int) {
-    var span: list of int
-    var cells: list of string
-    span.add(spanWidth(w))
-    cells.add(center(title, span[0]))
-    sendLine("")
-    sendRule(TopLeft, TopCenter, TopRight, span)
-    sendLine(rowLine(cells, span))
-    sendRule(CenterLeft, TopCenter, CenterRight, w)
-}
-
-// Table title plus a header row and its rule.
-func sendTableHeader(title: string, headers: list of string, w: list of int) {
-    sendTableTitle(title, w)
-    sendLine(rowLine(headers, w))
-    sendRule(CenterLeft, Center, CenterRight, w)
-}
+// The table senders themselves (sendRule, sendTableTitle,
+// sendTableHeader) live in bbs.cla -- boards.cla uses them too.
 
 // First id in [fromId, nextId) whose record is live, or nextId.
 func nextLiveId(db: Database, fromId: int, nextId: int, size: int): int {
@@ -304,13 +282,7 @@ func drawBoardListPage() {
     while id < nextId and shown < pageRows {
         rec = dbFind(boardsDb, id)
         if rec.length == boardRecordSize {
-            cells.clear()
-            cells.add(intStr(id))
-            cells.add(dbExtractString(rec, bOffName))
-            if terminal.columns >= 80 {
-                cells.add(dbExtractString(rec, bOffDescription))
-                cells.add(dbExtractString(rec, bOffNetwork))
-            }
+            boardRowCells(id, rec, cells)
             sendLine(rowLine(cells, w))
             shown = shown + 1
         }

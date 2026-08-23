@@ -9,8 +9,10 @@ include "scanner.cla"
 include "user.cla"
 include "usersdb.cla"
 include "boardsdb.cla"
+include "postsdb.cla"
 include "termio.cla"
 include "sysop.cla"
+include "boards.cla"
 include "toolbox/osutils.cla"   // DateTimeRec / SecondsToDate (via --rtdir)
 
 app BBS {
@@ -69,6 +71,34 @@ func sendLine(s: string) {
     modem.send(s + terminal.eol)
 }
 
+// --- Table output ------------------------------------------------------
+// Connection-facing senders over terminal.cla's table builders, shared
+// by the sysop screens and the bulletin board reader.
+
+func sendRule(l: BoxPiece, m: BoxPiece, r: BoxPiece, w: list of int) {
+    sendDrawing(modem, ruleLine(l, m, r, w))
+    modem.send(terminal.eol)
+}
+
+// Top of a boxed table: rule, centered title bar, joint rule.
+func sendTableTitle(title: string, w: list of int) {
+    var span: list of int
+    var cells: list of string
+    span.add(spanWidth(w))
+    cells.add(center(title, span[0]))
+    sendLine("")
+    sendRule(TopLeft, TopCenter, TopRight, span)
+    sendLine(rowLine(cells, span))
+    sendRule(CenterLeft, TopCenter, CenterRight, w)
+}
+
+// Table title plus a header row and its rule.
+func sendTableHeader(title: string, headers: list of string, w: list of int) {
+    sendTableTitle(title, w)
+    sendLine(rowLine(headers, w))
+    sendRule(CenterLeft, Center, CenterRight, w)
+}
+
 // Decimal string of a non-negative int (no int-to-string builtin).
 func intStr(n: int): string {
     var v: int = n
@@ -123,6 +153,8 @@ func displayMenu() {
     case "sysop"       { drawSysopMenu() }
     case "sysopboards" { drawSysopBoardsMenu() }
     case "sysopusers"  { drawSysopUsersMenu() }
+    case "boards"      { drawBoardPicker() }
+    case "posts"       { drawPostsMenu() }
     }
 }
 
@@ -150,6 +182,8 @@ func displayPrompt() {
     case "delboardid"   { modem.send("Board ID: ") }
     case "deluserconfirm"  { modem.send("Delete this user? (Y/N): ") }
     case "delboardconfirm" { modem.send("Delete this board? (Y/N): ") }
+    case "boards" { modem.send("Board ID> ") }
+    case "posts"  { postsPrompt() }
     }
 }
 
@@ -172,6 +206,7 @@ func drawTerminalMenu() {
 func drawMainMenu() {
     sendLine("")
     sendLine("?) Display This Menu")
+    sendLine("B) Bulletin Boards")
     if user.access == accessSysop {
         sendLine("S) Sysop Menu")
     }
@@ -208,6 +243,8 @@ func processInput(input: string) {
     case "deluserconfirm"  { delUserConfirm(input) }
     case "delboardid"      { delBoardIdInput(input) }
     case "delboardconfirm" { delBoardConfirm(input) }
+    case "boards" { boardPickerInput(input) }
+    case "posts"  { postsChoice(input) }
     case "logoff"   { }   // ignore trailing input (e.g. the modem's OK)
     }
 }
@@ -366,6 +403,7 @@ func mainChoice(input: string) {
         displayMenu()
         displayPrompt()
     }
+    case "B" { gotoScreen("boards") }
     case "S" {
         if user.access == accessSysop {
             gotoScreen("sysop")
@@ -422,6 +460,7 @@ func connected() {
 func disconnected() {
     isConnected = false
     hangupPhase = 0
+    postsClose()
     log("Caller disconnected.")
 }
 
