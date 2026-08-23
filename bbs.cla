@@ -15,6 +15,8 @@ include "termio.cla"
 include "sysop.cla"
 include "boards.cla"
 include "maildb.cla"
+include "areasdb.cla"
+include "filesdb.cla"
 include "mail.cla"
 include "editor.cla"
 include "toolbox/osutils.cla"   // DateTimeRec / SecondsToDate (via --rtdir)
@@ -588,6 +590,11 @@ on App.launch {
     } else {
         log("Mail database unavailable: " + lastError.message)
     }
+    if areasOpen() {
+        log("Areas database open (" + intStr(areaCount()) + " file areas).")
+    } else {
+        log("Areas database unavailable: " + lastError.message)
+    }
     modem.open(serial "modem:9600")
 }
 
@@ -612,6 +619,8 @@ extend File {
         usersClose()
         boardsClose()
         mailClose()
+        areasClose()
+        filesClose()
         quit
     }
 }
@@ -621,6 +630,8 @@ extend Main {
         usersClose()
         boardsClose()
         mailClose()
+        areasClose()
+        filesClose()
         quit
     }
 }
