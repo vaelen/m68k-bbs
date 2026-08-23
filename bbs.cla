@@ -10,6 +10,7 @@ include "user.cla"
 include "usersdb.cla"
 include "boardsdb.cla"
 include "termio.cla"
+include "sysop.cla"
 include "toolbox/osutils.cla"   // DateTimeRec / SecondsToDate (via --rtdir)
 
 app BBS {
@@ -40,7 +41,6 @@ var isConnected: bool = false
 // Login/signup state between prompts (reset on connect).
 var pendingId: int = 0      // account found at the login prompt
 var pendingHash: int = 0    // first password entered during signup
-var listFromId: int = 1     // paging cursor for the user list
 
 
 // Collect connected-caller input, one char at a time. Called by
@@ -139,6 +139,17 @@ func displayPrompt() {
     case "sysop"       { modem.send("Sysop Menu> ") }
     case "sysopboards" { modem.send("Sysop:Boards> ") }
     case "sysopusers"  { modem.send("Sysop:Users> ") }
+    case "showuser"    { modem.send("User ID or name: ") }
+    case "showboard"   { modem.send("Board ID: ") }
+    case "edituserid"  { modem.send("User ID or name: ") }
+    case "editboardid" { modem.send("Board ID: ") }
+    case "edituser", "editboard" { modem.send("Field letter, S)ave, Q)uit: ") }
+    case "edituserval"  { editUserValuePrompt() }
+    case "editboardval" { editBoardValuePrompt() }
+    case "deluserid"    { modem.send("User ID or name: ") }
+    case "delboardid"   { modem.send("Board ID: ") }
+    case "deluserconfirm"  { modem.send("Delete this user? (Y/N): ") }
+    case "delboardconfirm" { modem.send("Delete this board? (Y/N): ") }
     }
 }
 
@@ -168,38 +179,6 @@ func drawMainMenu() {
     sendLine("")
 }
 
-func drawSysopMenu() {
-    sendLine("")
-    sendLine("Sysop Menu:")
-    sendLine("B) Message Boards")
-    sendLine("U) Users")
-    sendLine("Q) Return to Main Menu")
-    sendLine("")
-}
-
-func drawSysopBoardsMenu() {
-    sendLine("")
-    sendLine("Sysop - Message Boards:")
-    sendLine("L) List Boards")
-    sendLine("S) Show Board Details")
-    sendLine("E) Edit Board")
-    sendLine("N) New Board")
-    sendLine("D) Delete Board")
-    sendLine("Q) Return to Sysop Menu")
-    sendLine("")
-}
-
-func drawSysopUsersMenu() {
-    sendLine("")
-    sendLine("Sysop - Users:")
-    sendLine("L) List Users")
-    sendLine("S) Show User Details")
-    sendLine("E) Edit User")
-    sendLine("D) Delete User")
-    sendLine("Q) Return to Sysop Menu")
-    sendLine("")
-}
-
 // Act on one completed input (a line, or a single char in Character
 // mode) according to the screen the user is on.
 func processInput(input: string) {
@@ -217,6 +196,18 @@ func processInput(input: string) {
     case "sysopusers"  { sysopUsersChoice(input) }
     case "userlist"    { userListInput(input) }
     case "boardlist"   { boardListInput(input) }
+    case "showuser"    { showUserInput(input) }
+    case "showboard"   { showBoardInput(input) }
+    case "edituserid"   { editUserIdInput(input) }
+    case "edituser"     { editUserChoice(input) }
+    case "edituserval"  { editUserValue(input) }
+    case "editboardid"  { editBoardIdInput(input) }
+    case "editboard"    { editBoardChoice(input) }
+    case "editboardval" { editBoardValue(input) }
+    case "deluserid"       { delUserIdInput(input) }
+    case "deluserconfirm"  { delUserConfirm(input) }
+    case "delboardid"      { delBoardIdInput(input) }
+    case "delboardconfirm" { delBoardConfirm(input) }
     case "logoff"   { }   // ignore trailing input (e.g. the modem's OK)
     }
 }
@@ -385,255 +376,6 @@ func mainChoice(input: string) {
     case "Q" { logoff() }
     else     { displayPrompt() }
     }
-}
-
-// --- Sysop menus ------------------------------------------------------
-// All non-navigation options are stubs for now: echo the option name,
-// then redraw the prompt.
-
-func stubOption(name: string) {
-    sendLine(name)
-    displayMenu()
-    displayPrompt()
-}
-
-func sysopChoice(input: string) {
-    switch upperStr(input) {
-    case "?" {
-        displayMenu()
-        displayPrompt()
-    }
-    case "B" { gotoScreen("sysopboards") }
-    case "U" { gotoScreen("sysopusers") }
-    case "Q" { gotoScreen("main") }
-    else     { displayPrompt() }
-    }
-}
-
-func sysopBoardsChoice(input: string) {
-    switch upperStr(input) {
-    case "?" {
-        displayMenu()
-        displayPrompt()
-    }
-    case "L" { startBoardList() }
-    case "S" { stubOption("Show Board Details") }
-    case "E" { stubOption("Edit Board") }
-    case "N" { stubOption("New Board") }
-    case "D" { stubOption("Delete Board") }
-    case "Q" { gotoScreen("sysop") }
-    else     { displayPrompt() }
-    }
-}
-
-func sysopUsersChoice(input: string) {
-    switch upperStr(input) {
-    case "?" {
-        displayMenu()
-        displayPrompt()
-    }
-    case "L" { startUserList() }
-    case "S" { stubOption("Show User Details") }
-    case "E" { stubOption("Edit User") }
-    case "D" { stubOption("Delete User") }
-    case "Q" { gotoScreen("sysop") }
-    else     { displayPrompt() }
-    }
-}
-
-// --- Paged tables ------------------------------------------------------
-// Shared machinery for full-screen record lists (users, boards): a
-// boxed table drawn a page at a time, records read straight off the
-// database (the session's `user` global is never touched). `listFromId`
-// is the paging cursor; each list has its own draw/input/start funcs.
-
-func sendRule(l: BoxPiece, m: BoxPiece, r: BoxPiece, w: list of int) {
-    sendDrawing(modem, ruleLine(l, m, r, w))
-    modem.send(terminal.eol)
-}
-
-// Top of a boxed table: rule, centered title bar, joint rule, header
-// row, joint rule.
-func sendTableHeader(title: string, headers: list of string, w: list of int) {
-    var span: list of int
-    var cells: list of string
-    span.add(spanWidth(w))
-    cells.add(center(title, span[0]))
-    sendLine("")
-    sendRule(TopLeft, TopCenter, TopRight, span)
-    sendLine(rowLine(cells, span))
-    sendRule(CenterLeft, TopCenter, CenterRight, w)
-    sendLine(rowLine(headers, w))
-    sendRule(CenterLeft, Center, CenterRight, w)
-}
-
-// First id in [fromId, nextId) whose record is live, or nextId.
-func nextLiveId(db: Database, fromId: int, nextId: int, size: int): int {
-    var rec: text
-    var id: int = fromId
-    while id < nextId {
-        rec = dbFind(db, id)
-        if rec.length == size { return id }
-        id = id + 1
-    }
-    return nextId
-}
-
-// Close a page: bottom rule, then the more-prompt (staying on the list
-// screen) or, when no live records remain, back to `menuScreen`.
-func finishListPage(db: Database, nextId: int, size: int, menuScreen: string, w: list of int) {
-    sendRule(BottomLeft, BottomCenter, BottomRight, w)
-    if nextLiveId(db, listFromId, nextId, size) < nextId {
-        modem.send("[Enter] More  [Q] Menu > ")
-    } else {
-        user.screen = menuScreen
-        displayPrompt()
-    }
-}
-
-// --- User list ---------------------------------------------------------
-
-// Content widths: narrow (<80 columns) is ID/Username/Access (total 40
-// with borders), wide adds Last On and Email (total 80).
-func userListWidths(w: list of int) {
-    w.clear()
-    w.add(4)
-    w.add(21)
-    w.add(5)
-    if terminal.columns < 80 { return }
-    w.add(17)
-    w.add(17)
-}
-
-func startUserList() {
-    user.screen = "userlist"
-    listFromId = 1
-    drawUserListPage()
-}
-
-// Enter (or anything but Q) shows the next page; Q returns to the menu.
-func userListInput(input: string) {
-    if upperStr(input) == "Q" {
-        gotoScreen("sysopusers")
-    } else {
-        drawUserListPage()
-    }
-}
-
-func drawUserListPage() {
-    var w: list of int
-    var cells: list of string
-    var nextId: int = dbNextRecordId(usersDb)
-    var pageRows: int = terminal.rows - 8
-    var shown: int = 0
-    var id: int = 0
-    var rec: text
-
-    userListWidths(w)
-    cells.add("ID")
-    cells.add("Username")
-    cells.add("Acc")
-    if terminal.columns >= 80 {
-        cells.add("Last On")
-        cells.add("Email")
-    }
-    sendTableHeader("Users", cells, w)
-
-    id = listFromId
-    while id < nextId and shown < pageRows {
-        rec = dbFind(usersDb, id)
-        if rec.length == userRecordSize {
-            cells.clear()
-            cells.add(intStr(id))
-            cells.add(dbExtractString(rec, uOffName))
-            if rec[uOffAccess] == accessSysop {
-                cells.add("Sysop")
-            } else {
-                cells.add("User")
-            }
-            if terminal.columns >= 80 {
-                if rec.intAt(uOffLastSeen) != 0 {
-                    cells.add(dateTimeStr(rec.intAt(uOffLastSeen)))
-                } else {
-                    cells.add("Never")
-                }
-                cells.add(dbExtractString(rec, uOffEmail))
-            }
-            sendLine(rowLine(cells, w))
-            shown = shown + 1
-        }
-        id = id + 1
-    }
-    listFromId = id
-    finishListPage(usersDb, nextId, userRecordSize, "sysopusers", w)
-}
-
-// --- Board list --------------------------------------------------------
-
-// Content widths: narrow (<80 columns) is ID/Name (total 40), wide is
-// ID/Name/Description/Network (total 80).
-func boardListWidths(w: list of int) {
-    w.clear()
-    w.add(4)
-    if terminal.columns < 80 {
-        w.add(29)
-        return
-    }
-    w.add(20)
-    w.add(34)
-    w.add(9)
-}
-
-func startBoardList() {
-    user.screen = "boardlist"
-    listFromId = 1
-    drawBoardListPage()
-}
-
-func boardListInput(input: string) {
-    if upperStr(input) == "Q" {
-        gotoScreen("sysopboards")
-    } else {
-        drawBoardListPage()
-    }
-}
-
-func drawBoardListPage() {
-    var w: list of int
-    var cells: list of string
-    var nextId: int = dbNextRecordId(boardsDb)
-    var pageRows: int = terminal.rows - 8
-    var shown: int = 0
-    var id: int = 0
-    var rec: text
-
-    boardListWidths(w)
-    cells.add("ID")
-    cells.add("Name")
-    if terminal.columns >= 80 {
-        cells.add("Description")
-        cells.add("Network")
-    }
-    sendTableHeader("Message Boards", cells, w)
-
-    id = listFromId
-    while id < nextId and shown < pageRows {
-        rec = dbFind(boardsDb, id)
-        if rec.length == boardRecordSize {
-            cells.clear()
-            cells.add(intStr(id))
-            cells.add(dbExtractString(rec, bOffName))
-            if terminal.columns >= 80 {
-                cells.add(dbExtractString(rec, bOffDescription))
-                cells.add(dbExtractString(rec, bOffNetwork))
-            }
-            sendLine(rowLine(cells, w))
-            shown = shown + 1
-        }
-        id = id + 1
-    }
-    listFromId = id
-    finishListPage(boardsDb, nextId, boardRecordSize, "sysopboards", w)
 }
 
 // --- Logoff / hang-up -------------------------------------------------

@@ -52,26 +52,38 @@ func findUserId(name: string): int {
     return dbFindByString(usersDb, "Username", name)
 }
 
-// Serialize the session user into a record image (dbAdd/dbUpdate zero-
-// pad it to record_size). name/email fit their fields by declaration
-// (string(31)/string(63) vs 64-byte fields).
-func packUser(): text {
+// Serialize user fields into a record image (dbAdd/dbUpdate zero-pad
+// it to record_size). name/email are assumed to fit their fields
+// (callers pass string(31)/string(63) values vs 64-byte fields).
+func packUserFields(name: string, hash: int, email: string, access: char, created: int, lastSeen: int): text {
     var t: text
-    t.append(char(user.name.length))
-    t.append(user.name)
+    t.append(char(name.length))
+    t.append(name)
     while t.length < uOffHash {
         t.append(char(0))
     }
-    btAppendInt(t, user.passwordHash)
-    t.append(char(user.email.length))
-    t.append(user.email)
+    btAppendInt(t, hash)
+    t.append(char(email.length))
+    t.append(email)
     while t.length < uOffAccess {
         t.append(char(0))
     }
-    t.append(user.access)
-    btAppendInt(t, user.created)
-    btAppendInt(t, user.lastSeen)
+    t.append(access)
+    btAppendInt(t, created)
+    btAppendInt(t, lastSeen)
     return t
+}
+
+// Serialize the session user.
+func packUser(): text {
+    return packUserFields(user.name, user.passwordHash, user.email, user.access, user.created, user.lastSeen)
+}
+
+// Write arbitrary field values to user record `id` (the session user
+// is untouched). dbUpdate keeps the username index current on rename.
+func updateUserFields(id: int, name: string, hash: int, email: string, access: char, created: int, lastSeen: int): bool {
+    if id < 1 { return false }
+    return dbUpdate(usersDb, id, packUserFields(name, hash, email, access, created, lastSeen))
 }
 
 // Load record `id` into the session user. Session-only fields

@@ -52,8 +52,9 @@ func boardsNextId(): int {
     return dbNextRecordId(boardsDb)
 }
 
-// Create a board; returns the new board ID, or -1.
-func createBoard(name: string, description: string, network: string): int {
+// Serialize board fields into a record image (dbAdd/dbUpdate zero-pad
+// it to record_size).
+func packBoard(name: string, description: string, network: string): text {
     var t: text
     var n: string = name
     var d: string = description
@@ -73,7 +74,18 @@ func createBoard(name: string, description: string, network: string): int {
     }
     t.append(char(w.length))
     t.append(w)
-    return dbAdd(boardsDb, t)
+    return t
+}
+
+// Create a board; returns the new board ID, or -1.
+func createBoard(name: string, description: string, network: string): int {
+    return dbAdd(boardsDb, packBoard(name, description, network))
+}
+
+// Write the global `board` back to its record.
+func saveBoard(): bool {
+    if board.id < 1 { return false }
+    return dbUpdate(boardsDb, board.id, packBoard(board.name, board.description, board.network))
 }
 
 // Load board `id` into the global `board`.

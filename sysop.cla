@@ -1,0 +1,750 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// Sysop screens: the sysop menu tree, the paged user/board lists, and
+// the detail cards. Included by bbs.cla, which owns the screen
+// dispatch (displayMenu/displayPrompt/processInput) and the shared
+// session helpers (sendLine, gotoScreen, intStr, upperStr, modem).
+
+var listFromId: int = 1     // paging cursor for the record lists
+
+// Edit-in-progress state: the record being edited (buffered -- nothing
+// is written until S)ave) and the field a value is being entered for.
+var editId: int = 0
+var editField: char = ' '
+var editName: string(31)
+var editEmail: string(63)
+var editAccess: char = 'U'
+var editHash: int = 0
+var editCreated: int = 0
+var editLastSeen: int = 0
+
+// --- Menus -------------------------------------------------------------
+
+func drawSysopMenu() {
+    sendLine("")
+    sendLine("Sysop Menu:")
+    sendLine("B) Message Boards")
+    sendLine("U) Users")
+    sendLine("Q) Return to Main Menu")
+    sendLine("")
+}
+
+func drawSysopBoardsMenu() {
+    sendLine("")
+    sendLine("Sysop - Message Boards:")
+    sendLine("L) List Boards")
+    sendLine("S) Show Board Details")
+    sendLine("E) Edit Board")
+    sendLine("N) New Board")
+    sendLine("D) Delete Board")
+    sendLine("Q) Return to Sysop Menu")
+    sendLine("")
+}
+
+func drawSysopUsersMenu() {
+    sendLine("")
+    sendLine("Sysop - Users:")
+    sendLine("L) List Users")
+    sendLine("S) Show User Details")
+    sendLine("E) Edit User")
+    sendLine("D) Delete User")
+    sendLine("Q) Return to Sysop Menu")
+    sendLine("")
+}
+
+// Not-yet-implemented options: echo the option name, then redraw.
+func stubOption(name: string) {
+    sendLine(name)
+    displayMenu()
+    displayPrompt()
+}
+
+func sysopChoice(input: string) {
+    switch upperStr(input) {
+    case "?" {
+        displayMenu()
+        displayPrompt()
+    }
+    case "B" { gotoScreen("sysopboards") }
+    case "U" { gotoScreen("sysopusers") }
+    case "Q" { gotoScreen("main") }
+    else     { displayPrompt() }
+    }
+}
+
+func sysopBoardsChoice(input: string) {
+    switch upperStr(input) {
+    case "?" {
+        displayMenu()
+        displayPrompt()
+    }
+    case "L" { startBoardList() }
+    case "S" { startShowBoard() }
+    case "E" { startEditBoard() }
+    case "N" { stubOption("New Board") }
+    case "D" { startDeleteBoard() }
+    case "Q" { gotoScreen("sysop") }
+    else     { displayPrompt() }
+    }
+}
+
+func sysopUsersChoice(input: string) {
+    switch upperStr(input) {
+    case "?" {
+        displayMenu()
+        displayPrompt()
+    }
+    case "L" { startUserList() }
+    case "S" { startShowUser() }
+    case "E" { startEditUser() }
+    case "D" { startDeleteUser() }
+    case "Q" { gotoScreen("sysop") }
+    else     { displayPrompt() }
+    }
+}
+
+// --- Shared helpers ----------------------------------------------------
+
+// Decimal string to int; 0 unless the whole string is digits (record
+// ids start at 1, so 0 doubles as "not a number").
+func parseIntStr(s: string): int {
+    var n: int = 0
+    var i: int = 0
+    if s.length == 0 { return 0 }
+    while i < s.length {
+        if s[i] < '0' or s[i] > '9' { return 0 }
+        n = n * 10 + (int(s[i]) - int('0'))
+        i = i + 1
+    }
+    return n
+}
+
+func accessName(a: char): string {
+    if a == accessSysop { return "Sysop" }
+    return "User"
+}
+
+// --- Paged tables ------------------------------------------------------
+// Shared machinery for full-screen record lists (users, boards): a
+// boxed table drawn a page at a time, records read straight off the
+// database (the session's `user` global is never touched). `listFromId`
+// is the paging cursor; each list has its own draw/input/start funcs.
+
+func sendRule(l: BoxPiece, m: BoxPiece, r: BoxPiece, w: list of int) {
+    sendDrawing(modem, ruleLine(l, m, r, w))
+    modem.send(terminal.eol)
+}
+
+// Top of a boxed table: rule, centered title bar, joint rule.
+func sendTableTitle(title: string, w: list of int) {
+    var span: list of int
+    var cells: list of string
+    span.add(spanWidth(w))
+    cells.add(center(title, span[0]))
+    sendLine("")
+    sendRule(TopLeft, TopCenter, TopRight, span)
+    sendLine(rowLine(cells, span))
+    sendRule(CenterLeft, TopCenter, CenterRight, w)
+}
+
+// Table title plus a header row and its rule.
+func sendTableHeader(title: string, headers: list of string, w: list of int) {
+    sendTableTitle(title, w)
+    sendLine(rowLine(headers, w))
+    sendRule(CenterLeft, Center, CenterRight, w)
+}
+
+// First id in [fromId, nextId) whose record is live, or nextId.
+func nextLiveId(db: Database, fromId: int, nextId: int, size: int): int {
+    var rec: text
+    var id: int = fromId
+    while id < nextId {
+        rec = dbFind(db, id)
+        if rec.length == size { return id }
+        id = id + 1
+    }
+    return nextId
+}
+
+// Close a page: bottom rule, then the more-prompt (staying on the list
+// screen) or, when no live records remain, back to `menuScreen`.
+func finishListPage(db: Database, nextId: int, size: int, menuScreen: string, w: list of int) {
+    sendRule(BottomLeft, BottomCenter, BottomRight, w)
+    if nextLiveId(db, listFromId, nextId, size) < nextId {
+        modem.send("[Enter] More  [Q] Menu > ")
+    } else {
+        user.screen = menuScreen
+        displayPrompt()
+    }
+}
+
+// --- User list ---------------------------------------------------------
+
+// Content widths: narrow (<80 columns) is ID/Username/Access (total 40
+// with borders), wide adds Last On and Email (total 80).
+func userListWidths(w: list of int) {
+    w.clear()
+    w.add(4)
+    w.add(21)
+    w.add(5)
+    if terminal.columns < 80 { return }
+    w.add(17)
+    w.add(17)
+}
+
+func startUserList() {
+    user.screen = "userlist"
+    listFromId = 1
+    drawUserListPage()
+}
+
+// Enter (or anything but Q) shows the next page; Q returns to the menu.
+func userListInput(input: string) {
+    if upperStr(input) == "Q" {
+        gotoScreen("sysopusers")
+    } else {
+        drawUserListPage()
+    }
+}
+
+func drawUserListPage() {
+    var w: list of int
+    var cells: list of string
+    var nextId: int = dbNextRecordId(usersDb)
+    var pageRows: int = terminal.rows - 8
+    var shown: int = 0
+    var id: int = 0
+    var rec: text
+
+    userListWidths(w)
+    cells.add("ID")
+    cells.add("Username")
+    cells.add("Acc")
+    if terminal.columns >= 80 {
+        cells.add("Last On")
+        cells.add("Email")
+    }
+    sendTableHeader("Users", cells, w)
+
+    id = listFromId
+    while id < nextId and shown < pageRows {
+        rec = dbFind(usersDb, id)
+        if rec.length == userRecordSize {
+            cells.clear()
+            cells.add(intStr(id))
+            cells.add(dbExtractString(rec, uOffName))
+            cells.add(accessName(rec[uOffAccess]))
+            if terminal.columns >= 80 {
+                if rec.intAt(uOffLastSeen) != 0 {
+                    cells.add(dateTimeStr(rec.intAt(uOffLastSeen)))
+                } else {
+                    cells.add("Never")
+                }
+                cells.add(dbExtractString(rec, uOffEmail))
+            }
+            sendLine(rowLine(cells, w))
+            shown = shown + 1
+        }
+        id = id + 1
+    }
+    listFromId = id
+    finishListPage(usersDb, nextId, userRecordSize, "sysopusers", w)
+}
+
+// --- Board list --------------------------------------------------------
+
+// Content widths: narrow (<80 columns) is ID/Name (total 40), wide is
+// ID/Name/Description/Network (total 80).
+func boardListWidths(w: list of int) {
+    w.clear()
+    w.add(4)
+    if terminal.columns < 80 {
+        w.add(29)
+        return
+    }
+    w.add(20)
+    w.add(34)
+    w.add(9)
+}
+
+func startBoardList() {
+    user.screen = "boardlist"
+    listFromId = 1
+    drawBoardListPage()
+}
+
+func boardListInput(input: string) {
+    if upperStr(input) == "Q" {
+        gotoScreen("sysopboards")
+    } else {
+        drawBoardListPage()
+    }
+}
+
+func drawBoardListPage() {
+    var w: list of int
+    var cells: list of string
+    var nextId: int = dbNextRecordId(boardsDb)
+    var pageRows: int = terminal.rows - 8
+    var shown: int = 0
+    var id: int = 0
+    var rec: text
+
+    boardListWidths(w)
+    cells.add("ID")
+    cells.add("Name")
+    if terminal.columns >= 80 {
+        cells.add("Description")
+        cells.add("Network")
+    }
+    sendTableHeader("Message Boards", cells, w)
+
+    id = listFromId
+    while id < nextId and shown < pageRows {
+        rec = dbFind(boardsDb, id)
+        if rec.length == boardRecordSize {
+            cells.clear()
+            cells.add(intStr(id))
+            cells.add(dbExtractString(rec, bOffName))
+            if terminal.columns >= 80 {
+                cells.add(dbExtractString(rec, bOffDescription))
+                cells.add(dbExtractString(rec, bOffNetwork))
+            }
+            sendLine(rowLine(cells, w))
+            shown = shown + 1
+        }
+        id = id + 1
+    }
+    listFromId = id
+    finishListPage(boardsDb, nextId, boardRecordSize, "sysopboards", w)
+}
+
+// --- Detail cards ------------------------------------------------------
+// Two-column label/value tables. Label width fits "Description"; the
+// value column fills out 40 or 80 total.
+
+func detailWidths(w: list of int) {
+    w.clear()
+    w.add(11)
+    if terminal.columns < 80 {
+        w.add(22)
+        return
+    }
+    w.add(62)
+}
+
+func sendDetailRow(label: string, value: string, w: list of int) {
+    var cells: list of string
+    cells.add(label)
+    cells.add(value)
+    sendLine(rowLine(cells, w))
+}
+
+func startShowUser() {
+    user.screen = "showuser"
+    displayPrompt()
+}
+
+// Empty input cancels; digits look up by id, anything else by name.
+func showUserInput(input: string) {
+    var id: int = parseIntStr(input)
+    var rec: text
+    if input == "" {
+        gotoScreen("sysopusers")
+        return
+    }
+    if id < 1 { id = findUserId(input) }
+    if id >= 1 { rec = dbFind(usersDb, id) }
+    if rec.length != userRecordSize {
+        sendLine("No such user.")
+        displayPrompt()
+        return
+    }
+    drawUserDetails(id, rec)
+    user.screen = "sysopusers"
+    displayPrompt()
+}
+
+func drawUserDetails(id: int, rec: text) {
+    var w: list of int
+    detailWidths(w)
+    sendTableTitle("User Details", w)
+    sendDetailRow("ID",       intStr(id), w)
+    sendDetailRow("Username", dbExtractString(rec, uOffName), w)
+    sendDetailRow("Access",   accessName(rec[uOffAccess]), w)
+    sendDetailRow("Email",    dbExtractString(rec, uOffEmail), w)
+    sendDetailRow("Created",  dateTimeStr(rec.intAt(uOffCreated)), w)
+    if rec.intAt(uOffLastSeen) != 0 {
+        sendDetailRow("Last On", dateTimeStr(rec.intAt(uOffLastSeen)), w)
+    } else {
+        sendDetailRow("Last On", "Never", w)
+    }
+    sendRule(BottomLeft, BottomCenter, BottomRight, w)
+}
+
+func startShowBoard() {
+    user.screen = "showboard"
+    displayPrompt()
+}
+
+// Empty input cancels; otherwise a board id.
+func showBoardInput(input: string) {
+    if input == "" {
+        gotoScreen("sysopboards")
+        return
+    }
+    if not loadBoard(parseIntStr(input)) {
+        sendLine("No such board.")
+        displayPrompt()
+        return
+    }
+    drawBoardDetails()
+    user.screen = "sysopboards"
+    displayPrompt()
+}
+
+// Renders the globally loaded `board` (see loadBoard in boardsdb.cla).
+func drawBoardDetails() {
+    var w: list of int
+    detailWidths(w)
+    sendTableTitle("Board Details", w)
+    sendDetailRow("ID",          intStr(board.id), w)
+    sendDetailRow("Name",        board.name, w)
+    sendDetailRow("Description", board.description, w)
+    sendDetailRow("Network",     board.network, w)
+    sendRule(BottomLeft, BottomCenter, BottomRight, w)
+}
+
+// --- Edit screens ------------------------------------------------------
+// Same lookup as the detail cards, then a card with a letter on each
+// editable field: pick a letter, type the new value (Enter keeps the
+// current one), S)ave writes everything at once, Q)uit discards.
+
+// Wider label column than detailWidths: fits "D) Description".
+func editWidths(w: list of int) {
+    w.clear()
+    w.add(14)
+    if terminal.columns < 80 {
+        w.add(19)
+        return
+    }
+    w.add(59)
+}
+
+func startEditUser() {
+    user.screen = "edituserid"
+    displayPrompt()
+}
+
+func editUserIdInput(input: string) {
+    var id: int = parseIntStr(input)
+    var rec: text
+    if input == "" {
+        gotoScreen("sysopusers")
+        return
+    }
+    if id < 1 { id = findUserId(input) }
+    if id >= 1 { rec = dbFind(usersDb, id) }
+    if rec.length != userRecordSize {
+        sendLine("No such user.")
+        displayPrompt()
+        return
+    }
+    editId = id
+    editName = dbExtractString(rec, uOffName)
+    editHash = rec.intAt(uOffHash)
+    editEmail = dbExtractString(rec, uOffEmail)
+    editAccess = rec[uOffAccess]
+    editCreated = rec.intAt(uOffCreated)
+    editLastSeen = rec.intAt(uOffLastSeen)
+    user.screen = "edituser"
+    drawEditUserCard()
+    displayPrompt()
+}
+
+func drawEditUserCard() {
+    var w: list of int
+    editWidths(w)
+    sendTableTitle("Edit User", w)
+    sendDetailRow("ID",          intStr(editId), w)
+    sendDetailRow("N) Username", editName, w)
+    sendDetailRow("E) Email",    editEmail, w)
+    sendDetailRow("A) Access",   accessName(editAccess), w)
+    sendDetailRow("P) Password", "(hidden)", w)
+    sendDetailRow("Created",     dateTimeStr(editCreated), w)
+    if editLastSeen != 0 {
+        sendDetailRow("Last On", dateTimeStr(editLastSeen), w)
+    } else {
+        sendDetailRow("Last On", "Never", w)
+    }
+    sendRule(BottomLeft, BottomCenter, BottomRight, w)
+}
+
+func editUserChoice(input: string) {
+    switch upperStr(input) {
+    case "N", "E", "A", "P" {
+        editField = upperStr(input)[0]
+        user.screen = "edituserval"
+        displayPrompt()
+    }
+    case "S" {
+        if updateUserFields(editId, editName, editHash, editEmail, editAccess, editCreated, editLastSeen) {
+            if editId == user.id { loadUser(editId) }
+            sendLine("Saved.")
+        } else {
+            sendLine("Save failed: " + lastError.message)
+        }
+        gotoScreen("sysopusers")
+    }
+    case "Q" { gotoScreen("sysopusers") }
+    case "?" {
+        drawEditUserCard()
+        displayPrompt()
+    }
+    else { displayPrompt() }
+    }
+}
+
+func editUserValuePrompt() {
+    switch editField {
+    case 'N' { modem.send("Username [" + editName + "]: ") }
+    case 'E' { modem.send("Email [" + editEmail + "]: ") }
+    case 'A' { modem.send("Access (U/S) [" + editAccess + "]: ") }
+    case 'P' { modem.send("New password (Enter keeps): ") }
+    }
+}
+
+func editUserValue(input: string) {
+    var ok: bool = true
+    if input != "" {
+        switch editField {
+        case 'N' {
+            if input.length > 31 {
+                sendLine("Names are limited to 31 characters.")
+                ok = false
+            } else if upperStr(input) == "NEW" {
+                sendLine("That name is reserved.")
+                ok = false
+            } else if findUserId(input) >= 1 and findUserId(input) != editId {
+                sendLine("That name is taken.")
+                ok = false
+            } else {
+                editName = input
+            }
+        }
+        case 'E' {
+            if input.length > 63 {
+                sendLine("Emails are limited to 63 characters.")
+                ok = false
+            } else {
+                editEmail = input
+            }
+        }
+        case 'A' {
+            switch upperStr(input) {
+            case "U" { editAccess = accessUser }
+            case "S" { editAccess = accessSysop }
+            else {
+                sendLine("U or S.")
+                ok = false
+            }
+            }
+        }
+        case 'P' { editHash = hashPassword(input) }
+        }
+    }
+    if not ok {
+        displayPrompt()
+        return
+    }
+    user.screen = "edituser"
+    drawEditUserCard()
+    displayPrompt()
+}
+
+func startEditBoard() {
+    user.screen = "editboardid"
+    displayPrompt()
+}
+
+// Edits buffer in the global `board`; Q discards (the next loadBoard
+// overwrites it), S writes it back.
+func editBoardIdInput(input: string) {
+    if input == "" {
+        gotoScreen("sysopboards")
+        return
+    }
+    if not loadBoard(parseIntStr(input)) {
+        sendLine("No such board.")
+        displayPrompt()
+        return
+    }
+    user.screen = "editboard"
+    drawEditBoardCard()
+    displayPrompt()
+}
+
+func drawEditBoardCard() {
+    var w: list of int
+    editWidths(w)
+    sendTableTitle("Edit Board", w)
+    sendDetailRow("ID",             intStr(board.id), w)
+    sendDetailRow("N) Name",        board.name, w)
+    sendDetailRow("D) Description", board.description, w)
+    sendDetailRow("W) Network",     board.network, w)
+    sendRule(BottomLeft, BottomCenter, BottomRight, w)
+}
+
+func editBoardChoice(input: string) {
+    switch upperStr(input) {
+    case "N", "D", "W" {
+        editField = upperStr(input)[0]
+        user.screen = "editboardval"
+        displayPrompt()
+    }
+    case "S" {
+        if saveBoard() {
+            sendLine("Saved.")
+        } else {
+            sendLine("Save failed: " + lastError.message)
+        }
+        gotoScreen("sysopboards")
+    }
+    case "Q" { gotoScreen("sysopboards") }
+    case "?" {
+        drawEditBoardCard()
+        displayPrompt()
+    }
+    else { displayPrompt() }
+    }
+}
+
+func editBoardValuePrompt() {
+    switch editField {
+    case 'N' { modem.send("Name [" + board.name + "]: ") }
+    case 'D' { modem.send("Description [" + board.description + "]: ") }
+    case 'W' { modem.send("Network [" + board.network + "]: ") }
+    }
+}
+
+func editBoardValue(input: string) {
+    var ok: bool = true
+    if input != "" {
+        switch editField {
+        case 'N' {
+            if input.length > 63 {
+                sendLine("Names are limited to 63 characters.")
+                ok = false
+            } else {
+                board.name = input
+            }
+        }
+        case 'D' {
+            if input.length > 63 {
+                sendLine("Descriptions are limited to 63 characters.")
+                ok = false
+            } else {
+                board.description = input
+            }
+        }
+        case 'W' {
+            if input.length > 15 {
+                sendLine("Networks are limited to 15 characters.")
+                ok = false
+            } else {
+                board.network = input
+            }
+        }
+        }
+    }
+    if not ok {
+        displayPrompt()
+        return
+    }
+    user.screen = "editboard"
+    drawEditBoardCard()
+    displayPrompt()
+}
+
+// --- Delete screens ----------------------------------------------------
+// Same lookup as the detail cards, then the details themselves (the
+// same drawing routines) and a Y/N confirmation. Only Y deletes.
+
+func startDeleteUser() {
+    user.screen = "deluserid"
+    displayPrompt()
+}
+
+func delUserIdInput(input: string) {
+    var id: int = parseIntStr(input)
+    var rec: text
+    if input == "" {
+        gotoScreen("sysopusers")
+        return
+    }
+    if id < 1 { id = findUserId(input) }
+    if id >= 1 { rec = dbFind(usersDb, id) }
+    if rec.length != userRecordSize {
+        sendLine("No such user.")
+        displayPrompt()
+        return
+    }
+    if id == user.id {
+        sendLine("You cannot delete your own account.")
+        displayPrompt()
+        return
+    }
+    editId = id
+    drawUserDetails(id, rec)
+    user.screen = "deluserconfirm"
+    displayPrompt()
+}
+
+func delUserConfirm(input: string) {
+    if upperStr(input) == "Y" {
+        if dbDelete(usersDb, editId) {
+            sendLine("User deleted.")
+        } else {
+            sendLine("Delete failed: " + lastError.message)
+        }
+    } else {
+        sendLine("Cancelled.")
+    }
+    gotoScreen("sysopusers")
+}
+
+func startDeleteBoard() {
+    user.screen = "delboardid"
+    displayPrompt()
+}
+
+// ponytail: deleting a board leaves its BRD<nn> post files behind;
+// clean them up when post management arrives.
+func delBoardIdInput(input: string) {
+    if input == "" {
+        gotoScreen("sysopboards")
+        return
+    }
+    if not loadBoard(parseIntStr(input)) {
+        sendLine("No such board.")
+        displayPrompt()
+        return
+    }
+    drawBoardDetails()
+    user.screen = "delboardconfirm"
+    displayPrompt()
+}
+
+func delBoardConfirm(input: string) {
+    if upperStr(input) == "Y" {
+        if dbDelete(boardsDb, board.id) {
+            sendLine("Board deleted.")
+        } else {
+            sendLine("Delete failed: " + lastError.message)
+        }
+    } else {
+        sendLine("Cancelled.")
+    }
+    gotoScreen("sysopboards")
+}
