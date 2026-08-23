@@ -13,15 +13,26 @@ Early development. Working today:
 - Log window with timestamped diagnostics; File > Quit
 - Hayes modem handling: detects `CONNECT`/`NO CARRIER` result codes
   in-band (filtered out of the input stream), hangs up with `+++`/`ATH`
-- Login flow (username/password — not yet checked against a database),
-  terminal-type selection, and a main menu skeleton
-- Per-caller session state: user, terminal size/type/color, line- or
-  character-mode input
-- ANSI color output helpers, gated on the caller's terminal type
+- Accounts in a [vDB](https://github.com/vaelen/libvdb)-format user
+  database (pure-Clarus engine: `btree.cla`/`vdb.cla`, journaled with
+  crash recovery and secondary indexes): signup (`NEW`),
+  case-insensitive login, last-seen tracking; the first account
+  created becomes the sysop
+- Bulletin boards: board picker, paged post lists (newest first),
+  framed post reader with paged bodies and next/previous-post
+  navigation, and a classic line editor for new posts and replies
+  (`/S /A /L /D /E /I /R` commands); flat threading in the message
+  base, per-board header databases plus an append-only body heap
+  (`docs/boards.md`)
+- Sysop area: paged user/board lists, detail cards, lettered-field
+  editors, deletion with confirmation, board creation, post deletion;
+  safety rails so the system always keeps a sysop
+- Terminal-aware rendering at 40 or 80 columns for ASCII, ANSI
+  (cp437), and VT100 (DEC Special Graphics) callers: box-drawn
+  tables, paged views, color helpers (`docs/tables.md`)
 
-Planned: a user database and message bases built on the
-[vDB](https://github.com/vaelen/libvdb) file format (blocked on Clarus
-gaining positioned file I/O — see `docs/language-gaps.md`).
+Planned: Fidonet-style echomail (the message base is laid out for it),
+message search, and full-screen ANSI niceties.
 
 ## Building
 

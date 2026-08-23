@@ -42,8 +42,16 @@ line graphics while a shift to the G1 character set is active. So:
 ## Building blocks (terminal.cla)
 
 - `pad(s, width)` — left-align in `width` spaces, truncate if longer.
+- `padLeft(s, width)` — right-align (footer text like `Page X of Y`).
 - `center(s, width)` — center (odd leftover space goes right),
   truncate if longer.
+- `wrapText(body, width, lines)` — word-wrap a `text` into a
+  `list of string`: breaks on spaces, hard-breaks over-long words,
+  keeps CR line breaks (blank lines included), drops LFs. Used by the
+  post viewer to re-wrap stored bodies to each reader's width.
+- `spanWidth(widths)` — the one-column content width that renders the
+  same total width as the given columns (`sum + 3*(n-1)`), for title
+  and footer bars.
 - `hbar(width)` — `width` × Horizontal, **bare** (no SO/SI).
 - `vbar()` — one Vertical, **self-contained** (carries its own SO/SI
   on VT100), for use between runs of normal text.
@@ -62,10 +70,23 @@ stopDrawing()` — a whole rule line costs one SO/SI pair. Rows from
 `rowLine` are sent as-is (their bars are self-contained). Lines end
 with `terminal.eol` (a `Terminal` field, default CRLF).
 
+bbs.cla layers the connection-facing senders over these, shared by
+the sysop screens and the board reader:
+
+- `sendRule(l, m, r, w)` — one rule line via `sendDrawing` + eol
+- `sendTableTitle(title, w)` — blank spacer, top rule, centered
+  title bar, joint rule
+- `sendTableHeader(title, headers, w)` — title plus a header row and
+  its rule
+- `sendTableFooter(msg, w)` — joint rule, right-aligned footer bar
+  spanning the table, bottom rule
+
 ## Assembling a table
 
-For a title bar spanning the table, use a one-element widths list of
-`sum(widths) + 3*(count-1)` — that renders the same total width.
+Title and footer bars span the table via a one-element widths list of
+`spanWidth(w)` — that renders the same total width. The full anatomy
+(`sendTableHeader` draws the top five lines, `sendTableFooter` the
+bottom three):
 
 ```
 +-----------------------+      ruleLine(TopLeft, TopCenter, TopRight, span)
@@ -74,8 +95,15 @@ For a title bar spanning the table, use a one-element widths list of
 | Name   | Description  |      rowLine(headers, w)
 +--------+--------------+      ruleLine(CenterLeft, Center, CenterRight, w)
 | Foo    | Bar          |      rowLine(cells, w)   (per row)
-+--------+--------------+      ruleLine(BottomLeft, BottomCenter, BottomRight, w)
++--------+--------------+      ruleLine(CenterLeft, BottomCenter, CenterRight, w)
+|            Page 1 of 2 |     rowLine([padLeft(msg, span[0])], span)
++------------------------+     ruleLine(BottomLeft, BottomCenter, BottomRight, span)
 ```
+
+Detail cards (`sendTableTitle` + label/value rows + a bottom rule)
+and the post view (title bar, meta rows, wrapped body rows, footer)
+are the same pieces with a single-span or two-column widths list —
+see `drawUserDetails` and `drawPostView`.
 
 ## Widths, 40 vs 80 columns
 
@@ -87,13 +115,24 @@ plus 17/17 (= 80 total) wide.
 
 ## Paging
 
-Page size is derived from the terminal: `terminal.rows - 8` data rows
-(frame is 5 lines + title, plus the more-prompt and the echoed input
-line). The pattern (see `drawUserListPage` / `userListInput`):
+Page size = `terminal.rows` minus the frame lines, counted **from the
+top rule down** — everything above the table (the previous echoed
+command, the blank spacer) is expected to scroll off. Count one line
+each for: top rule, title, its joint, the header row and its joint
+(or each meta row), the footer joint, footer, bottom rule, and the
+prompt. So the footer'd post list gets `rows - 9` data rows, the
+post view `rows - 8 - metaRows`, and the older footerless sysop
+lists `rows - 8`.
 
-- a global cursor (`listFromId`) holds the next record id to show;
-- each page redraws the full frame, renders up to a page of live
-  records, then scans ahead — if more remain it prompts
-  `[Enter] More  [Q] Menu` and stays on the list screen; otherwise it
-  returns to the parent menu;
-- on input, `Q` leaves, anything else draws the next page.
+Two paging styles coexist:
+
+- **Forward-only** (sysop user/board lists — `drawUserListPage` /
+  `userListInput`): a global cursor (`listFromId`) holds the next
+  record id; after a full page with live records remaining it prompts
+  `[Enter] More  [Q] Menu`, otherwise it returns to the parent menu.
+- **Bidirectional** (post list and post view — `drawPostList` /
+  `drawPostView`): a page number against a computed page count,
+  shown right-aligned in the footer (`Page X of Y`). `+` or Enter
+  pages forward, `-` back, `L` redraws the current page; at either
+  end the input quietly re-prompts. List numbering restarts at 1 on
+  every page.

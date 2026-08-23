@@ -7,6 +7,10 @@ for its design). Pre-v1: no backward compatibility is promised —
 data structures may change freely, always starting from a clean
 database.
 
+The UI over this storage lives in `boards.cla` (caller-facing
+reader), `editor.cla` (post composer), and `sysop.cla` (board
+management); see CLAUDE.md's architecture notes.
+
 ## Shape
 
 Two record kinds, deliberately in separate databases:
@@ -44,7 +48,9 @@ records, no secondary indexes (board lists are tiny; lookups scan).
 
 API (`boardsdb.cla`): `boardsOpen` / `boardsClose`,
 `createBoard(name, description, network): int`, `loadBoard(id)` into
-the global `board`, `boardCount`, `boardsNextId`.
+the global `board`, `saveBoard()` writing the global `board` back
+(used by the sysop board editor), `boardCount`, `boardsNextId`.
+Board deletion is a plain `dbDelete` on the Boards database.
 
 ## A board's posts
 
@@ -95,11 +101,13 @@ either a complete post or some orphaned heap bytes that nothing
 references — never a header pointing at text that didn't make it to
 disk.
 
-**Deletion & compaction:** deleting a post (deleting its header
-record) orphans its body bytes in the heap; they are not reclaimed.
-There is deliberately no heap compactor yet — post deletion is rare,
-and compacting the heap means rewriting every surviving header's
-offset. If heap growth ever matters, the compactor's shape is:
+**Deletion & compaction:** deleting a post (a sysop-only `dbDelete`
+of its header record, available from the post list and post view)
+orphans its body bytes in the heap; they are not reclaimed. There is
+deliberately no heap compactor yet — post deletion is rare, and
+compacting the heap means rewriting every surviving header's
+offset. Deleting a whole board likewise leaves its `BRD<nn>` files
+behind. If heap growth ever matters, the compactor's shape is:
 `dbCompact` the headers, then sweep posts in ID order appending each
 body to a fresh heap while rewriting offsets via `dbUpdate`, then
 swap the files.
@@ -128,8 +136,10 @@ board, creating the files (with the thread index) on first use.
 - Boards: 99 (two-digit file names; lift by widening `postsName`).
 - Post headers: one 512-byte page each (160-byte record), so a board
   with 1,000 posts spends ~500 KB on headers, plus exact body bytes.
-- Bodies: no length cap in the format (i32 offset/length); the BBS
-  compose flow will set the practical limit.
+- Bodies: no length cap in the format (i32 offset/length); the line
+  editor sets the practical limit at 100 lines of ≤ 255 bytes,
+  CR-joined. Viewers re-wrap bodies to each reader's width, so no
+  column limit is imposed at composition time.
 - Subjects, senders, board names: ≤ 63 chars (64-byte Pascal fields).
 
 ## Echomail later (why this design accommodates it)

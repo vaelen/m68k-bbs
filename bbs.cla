@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 // 68kBBS: a simple BBS for System 6/7 68k Macs.
-// Current state: log window, File > Quit; modem port data mirrored
-// into the log (read-only, nothing written back yet).
+// App entry: window/menu declarations, modem session flow, screen
+// dispatch, and the shared output helpers. The feature areas live in
+// the included modules (sysop.cla, boards.cla, editor.cla).
 
 include "scanner.cla"
 include "user.cla"

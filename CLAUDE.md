@@ -181,7 +181,34 @@ The received-byte path is:
   empty input. Logoff paces `+++` / `ATH` through a `every 30 ticks`
   timer (`hangupPhase`) to honor the Hayes guard time; the resulting
   NO CARRIER resets the session. Sessions reset in `connected()`
-  (`new User` / `new Terminal`).
+  (`new User` / `new Terminal`). bbs.cla also owns the shared
+  connection-facing table senders (`sendRule`, `sendTableTitle`,
+  `sendTableHeader`, `sendTableFooter` — see `docs/tables.md`), the
+  helpers (`intStr`, `upperStr`, `trimStr`, `sendLine` — which sends
+  payload and eol separately so a full 255-byte line keeps its line
+  ending), and a BEL when a caller types past the 255-byte input
+  buffer.
+- `sysop.cla` — the sysop menu tree (gated on `user.access`): paged
+  user/board lists (`listFromId` cursor, `[Enter] More` prompt),
+  detail cards, lettered-field edit cards (buffered; `S` saves, `Q`
+  discards; a sysop cannot change their own access level or delete
+  their own account), Y/N delete confirmations over the detail card,
+  and the New Board wizard. `parseIntStr` (all-digits or 0) lets
+  ID-or-name prompts disambiguate naturally.
+- `boards.cla` — the caller-facing reader: main-menu `B` → board
+  picker (unpaged table) → paged post list (newest first, numbered
+  from 1 per page, post IDs hidden, `Page X of Y` footer) → framed
+  post view (subject title bar, From/Date meta, body wrapped by
+  `wrapText` and paged). Keys: `+`/Enter next page, `-` previous,
+  `L` redraw, `>`/`.` and `<`/`,` next/previous post, `R` reply,
+  `N` new post, sysop-only `D` delete (confirms over the drawn
+  post), `Q` up one level.
+- `editor.cla` — WWIV-style line editor for new posts and replies:
+  numbered line prompts; `/S` save, `/A` abort, `/L` list, `/D n`,
+  `/E n`, `/I n`, `/R n` (Original/Replacement text swap), `/?`.
+  Replies default the subject to `Re: <orig>` and thread to the
+  starter's ID. Lines are stored as typed (≤255 bytes, no column
+  limit) and re-wrapped per reader; bodies join lines with CR.
 
 Tests (`tests/*.cla`, run by `scripts/test.sh`) are host-lane CLI
 programs that include a module and assert on it; pure modules test
