@@ -219,6 +219,9 @@ func displayPrompt() {
     case "editbody"    { editBodyPrompt() }
     case "delpostnum"     { modem.send("Delete post #: ") }
     case "delpostconfirm" { modem.send("Delete this post? (Y/N): ") }
+    case "newboardname" { modem.send("Board name: ") }
+    case "newboarddesc" { modem.send("Description: ") }
+    case "newboardnet"  { modem.send("Network [local]: ") }
     }
 }
 
@@ -285,6 +288,9 @@ func processInput(input: string) {
     case "editbody"    { editBodyInput(input) }
     case "delpostnum"     { delPostNumInput(input) }
     case "delpostconfirm" { delPostConfirm(input) }
+    case "newboardname" { newBoardName(input) }
+    case "newboarddesc" { newBoardDesc(input) }
+    case "newboardnet"  { newBoardNet(input) }
     case "logoff"   { }   // ignore trailing input (e.g. the modem's OK)
     }
 }

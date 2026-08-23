@@ -82,7 +82,7 @@ func sysopBoardsChoice(input: string) {
     case "L" { startBoardList() }
     case "S" { startShowBoard() }
     case "E" { startEditBoard() }
-    case "N" { stubOption("New Board") }
+    case "N" { startNewBoard() }
     case "D" { startDeleteBoard() }
     case "Q" { gotoScreen("sysop") }
     else     { displayPrompt() }
@@ -729,4 +729,64 @@ func delBoardConfirm(input: string) {
         sendLine("Cancelled.")
     }
     gotoScreen("sysopboards")
+}
+
+// --- New board ---------------------------------------------------------
+// Name -> description -> network (default local), then create and show
+// the new board's details. Empty name cancels.
+
+func startNewBoard() {
+    board.name = ""
+    board.description = ""
+    board.network = "local"
+    user.screen = "newboardname"
+    displayPrompt()
+}
+
+func newBoardName(input: string) {
+    if input == "" {
+        sendLine("Cancelled.")
+        gotoScreen("sysopboards")
+        return
+    }
+    if input.length > 63 {
+        sendLine("Names are limited to 63 characters.")
+        displayPrompt()
+        return
+    }
+    board.name = input
+    user.screen = "newboarddesc"
+    displayPrompt()
+}
+
+func newBoardDesc(input: string) {
+    if input.length > 63 {
+        sendLine("Descriptions are limited to 63 characters.")
+        displayPrompt()
+        return
+    }
+    board.description = input
+    user.screen = "newboardnet"
+    displayPrompt()
+}
+
+func newBoardNet(input: string) {
+    var id: int = 0
+    if input.length > 15 {
+        sendLine("Networks are limited to 15 characters.")
+        displayPrompt()
+        return
+    }
+    if input != "" { board.network = input }
+    id = createBoard(board.name, board.description, board.network)
+    if id < 1 {
+        sendLine("Create failed: " + lastError.message)
+        gotoScreen("sysopboards")
+        return
+    }
+    board.id = id
+    sendLine("Board " + intStr(id) + " created.")
+    drawBoardDetails()
+    user.screen = "sysopboards"
+    displayPrompt()
 }
