@@ -181,6 +181,18 @@ func ruleLine(l: BoxPiece, m: BoxPiece, r: BoxPiece, widths: list of int): strin
     return out + boxChar(r)
 }
 
+// The one-column content width that spans the same total width as the
+// given columns (for title bars): sum + 3*(n-1).
+func spanWidth(widths: list of int): int {
+    var total: int = 0
+    var i: int = 0
+    while i < widths.count {
+        total = total + widths[i]
+        i = i + 1
+    }
+    return total + 3 * (widths.count - 1)
+}
+
 // A table data row: cells padded to their content widths, one space of
 // padding each side, vbar-separated. Self-contained (vbar carries its
 // own SO/SI) -- send as-is.

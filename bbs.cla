@@ -8,6 +8,7 @@
 include "scanner.cla"
 include "user.cla"
 include "usersdb.cla"
+include "boardsdb.cla"
 include "termio.cla"
 include "toolbox/osutils.cla"   // DateTimeRec / SecondsToDate (via --rtdir)
 
@@ -215,6 +216,7 @@ func processInput(input: string) {
     case "sysopboards" { sysopBoardsChoice(input) }
     case "sysopusers"  { sysopUsersChoice(input) }
     case "userlist"    { userListInput(input) }
+    case "boardlist"   { boardListInput(input) }
     case "logoff"   { }   // ignore trailing input (e.g. the modem's OK)
     }
 }
@@ -414,7 +416,7 @@ func sysopBoardsChoice(input: string) {
         displayMenu()
         displayPrompt()
     }
-    case "L" { stubOption("List Boards") }
+    case "L" { startBoardList() }
     case "S" { stubOption("Show Board Details") }
     case "E" { stubOption("Edit Board") }
     case "N" { stubOption("New Board") }
@@ -439,9 +441,57 @@ func sysopUsersChoice(input: string) {
     }
 }
 
+// --- Paged tables ------------------------------------------------------
+// Shared machinery for full-screen record lists (users, boards): a
+// boxed table drawn a page at a time, records read straight off the
+// database (the session's `user` global is never touched). `listFromId`
+// is the paging cursor; each list has its own draw/input/start funcs.
+
+func sendRule(l: BoxPiece, m: BoxPiece, r: BoxPiece, w: list of int) {
+    sendDrawing(modem, ruleLine(l, m, r, w))
+    modem.send(terminal.eol)
+}
+
+// Top of a boxed table: rule, centered title bar, joint rule, header
+// row, joint rule.
+func sendTableHeader(title: string, headers: list of string, w: list of int) {
+    var span: list of int
+    var cells: list of string
+    span.add(spanWidth(w))
+    cells.add(center(title, span[0]))
+    sendLine("")
+    sendRule(TopLeft, TopCenter, TopRight, span)
+    sendLine(rowLine(cells, span))
+    sendRule(CenterLeft, TopCenter, CenterRight, w)
+    sendLine(rowLine(headers, w))
+    sendRule(CenterLeft, Center, CenterRight, w)
+}
+
+// First id in [fromId, nextId) whose record is live, or nextId.
+func nextLiveId(db: Database, fromId: int, nextId: int, size: int): int {
+    var rec: text
+    var id: int = fromId
+    while id < nextId {
+        rec = dbFind(db, id)
+        if rec.length == size { return id }
+        id = id + 1
+    }
+    return nextId
+}
+
+// Close a page: bottom rule, then the more-prompt (staying on the list
+// screen) or, when no live records remain, back to `menuScreen`.
+func finishListPage(db: Database, nextId: int, size: int, menuScreen: string, w: list of int) {
+    sendRule(BottomLeft, BottomCenter, BottomRight, w)
+    if nextLiveId(db, listFromId, nextId, size) < nextId {
+        modem.send("[Enter] More  [Q] Menu > ")
+    } else {
+        user.screen = menuScreen
+        displayPrompt()
+    }
+}
+
 // --- User list ---------------------------------------------------------
-// A paged table of all accounts, read straight off the Users database
-// records (the session's `user` global is never touched).
 
 // Content widths: narrow (<80 columns) is ID/Username/Access (total 40
 // with borders), wide adds Last On and Email (total 80).
@@ -453,11 +503,6 @@ func userListWidths(w: list of int) {
     if terminal.columns < 80 { return }
     w.add(17)
     w.add(17)
-}
-
-func sendRule(l: BoxPiece, m: BoxPiece, r: BoxPiece, w: list of int) {
-    sendDrawing(modem, ruleLine(l, m, r, w))
-    modem.send(terminal.eol)
 }
 
 func startUserList() {
@@ -477,31 +522,14 @@ func userListInput(input: string) {
 
 func drawUserListPage() {
     var w: list of int
-    var span: list of int
     var cells: list of string
     var nextId: int = dbNextRecordId(usersDb)
     var pageRows: int = terminal.rows - 8
     var shown: int = 0
-    var total: int = 0
-    var i: int = 0
     var id: int = 0
     var rec: text
-    var more: bool = false
 
     userListWidths(w)
-    // A one-column span the full table width, for the title bar.
-    while i < w.count {
-        total = total + w[i]
-        i = i + 1
-    }
-    span.add(total + 3 * (w.count - 1))
-
-    sendLine("")
-    sendRule(TopLeft, TopCenter, TopRight, span)
-    cells.add(center("Users", span[0]))
-    sendLine(rowLine(cells, span))
-    sendRule(CenterLeft, TopCenter, CenterRight, w)
-    cells.clear()
     cells.add("ID")
     cells.add("Username")
     cells.add("Acc")
@@ -509,8 +537,7 @@ func drawUserListPage() {
         cells.add("Last On")
         cells.add("Email")
     }
-    sendLine(rowLine(cells, w))
-    sendRule(CenterLeft, Center, CenterRight, w)
+    sendTableHeader("Users", cells, w)
 
     id = listFromId
     while id < nextId and shown < pageRows {
@@ -537,24 +564,76 @@ func drawUserListPage() {
         }
         id = id + 1
     }
-    sendRule(BottomLeft, BottomCenter, BottomRight, w)
-
-    // Anything left to show? (Skips trailing deleted records.)
     listFromId = id
-    while id < nextId {
-        rec = dbFind(usersDb, id)
-        if rec.length == userRecordSize {
-            more = true
-            break
+    finishListPage(usersDb, nextId, userRecordSize, "sysopusers", w)
+}
+
+// --- Board list --------------------------------------------------------
+
+// Content widths: narrow (<80 columns) is ID/Name (total 40), wide is
+// ID/Name/Description/Network (total 80).
+func boardListWidths(w: list of int) {
+    w.clear()
+    w.add(4)
+    if terminal.columns < 80 {
+        w.add(29)
+        return
+    }
+    w.add(20)
+    w.add(34)
+    w.add(9)
+}
+
+func startBoardList() {
+    user.screen = "boardlist"
+    listFromId = 1
+    drawBoardListPage()
+}
+
+func boardListInput(input: string) {
+    if upperStr(input) == "Q" {
+        gotoScreen("sysopboards")
+    } else {
+        drawBoardListPage()
+    }
+}
+
+func drawBoardListPage() {
+    var w: list of int
+    var cells: list of string
+    var nextId: int = dbNextRecordId(boardsDb)
+    var pageRows: int = terminal.rows - 8
+    var shown: int = 0
+    var id: int = 0
+    var rec: text
+
+    boardListWidths(w)
+    cells.add("ID")
+    cells.add("Name")
+    if terminal.columns >= 80 {
+        cells.add("Description")
+        cells.add("Network")
+    }
+    sendTableHeader("Message Boards", cells, w)
+
+    id = listFromId
+    while id < nextId and shown < pageRows {
+        rec = dbFind(boardsDb, id)
+        if rec.length == boardRecordSize {
+            cells.clear()
+            cells.add(intStr(id))
+            cells.add(dbExtractString(rec, bOffName))
+            if terminal.columns >= 80 {
+                cells.add(dbExtractString(rec, bOffDescription))
+                cells.add(dbExtractString(rec, bOffNetwork))
+            }
+            sendLine(rowLine(cells, w))
+            shown = shown + 1
         }
         id = id + 1
     }
-    if more {
-        modem.send("[Enter] More  [Q] Menu > ")
-    } else {
-        user.screen = "sysopusers"
-        displayPrompt()
-    }
+    listFromId = id
+    finishListPage(boardsDb, nextId, boardRecordSize, "sysopboards", w)
 }
 
 // --- Logoff / hang-up -------------------------------------------------
@@ -636,6 +715,11 @@ on App.launch {
     } else {
         log("Users database unavailable: " + lastError.message)
     }
+    if boardsOpen() {
+        log("Boards database open (" + intStr(boardCount()) + " boards).")
+    } else {
+        log("Boards database unavailable: " + lastError.message)
+    }
     modem.open(serial "modem:9600")
 }
 
@@ -658,6 +742,7 @@ on modem.failed(err: error) {
 extend File {
     on Quit.select {
         usersClose()
+        boardsClose()
         quit
     }
 }
@@ -665,6 +750,7 @@ extend File {
 extend Main {
     on closed {              // closing the log window exits the app
         usersClose()
+        boardsClose()
         quit
     }
 }
