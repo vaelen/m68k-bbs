@@ -6,8 +6,11 @@
 // sysop.cla owns the admin screens for the same data.
 
 // The numbered post list: number N at the prompt = postIds[N-1].
-// Post IDs stay hidden from callers.
+// Post IDs stay hidden from callers. Numbering restarts at 1 on every
+// page; postPage/postPages track where we are (page 1 = newest).
 var postIds: list of int
+var postPage: int = 1
+var postPages: int = 1
 
 // Row cells for one board record, shared with sysop.cla's board list.
 func boardRowCells(id: int, rec: text, cells: list of string) {
@@ -69,6 +72,7 @@ func enterBoard() {
         return
     }
     user.screen = "posts"
+    postPage = 1
     drawPostList()
     displayPrompt()
 }
@@ -87,14 +91,23 @@ func postListWidths(w: list of int) {
     w.add(17)
 }
 
-// One page of the newest posts (highest post ID first), numbered from
-// 1. Deliberately unpaged: one page, then the prompt.
+// One page of posts, newest (highest post ID) first, numbered from 1
+// on every page. Frame is 9 lines from the top rule down (top, title,
+// joint, header, joint, joint, footer, bottom, prompt) -- everything
+// above the table is expected to scroll off.
 func drawPostList() {
     var w: list of int
     var cells: list of string
     var id: int = postsNextId() - 1
-    var pageRows: int = terminal.rows - 8
+    var pageRows: int = terminal.rows - 9
+    var skip: int = 0
     var rec: text
+
+    postPages = (postCount() + pageRows - 1) / pageRows
+    if postPages < 1 { postPages = 1 }
+    if postPage > postPages { postPage = postPages }
+    if postPage < 1 { postPage = 1 }
+    skip = (postPage - 1) * pageRows
 
     postIds.clear()
     postListWidths(w)
@@ -108,19 +121,23 @@ func drawPostList() {
     while id >= 1 and postIds.count < pageRows {
         rec = dbFind(postsDb, id)
         if rec.length == postRecordSize {
-            postIds.add(id)
-            cells.clear()
-            cells.add(intStr(postIds.count))
-            cells.add(dbExtractString(rec, pOffSubject))
-            if terminal.columns >= 80 {
-                cells.add(dbExtractString(rec, pOffSender))
-                cells.add(dateTimeStr(rec.intAt(pOffCreated)))
+            if skip > 0 {
+                skip = skip - 1
+            } else {
+                postIds.add(id)
+                cells.clear()
+                cells.add(intStr(postIds.count))
+                cells.add(dbExtractString(rec, pOffSubject))
+                if terminal.columns >= 80 {
+                    cells.add(dbExtractString(rec, pOffSender))
+                    cells.add(dateTimeStr(rec.intAt(pOffCreated)))
+                }
+                sendLine(rowLine(cells, w))
             }
-            sendLine(rowLine(cells, w))
         }
         id = id - 1
     }
-    sendRule(BottomLeft, BottomCenter, BottomRight, w)
+    sendTableFooter("Page " + intStr(postPage) + " of " + intStr(postPages), w)
     if postIds.count == 0 {
         sendLine("No posts yet.")
     }
@@ -129,6 +146,9 @@ func drawPostList() {
 func drawPostsMenu() {
     sendLine("")
     sendLine("#) Show Post Number #")
+    sendLine("+) Next Page (or Enter)")
+    sendLine("-) Previous Page")
+    sendLine("L) List Posts")
     sendLine("N) New Post")
     sendLine("Q) Return to Board List")
     sendLine("")
@@ -138,15 +158,37 @@ func postsPrompt() {
     modem.send(board.name + "> ")
 }
 
+// Enter and + page forward, - pages back; at either end they just
+// re-prompt.
 func postsChoice(input: string) {
     var n: int = parseIntStr(input)
     if n >= 1 and n <= postIds.count {
         stubOption("Show Post")
         return
     }
+    if input == "" or input == "+" {
+        if postPage < postPages {
+            postPage = postPage + 1
+            drawPostList()
+        }
+        displayPrompt()
+        return
+    }
+    if input == "-" {
+        if postPage > 1 {
+            postPage = postPage - 1
+            drawPostList()
+        }
+        displayPrompt()
+        return
+    }
     switch upperStr(input) {
     case "?" {
         displayMenu()
+        displayPrompt()
+    }
+    case "L" {
+        drawPostList()
         displayPrompt()
     }
     case "N" { stubOption("New Post") }

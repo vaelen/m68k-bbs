@@ -99,6 +99,18 @@ func sendTableHeader(title: string, headers: list of string, w: list of int) {
     sendRule(CenterLeft, Center, CenterRight, w)
 }
 
+// Bottom of a boxed table with a right-aligned footer bar: joint rule,
+// footer row spanning the table, bottom rule.
+func sendTableFooter(msg: string, w: list of int) {
+    var span: list of int
+    var cells: list of string
+    span.add(spanWidth(w))
+    cells.add(padLeft(msg, span[0]))
+    sendRule(CenterLeft, BottomCenter, CenterRight, w)
+    sendLine(rowLine(cells, span))
+    sendRule(BottomLeft, BottomCenter, BottomRight, span)
+}
+
 // Decimal string of a non-negative int (no int-to-string builtin).
 func intStr(n: int): string {
     var v: int = n

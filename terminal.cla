@@ -217,6 +217,17 @@ func pad(s: string, width: int): string {
     return out
 }
 
+// Right-align s in a field of `width` spaces, truncating if longer.
+func padLeft(s: string, width: int): string {
+    var out: string = s
+    if width <= 0 { return "" }
+    if s.length >= width { return s[0, width] }
+    while out.length < width {
+        out = " " + out
+    }
+    return out
+}
+
 // Center s in a field of `width` spaces (odd leftover space goes
 // right), truncating if longer.
 func center(s: string, width: int): string {
