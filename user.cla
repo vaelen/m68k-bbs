@@ -12,6 +12,11 @@ record User {
     screen:        string(31) = "login"
     mode:          InputMode          // defaults to Line
     buffer:        string(255)
+    id:            int                // vDB record ID; 0 = not stored
+    email:         string(63)
+    access:        char = 'U'         // 'U' user, 'S' sysop
+    created:       int                // Mac-epoch seconds
+    lastSeen:      int                // Mac-epoch seconds
 }
 
 var user: User

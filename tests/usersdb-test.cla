@@ -1,0 +1,84 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for the Users database module (usersdb.cla).
+// Run by scripts/test.sh from a scratch directory (the Users.* files
+// land there). Exits 0 on pass, 1 on the first failure.
+
+include "../user.cla"
+include "../usersdb.cla"
+
+var failures: int = 0
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+on App.startCLI(args: list of string) {
+    var id1: int
+    var id2: int
+    var t0: int
+
+    expect(usersOpen(), "users db created on first open")
+    expect(userCount() == 0, "no users yet")
+    expect(findUserId("alice") == -1, "unknown name not found")
+
+    // create a user and read it back
+    t0 = now()
+    user.name = "Alice"
+    user.passwordHash = hashPassword("secret")
+    user.email = "alice@example.com"
+    user.access = accessSysop
+    user.created = t0
+    user.lastSeen = t0
+    id1 = createUser()
+    expect(id1 == 1, "first user gets ID 1")
+    expect(user.id == id1, "createUser sets user.id")
+    expect(userCount() == 1, "count tracks creation")
+    expect(findUserId("alice") == id1, "lookup is case-insensitive (lower)")
+    expect(findUserId("ALICE") == id1, "lookup is case-insensitive (upper)")
+
+    user = new User
+    expect(loadUser(id1), "loadUser succeeds")
+    expect(user.name == "Alice", "canonical name loaded")
+    expect(user.passwordHash == hashPassword("secret"), "password hash roundtrip")
+    expect(user.email == "alice@example.com", "email roundtrip")
+    expect(user.access == accessSysop, "access level roundtrip")
+    expect(user.created == t0 and user.lastSeen == t0, "timestamps roundtrip")
+    expect(not loadUser(99), "missing ID fails to load")
+
+    // a second user, then update last-seen
+    user = new User
+    user.name = "bob"
+    user.passwordHash = hashPassword("pw")
+    user.created = t0
+    user.lastSeen = t0
+    id2 = createUser()
+    expect(id2 == 2, "second user gets ID 2")
+    user.lastSeen = t0 + 60
+    expect(saveUser(), "saveUser succeeds")
+
+    // persistence across close/reopen
+    usersClose()
+    expect(not saveUser(), "save fails while db is closed")
+    expect(usersOpen(), "existing db reopens")
+    expect(userCount() == 2, "count survives reopen")
+    expect(findUserId("BOB") == id2, "second user findable after reopen")
+    expect(loadUser(id2), "load second user")
+    expect(user.lastSeen == t0 + 60, "last-seen update persisted")
+    expect(user.email == "", "empty email roundtrip")
+    expect(user.access == accessUser, "default access is user")
+    usersClose()
+
+    if failures > 0 {
+        log("usersdb-test: FAILED")
+        quit 1
+    }
+    log("usersdb-test: all passed")
+    quit
+}

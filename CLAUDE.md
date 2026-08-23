@@ -126,8 +126,15 @@ The received-byte path is:
   immediately, so the one hang-up artifact is a single empty line just
   before disconnect. The including program defines `connected`,
   `disconnected`, and `dataChar`.
+- `btree.cla` — reusable file-based B-tree (multi-level, lazy
+  deletion) over a `filehandle`; `vdb.cla` — journaled page database
+  with secondary indexes on top of it (formats: `docs/vdb-clarus.md`;
+  design: `docs/vdb.md`). `usersdb.cla` — the "Users" vDB database
+  (160-byte records: username/hash/email/access/created/lastSeen;
+  vDB record ID = user ID; username indexed case-insensitively).
 - `user.cla` — `User` record (name, authenticated, passwordHash,
-  screen, input mode, buffer) + global `user`; `hashPassword` (djb2,
+  screen, input mode, buffer, id, email, access, created, lastSeen)
+  + global `user`; `hashPassword` (djb2,
   non-cryptographic). `terminal.cla` — `Terminal` record (columns,
   rows, color, type: ASCII/ANSI/VT100) + global `terminal`, `Color`
   enum, and pure ANSI sequence builders (`colorSeq`, `backgroundSeq`,
@@ -136,7 +143,12 @@ The received-byte path is:
 - `bbs.cla` — app/UI declarations, session flow. `dataChar` assembles
   input (Line mode: buffer until CR; Character mode: each char).
   `processInput` dispatches on `user.screen`: login → password →
-  terminal-type menu → main menu. Menu conventions: `gotoScreen(s)`
+  terminal-type menu → main menu; typing NEW at the login prompt
+  enters the signup flow (newname → newpass → newpass2 → newemail,
+  empty name cancels; first account gets sysop access). Logins are
+  checked against the Users database (case-insensitive; wrong
+  password returns to login; last-seen shown and updated on login).
+  Menu conventions: `gotoScreen(s)`
   sets the screen and draws menu + prompt; `displayMenu`/`displayPrompt`
   switch on `user.screen`; choices are case-insensitive (`upperStr`);
   `?` redraws the menu; invalid main-menu input redraws only the
@@ -168,7 +180,8 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
 ## Layout
 
 - `bbs.cla` — app entry: UI, session flow, menus (includes the rest)
-- `scanner.cla`, `user.cla`, `terminal.cla`, `termio.cla` — modules above
+- `scanner.cla`, `user.cla`, `usersdb.cla`, `terminal.cla`,
+  `termio.cla`, `btree.cla`, `vdb.cla` — modules above
 - `tests/` — host-lane test suites; `scripts/` — build/test/deploy
 - `bin/`, `vendor/` — pinned compiler + runtime/toolbox snapshot
 - `docs/` — language reference + Snow how-to (symlinks), language-gaps.md

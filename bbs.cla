@@ -7,6 +7,7 @@
 
 include "scanner.cla"
 include "user.cla"
+include "usersdb.cla"
 include "termio.cla"
 include "toolbox/osutils.cla"   // DateTimeRec / SecondsToDate (via --rtdir)
 
@@ -34,6 +35,10 @@ menu Edit { standard edit }
 
 var modem: connection
 var isConnected: bool = false
+
+// Login/signup state between prompts (reset on connect).
+var pendingId: int = 0      // account found at the login prompt
+var pendingHash: int = 0    // first password entered during signup
 
 
 // Collect connected-caller input, one char at a time. Called by
@@ -122,6 +127,10 @@ func displayPrompt() {
     switch user.screen {
     case "login"    { modem.send("Username: ") }
     case "password" { modem.send("Password: ") }
+    case "newname"  { modem.send("Choose a username: ") }
+    case "newpass"  { modem.send("Choose a password: ") }
+    case "newpass2" { modem.send("Retype password: ") }
+    case "newemail" { modem.send("Email (optional): ") }
     case "terminal" { modem.send("Terminal type [4]> ") }
     case "main"     { modem.send("Main Menu> ") }
     }
@@ -154,27 +163,129 @@ func drawMainMenu() {
 // mode) according to the screen the user is on.
 func processInput(input: string) {
     switch user.screen {
-    case "login" {
-        if input == "" {
-            displayPrompt()
-        } else {
-            user.name = input
-            user.screen = "password"
-            displayPrompt()
-        }
-    }
-    case "password" {
-        // TODO: check the hash against a real user database once one
-        // exists; for now any password is accepted.
-        user.passwordHash = hashPassword(input)
-        user.authenticated = true
-        log("User logged in: " + user.name)
-        gotoScreen("terminal")
-    }
+    case "login"    { loginName(input) }
+    case "password" { loginPassword(input) }
+    case "newname"  { newName(input) }
+    case "newpass"  { newPass(input) }
+    case "newpass2" { newPass2(input) }
+    case "newemail" { newEmail(input) }
     case "terminal" { terminalChoice(input) }
     case "main"     { mainChoice(input) }
     case "logoff"   { }   // ignore trailing input (e.g. the modem's OK)
     }
+}
+
+// --- Login ------------------------------------------------------------
+// Names are looked up case-insensitively (the Users database indexes
+// them that way); NEW starts the signup flow.
+
+func loginName(input: string) {
+    if input == "" {
+        displayPrompt()
+    } else if upperStr(input) == "NEW" {
+        gotoScreen("newname")
+    } else {
+        pendingId = findUserId(input)
+        if pendingId < 1 {
+            sendLine("No such user. Type NEW to create an account.")
+            displayPrompt()
+        } else {
+            user.screen = "password"
+            displayPrompt()
+        }
+    }
+}
+
+func loginPassword(input: string) {
+    if pendingId >= 1 and loadUser(pendingId) and hashPassword(input) == user.passwordHash {
+        loginOk()
+    } else {
+        sendLine("Invalid password.")
+        pendingId = 0
+        gotoScreen("login")
+    }
+}
+
+func loginOk() {
+    user.authenticated = true
+    log("User logged in: " + user.name + " (#" + intStr(user.id) + ")")
+    sendLine("")
+    sendLine("Welcome back, " + user.name + "!")
+    if user.lastSeen != 0 {
+        sendLine("Last on: " + dateTimeStr(user.lastSeen))
+    }
+    user.lastSeen = now()
+    saveUser()
+    gotoScreen("terminal")
+}
+
+// --- Signup -----------------------------------------------------------
+// newname -> newpass -> newpass2 -> newemail -> account created and
+// logged in. An empty username cancels back to login.
+
+func newName(input: string) {
+    if input == "" {
+        sendLine("Signup cancelled.")
+        gotoScreen("login")
+    } else if input.length > 31 {
+        sendLine("Names are limited to 31 characters.")
+        displayPrompt()
+    } else if upperStr(input) == "NEW" or findUserId(input) >= 1 {
+        sendLine("That name is taken.")
+        displayPrompt()
+    } else {
+        user.name = input
+        user.screen = "newpass"
+        displayPrompt()
+    }
+}
+
+func newPass(input: string) {
+    if input == "" {
+        displayPrompt()
+    } else {
+        pendingHash = hashPassword(input)
+        user.screen = "newpass2"
+        displayPrompt()
+    }
+}
+
+func newPass2(input: string) {
+    if hashPassword(input) == pendingHash {
+        user.passwordHash = pendingHash
+        user.screen = "newemail"
+        displayPrompt()
+    } else {
+        sendLine("Passwords do not match.")
+        user.screen = "newpass"
+        displayPrompt()
+    }
+}
+
+func newEmail(input: string) {
+    if input.length > 63 {
+        sendLine("Email addresses are limited to 63 characters.")
+        displayPrompt()
+        return
+    }
+    user.email = input
+    user.access = accessUser
+    if userCount() == 0 { user.access = accessSysop }
+    user.created = now()
+    user.lastSeen = now()
+    if createUser() < 1 {
+        sendLine("Account creation failed; sorry.")
+        gotoScreen("login")
+        return
+    }
+    log("New user created: " + user.name + " (#" + intStr(user.id) + ")")
+    sendLine("")
+    sendLine("Account created. Welcome, " + user.name + "!")
+    if user.access == accessSysop {
+        sendLine("You are the first user, so you have sysop access.")
+    }
+    user.authenticated = true
+    gotoScreen("terminal")
 }
 
 func termTypeName(t: TerminalType): string {
@@ -254,8 +365,11 @@ func connected() {
     user = new User          // fresh session: login screen, Line mode
     terminal = new Terminal  // fresh session: 80x24 ASCII, no color
     hangupPhase = 0
+    pendingId = 0
+    pendingHash = 0
     log("Caller connected.")
     sendLine("Welcome to 68kBBS!")
+    sendLine("Type NEW at the login prompt to create an account.")
     displayPrompt()
 }
 
@@ -293,6 +407,11 @@ on App.log(line: string) {
 on App.launch {
     open Main
     log("68kBBS starting up.")
+    if usersOpen() {
+        log("Users database open (" + intStr(userCount()) + " users).")
+    } else {
+        log("Users database unavailable: " + lastError.message)
+    }
     modem.open(serial "modem:9600")
 }
 
@@ -313,9 +432,15 @@ on modem.failed(err: error) {
 }
 
 extend File {
-    on Quit.select { quit }
+    on Quit.select {
+        usersClose()
+        quit
+    }
 }
 
 extend Main {
-    on closed { quit }       // closing the log window exits the app
+    on closed {              // closing the log window exits the app
+        usersClose()
+        quit
+    }
 }

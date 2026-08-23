@@ -1,0 +1,104 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// The Users database: vDB-backed account storage for the BBS.
+// Include after user.cla (this module reads/writes the global `user`).
+//
+// On-disk record ("Users" database, 160 bytes, vDB record ID = user ID):
+//   0    username, 64-byte Pascal field (indexed, case-insensitive)
+//   64   password hash (i32, djb2 -- hashPassword in user.cla)
+//   68   email, 64-byte Pascal field
+//   132  access level (1 byte: 'U' user, 'S' sysop)
+//   133  created (i32, Mac-epoch seconds)
+//   137  last seen (i32, Mac-epoch seconds)
+//   141+ reserved for future fields (record_size 160 leaves slack)
+
+include "vdb.cla"
+
+const userRecordSize: int = 160
+const accessUser: char = 'U'
+const accessSysop: char = 'S'
+
+const uOffName: int = 0
+const uOffHash: int = 64
+const uOffEmail: int = 68
+const uOffAccess: int = 132
+const uOffCreated: int = 133
+const uOffLastSeen: int = 137
+
+var usersDb: Database
+
+// Open the Users database, creating it (with its username index) on
+// first run. False + lastError if neither works.
+func usersOpen(): bool {
+    usersDb = dbOpen("Users", "68BB")
+    if dbIsOpen(usersDb) { return true }
+    usersDb = dbCreate("Users", userRecordSize, "68BB")
+    if not dbIsOpen(usersDb) { return false }
+    return dbAddIndex(usersDb, "Username", itString, uOffName)
+}
+
+func usersClose() {
+    if dbIsOpen(usersDb) { dbClose(usersDb) }
+    usersDb = new Database
+}
+
+func userCount(): int {
+    return dbRecordCount(usersDb)
+}
+
+// The user ID owning `name` (case-insensitive), or -1.
+func findUserId(name: string): int {
+    return dbFindByString(usersDb, "Username", name)
+}
+
+// Serialize the session user into a record image (dbAdd/dbUpdate zero-
+// pad it to record_size). name/email fit their fields by declaration
+// (string(31)/string(63) vs 64-byte fields).
+func packUser(): text {
+    var t: text
+    t.append(char(user.name.length))
+    t.append(user.name)
+    while t.length < uOffHash {
+        t.append(char(0))
+    }
+    btAppendInt(t, user.passwordHash)
+    t.append(char(user.email.length))
+    t.append(user.email)
+    while t.length < uOffAccess {
+        t.append(char(0))
+    }
+    t.append(user.access)
+    btAppendInt(t, user.created)
+    btAppendInt(t, user.lastSeen)
+    return t
+}
+
+// Load record `id` into the session user. Session-only fields
+// (screen, mode, buffer, authenticated) are left untouched.
+func loadUser(id: int): bool {
+    var rec: text = dbFind(usersDb, id)
+    if rec.length != userRecordSize { return false }
+    user.id = id
+    user.name = dbExtractString(rec, uOffName)
+    user.passwordHash = rec.intAt(uOffHash)
+    user.email = dbExtractString(rec, uOffEmail)
+    user.access = rec[uOffAccess]
+    user.created = rec.intAt(uOffCreated)
+    user.lastSeen = rec.intAt(uOffLastSeen)
+    return true
+}
+
+// Store the session user as a new account. Returns the new user ID
+// (also set on user.id), or -1.
+func createUser(): int {
+    var id: int = dbAdd(usersDb, packUser())
+    if id > 0 { user.id = id }
+    return id
+}
+
+// Write the session user back to its record.
+func saveUser(): bool {
+    if user.id < 1 { return false }
+    return dbUpdate(usersDb, user.id, packUser())
+}
