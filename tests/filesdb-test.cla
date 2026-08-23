@@ -1,0 +1,120 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for the per-area file entries module (filesdb.cla):
+// header records in vDB (filename indexed), long descriptions in the
+// append-only .MSG heap, physical-file path composition.
+// Run by scripts/test.sh from a scratch directory.
+// Exits 0 on pass, 1 on the first failure.
+
+include "../filesdb.cla"
+
+var failures: int = 0
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+func heapSize(): int {
+    var b: filehandle = filesDesc
+    return b.size()
+}
+
+on App.startCLI(args: list of string) {
+    var id1: int
+    var id2: int
+    var id3: int
+    var r: text
+    var desc1: text
+    var none: text
+
+    desc1 = "StuffIt Expander 4.0\nDecompresses .sit and .hqx archives.\nFreeware."
+
+    expect(not filesOpen(0), "area ID 0 rejected")
+    expect(not filesOpen(100), "area ID 100 rejected")
+    expect(filesOpen(1), "area 1 files db created")
+    expect(fileCount() == 0, "no files yet")
+    expect(heapSize() == 0, "description heap starts empty")
+    expect(findFile("anything") == -1, "findFile misses on empty db")
+
+    // a file with a long description, one without
+    id1 = addFile("StuffIt Expander 4.0.sit", "andrew", "Archive expander", 123456, 0, desc1)
+    expect(id1 == 1, "first file added")
+    id2 = addFile("README.TXT", "alice", "Read me first", 2048, fileFlagPending, none)
+    expect(id2 == 2, "second file added")
+    expect(heapSize() == desc1.length, "long description packed exactly")
+
+    expect(loadFile(id1), "load first entry")
+    expect(fileRec.id == id1, "id set")
+    expect(fileRec.name == "StuffIt Expander 4.0.sit", "name roundtrip")
+    expect(fileRec.uploader == "andrew", "uploader roundtrip")
+    expect(fileRec.description == "Archive expander", "description roundtrip")
+    expect(fileRec.created != 0, "created timestamp set")
+    expect(fileRec.size == 123456, "size roundtrip")
+    expect(fileRec.downloads == 0, "downloads start at zero")
+    expect(fileRec.flags == 0, "flags roundtrip (none)")
+    r = fileLongDesc(id1)
+    expect(r == desc1, "long description roundtrip")
+
+    expect(loadFile(id2), "load second entry")
+    expect(fileRec.flags == fileFlagPending, "pending flag roundtrip")
+    expect(fileLongDesc(id2).length == 0, "no long description comes back empty")
+    expect(fileLongDesc(99).length == 0, "missing file has no description")
+    expect(not loadFile(99), "missing file fails to load")
+
+    // filename index: case-insensitive, unique per area
+    expect(findFile("readme.txt") == id2, "findFile is case-insensitive")
+    expect(findFile("StuffIt Expander 4.0.sit") == id1, "findFile exact")
+    expect(findFile("nothere.zip") == -1, "findFile misses")
+    expect(addFile("Readme.TXT", "bob", "dupe", 1, 0, none) == -1, "duplicate name rejected")
+    expect(addFile("", "bob", "no name", 1, 0, none) == -1, "empty name rejected")
+    expect(fileCount() == 2, "rejected adds did not create records")
+
+    // edits through the global: downloads, flags, description
+    expect(loadFile(id1), "reload first entry")
+    fileRec.downloads = 7
+    fileRec.flags = fileFlagOffline
+    fileRec.description = "Archive expander (offline)"
+    expect(saveFile(), "save edited entry")
+    expect(loadFile(id2), "load other entry in between")
+    expect(loadFile(id1), "reload edited entry")
+    expect(fileRec.downloads == 7, "downloads edit persisted")
+    expect(fileRec.flags == fileFlagOffline, "flags edit persisted")
+    expect(fileRec.description == "Archive expander (offline)", "description edit persisted")
+    expect(fileLongDesc(id1) == desc1, "long description untouched by save")
+    fileRec.name = "readme.txt"
+    expect(not saveFile(), "rename onto another entry's name rejected")
+
+    // physical path: folder from the global area
+    area.folder = ""
+    expect(filePath(id2) == "README.TXT", "path with empty folder is the bare name")
+    area.folder = "BBS HD:Files:Utilities"
+    expect(filePath(id2) == "BBS HD:Files:Utilities:README.TXT", "path joins folder and name")
+    expect(filePath(99) == "", "path of missing file is empty")
+
+    // areas are isolated from each other
+    expect(filesOpen(2), "area 2 files db created")
+    expect(fileCount() == 0, "area 2 is empty")
+    id3 = addFile("README.TXT", "carol", "Same name, other area", 10, 0, none)
+    expect(id3 == 1, "area 2 gets its own ID space and namespace")
+
+    // persistence: reopen area 1, headers, index, and heap intact
+    expect(filesOpen(1), "area 1 reopens")
+    expect(fileCount() == 2, "file count survives reopen")
+    expect(filesNextId() == 3, "next ID survives reopen")
+    expect(findFile("README.TXT") == id2, "name index survives reopen")
+    expect(fileLongDesc(id1) == desc1, "heap offsets still valid after reopen")
+    filesClose()
+
+    if failures > 0 {
+        log("filesdb-test: FAILED")
+        quit 1
+    }
+    log("filesdb-test: all passed")
+    quit
+}

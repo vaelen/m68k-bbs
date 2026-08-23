@@ -1,0 +1,220 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// File entries for one file area: fixed-size header records in a vDB
+// database (filename indexed case-insensitively) plus an append-only
+// long-description heap -- the posts header/heap split, except that
+// the main content is a real file on disk at <area folder>:<name>.
+// An area's files are ARE<nn>.DAT/.IDX/.I00/.JNL (headers, area IDs
+// 1-99) and ARE<nn>.MSG (long descriptions). Layout and rationale:
+// docs/files.md.
+//
+// On-disk header record (256 bytes, vDB record ID = file ID):
+//   0    filename, 64-byte Pascal field (indexed, case-insensitive)
+//   64   uploader, 64-byte Pascal field (a name, not a user ID)
+//   128  description, 64-byte Pascal field (the listing one-liner)
+//   192  created (i32, Mac-epoch seconds)
+//   196  size in bytes (i32, captured at upload/import)
+//   200  downloads (i32)
+//   204  flags (i32: bit 0 pending approval, bit 1 offline)
+//   208  long-description offset in the .MSG heap (i32)
+//   212  long-description length (i32; 0 = none)
+//   216+ reserved
+//
+// Long descriptions are never journaled: addFile appends + flushes
+// the text BEFORE the journaled header add, so a crash can only leave
+// orphaned heap bytes. Deleted entries orphan their bytes (no
+// compactor). Nothing here opens the physical file; filePath only
+// names it.
+
+include "vdb.cla"
+include "areasdb.cla"
+
+const fileRecordSize: int = 256
+const fOffName: int = 0
+const fOffUploader: int = 64
+const fOffDescription: int = 128
+const fOffCreated: int = 192
+const fOffSize: int = 196
+const fOffDownloads: int = 200
+const fOffFlags: int = 204
+const fOffDescOff: int = 208
+const fOffDescLen: int = 212
+const fileFlagPending: int = 1    // uploaded, awaiting sysop approval
+const fileFlagOffline: int = 2    // physical file missing/removed
+
+record FileEntry {
+    id: int
+    name: string(63)
+    uploader: string(63)
+    description: string(63)
+    created: int
+    size: int
+    downloads: int
+    flags: int
+}
+
+var filesDb: Database
+var filesDesc: filehandle
+var fileRec: FileEntry      // last loaded file entry
+
+func filesName(areaId: int): string {
+    return "ARE" + char(int('0') + areaId / 10) + char(int('0') + areaId mod 10)
+}
+
+// Open area `areaId`'s file entries (closing any area already open),
+// creating its files on first use.
+func filesOpen(areaId: int): bool {
+    var name: string
+    filesClose()
+    if areaId < 1 or areaId > 99 { return false }
+    name = filesName(areaId)
+    filesDb = dbOpen(name, "68BB")
+    if not dbIsOpen(filesDb) {
+        filesDb = dbCreate(name, fileRecordSize, "68BB")
+        if not dbIsOpen(filesDb) { return false }
+        if not dbAddIndex(filesDb, "Name", itString, fOffName) {
+            filesClose()
+            return false
+        }
+    }
+    filesDesc = file.open(name + ".MSG")
+    if filesDesc == nil {
+        filesDesc = file.create(name + ".MSG", "TEXT", "68BB")
+    }
+    if filesDesc == nil {
+        filesClose()
+        return false
+    }
+    return true
+}
+
+func filesClose() {
+    var b: filehandle = filesDesc
+    if dbIsOpen(filesDb) { dbClose(filesDb) }
+    filesDb = new Database
+    if b != nil { b.close() }
+    filesDesc = nil
+}
+
+func fileCount(): int {
+    return dbRecordCount(filesDb)
+}
+
+// For enumerating entries: loop loadFile over 1 .. filesNextId()-1.
+func filesNextId(): int {
+    return dbNextRecordId(filesDb)
+}
+
+func packFile(name: string, uploader: string, description: string, created: int, size: int, downloads: int, flags: int, descOff: int, descLen: int): text {
+    var t: text
+    var n: string = name
+    var u: string = uploader
+    var d: string = description
+    if n.length > 63 { n = n[0, 63] }
+    if u.length > 63 { u = u[0, 63] }
+    if d.length > 63 { d = d[0, 63] }
+    t.append(char(n.length))
+    t.append(n)
+    while t.length < fOffUploader {
+        t.append(char(0))
+    }
+    t.append(char(u.length))
+    t.append(u)
+    while t.length < fOffDescription {
+        t.append(char(0))
+    }
+    t.append(char(d.length))
+    t.append(d)
+    while t.length < fOffCreated {
+        t.append(char(0))
+    }
+    btAppendInt(t, created)
+    btAppendInt(t, size)
+    btAppendInt(t, downloads)
+    btAppendInt(t, flags)
+    btAppendInt(t, descOff)
+    btAppendInt(t, descLen)
+    return t
+}
+
+// Find the entry named `name` (case-insensitive); -1 if none.
+func findFile(name: string): int {
+    return dbFindByString(filesDb, "Name", name)
+}
+
+// Add an entry; `size` is the physical file's byte count, `flags` the
+// initial flag bits, `longDesc` the optional multi-line description.
+// Returns the new file ID, or -1 (also when the name is empty or
+// already used in this area).
+func addFile(name: string, uploader: string, description: string, size: int, flags: int, longDesc: text): int {
+    var b: filehandle = filesDesc
+    var off: int
+    if not dbIsOpen(filesDb) or b == nil { return -1 }
+    if name.length == 0 { return -1 }
+    if findFile(name) >= 1 { return -1 }
+    off = b.size()
+    if off < 0 { return -1 }
+    if longDesc.length > 0 {
+        // description first, then the journaled header (see file comment)
+        if not b.append(longDesc) { return -1 }
+        if not b.flush() { return -1 }
+    }
+    return dbAdd(filesDb, packFile(name, uploader, description, now(), size, 0, flags, off, longDesc.length))
+}
+
+// Load entry `id` into the global `fileRec`.
+func loadFile(id: int): bool {
+    var rec: text = dbFind(filesDb, id)
+    if rec.length != fileRecordSize { return false }
+    fileRec.id = id
+    fileRec.name = dbExtractString(rec, fOffName)
+    fileRec.uploader = dbExtractString(rec, fOffUploader)
+    fileRec.description = dbExtractString(rec, fOffDescription)
+    fileRec.created = rec.intAt(fOffCreated)
+    fileRec.size = rec.intAt(fOffSize)
+    fileRec.downloads = rec.intAt(fOffDownloads)
+    fileRec.flags = rec.intAt(fOffFlags)
+    return true
+}
+
+// Fetch entry `id`'s long description from the heap; empty if none
+// (or if the entry doesn't exist).
+func fileLongDesc(id: int): text {
+    var none: text
+    var out: text
+    var rec: text = dbFind(filesDb, id)
+    var b: filehandle = filesDesc
+    if rec.length != fileRecordSize or b == nil { return none }
+    if rec.intAt(fOffDescLen) == 0 { return none }
+    if not b.readAt(rec.intAt(fOffDescOff), rec.intAt(fOffDescLen), out) { return none }
+    if out.length != rec.intAt(fOffDescLen) { return none }
+    return out
+}
+
+// Write the global `fileRec` back (downloads, flags, description,
+// uploader, name). The long description is immutable, like a post
+// body; its heap offset/length are carried over from the stored
+// record. A rename onto another entry's name is refused.
+func saveFile(): bool {
+    var rec: text
+    var other: int
+    if fileRec.id < 1 { return false }
+    rec = dbFind(filesDb, fileRec.id)
+    if rec.length != fileRecordSize { return false }
+    other = findFile(fileRec.name)
+    if other >= 1 and other != fileRec.id { return false }
+    return dbUpdate(filesDb, fileRec.id, packFile(fileRec.name, fileRec.uploader, fileRec.description, fileRec.created, fileRec.size, fileRec.downloads, fileRec.flags, rec.intAt(fOffDescOff), rec.intAt(fOffDescLen)))
+}
+
+// The physical file's path: the loaded `area`'s folder joined to the
+// entry's name with ":", or the bare name when the folder is empty
+// (the app's own directory). Empty if the entry doesn't exist.
+func filePath(id: int): string {
+    var rec: text = dbFind(filesDb, id)
+    var name: string
+    if rec.length != fileRecordSize { return "" }
+    name = dbExtractString(rec, fOffName)
+    if area.folder.length == 0 { return name }
+    return area.folder + ":" + name
+}
