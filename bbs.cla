@@ -14,6 +14,8 @@ include "postsdb.cla"
 include "termio.cla"
 include "sysop.cla"
 include "boards.cla"
+include "maildb.cla"
+include "mail.cla"
 include "editor.cla"
 include "toolbox/osutils.cla"   // DateTimeRec / SecondsToDate (via --rtdir)
 
@@ -187,6 +189,7 @@ func displayMenu() {
     case "boards"      { drawBoardPicker() }
     case "posts"       { drawPostsMenu() }
     case "postview"    { drawPostViewMenu() }
+    case "mail"        { drawMailMenu() }
     }
 }
 
@@ -216,6 +219,7 @@ func displayPrompt() {
     case "delboardconfirm" { modem.send("Delete this board? (Y/N): ") }
     case "boards" { modem.send("Board ID> ") }
     case "posts", "postview" { postsPrompt() }
+    case "mail" { mailPrompt() }
     case "editsubject" { editSubjectPrompt() }
     case "editbody"    { editBodyPrompt() }
     case "delpostnum"     { modem.send("Delete post #: ") }
@@ -246,6 +250,11 @@ func drawMainMenu() {
     sendLine("")
     sendLine("?) Display This Menu")
     sendLine("B) Bulletin Boards")
+    if unreadCount(user.id) > 0 {
+        sendLine("M) Mail (" + intStr(unreadCount(user.id)) + " new)")
+    } else {
+        sendLine("M) Mail")
+    }
     if user.access == accessSysop {
         sendLine("S) Sysop Menu")
     }
@@ -285,6 +294,7 @@ func processInput(input: string) {
     case "boards" { boardPickerInput(input) }
     case "posts"  { postsChoice(input) }
     case "postview" { postViewChoice(input) }
+    case "mail" { mailChoice(input) }
     case "editsubject" { editSubjectInput(input) }
     case "editbody"    { editBodyInput(input) }
     case "delpostnum"     { delPostNumInput(input) }
@@ -334,6 +344,9 @@ func loginOk() {
     sendLine("Welcome back, " + user.name + "!")
     if user.lastSeen != 0 {
         sendLine("Last on: " + dateTimeStr(user.lastSeen))
+    }
+    if unreadCount(user.id) > 0 {
+        sendLine("You have " + intStr(unreadCount(user.id)) + " new message(s).")
     }
     user.lastSeen = now()
     saveUser()
@@ -451,6 +464,12 @@ func mainChoice(input: string) {
         displayPrompt()
     }
     case "B" { gotoScreen("boards") }
+    case "M" {
+        mailPage = 1
+        user.screen = "mail"
+        drawInbox()
+        displayPrompt()
+    }
     case "S" {
         if user.access == accessSysop {
             gotoScreen("sysop")
@@ -548,6 +567,11 @@ on App.launch {
     } else {
         log("Boards database unavailable: " + lastError.message)
     }
+    if mailOpen() {
+        log("Mail database open (" + intStr(mailCount()) + " messages).")
+    } else {
+        log("Mail database unavailable: " + lastError.message)
+    }
     modem.open(serial "modem:9600")
 }
 
@@ -571,6 +595,7 @@ extend File {
     on Quit.select {
         usersClose()
         boardsClose()
+        mailClose()
         quit
     }
 }
@@ -579,6 +604,7 @@ extend Main {
     on closed {              // closing the log window exits the app
         usersClose()
         boardsClose()
+        mailClose()
         quit
     }
 }

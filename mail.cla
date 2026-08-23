@@ -1,0 +1,163 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// Private mail UI: the caller's inbox (paged, newest first), the
+// framed message view, delete, and compose/reply (via editor.cla).
+// Included by bbs.cla after boards.cla (reuses its view widths and
+// body paging globals) and before editor.cla.
+
+// Inbox paging: number N at the prompt = mailIds[N-1]; numbering
+// restarts at 1 per page. `inbox` holds every message ID for the
+// caller, newest first.
+var inbox: list of int
+var mailIds: list of int
+var mailPage: int = 1
+var mailPages: int = 1
+
+// Reload the caller's inbox, newest (highest ID) first.
+func loadInbox() {
+    var oldest: list of int
+    var i: int
+    inboxIds(user.id, oldest)
+    inbox.clear()
+    i = oldest.count - 1
+    while i >= 0 {
+        inbox.add(oldest[i])
+        i = i - 1
+    }
+}
+
+// Content widths: narrow (<80) is #/new/Subject (total 32), wide adds
+// From and Date (total 66).
+func inboxWidths(w: list of int) {
+    w.clear()
+    w.add(3)
+    w.add(1)
+    if terminal.columns < 80 {
+        w.add(28)
+        return
+    }
+    w.add(29)
+    w.add(16)
+    w.add(17)
+}
+
+// One page of the inbox; frame is 9 lines like the post list.
+func drawInbox() {
+    var w: list of int
+    var cells: list of string
+    var pageRows: int = terminal.rows - 9
+    var i: int = 0
+    var last: int = 0
+    var rec: text
+
+    loadInbox()
+    mailPages = (inbox.count + pageRows - 1) / pageRows
+    if mailPages < 1 { mailPages = 1 }
+    if mailPage > mailPages { mailPage = mailPages }
+    if mailPage < 1 { mailPage = 1 }
+
+    mailIds.clear()
+    inboxWidths(w)
+    cells.add("#")
+    cells.add("")
+    cells.add("Subject")
+    if terminal.columns >= 80 {
+        cells.add("From")
+        cells.add("Date")
+    }
+    sendTableHeader("Mail for " + user.name, cells, w)
+    i = (mailPage - 1) * pageRows
+    last = i + pageRows
+    while i < inbox.count and i < last {
+        rec = dbFind(mailDb, inbox[i])
+        if rec.length == mailRecordSize {
+            mailIds.add(inbox[i])
+            cells.clear()
+            cells.add(intStr(mailIds.count))
+            if (rec.wordAt(mOffFlags) & mailFlagRead) == 0 {
+                cells.add("*")
+            } else {
+                cells.add(" ")
+            }
+            cells.add(dbExtractString(rec, mOffSubject))
+            if terminal.columns >= 80 {
+                cells.add(dbExtractString(rec, mOffFrom))
+                cells.add(dateTimeStr(rec.intAt(mOffCreated)))
+            }
+            sendLine(rowLine(cells, w))
+        }
+        i = i + 1
+    }
+    sendTableFooter("Page " + intStr(mailPage) + " of " + intStr(mailPages), w)
+    if mailIds.count == 0 {
+        sendLine("No mail.")
+    }
+}
+
+func drawMailMenu() {
+    sendLine("")
+    sendLine("#) Read Message Number #")
+    sendLine("+) Next Page (or Enter)")
+    sendLine("-) Previous Page")
+    sendLine("L) List Messages")
+    sendLine("N) New Message")
+    sendLine("Q) Return to Main Menu")
+    sendLine("")
+}
+
+func mailPrompt() {
+    modem.send("Mail> ")
+}
+
+func backToInbox() {
+    user.screen = "mail"
+    drawInbox()
+    displayPrompt()
+}
+
+func mailChoice(input: string) {
+    var n: int = parseIntStr(input)
+    if n >= 1 and n <= mailIds.count {
+        showMessage(n)
+        return
+    }
+    if input == "" or input == "+" {
+        if mailPage < mailPages {
+            mailPage = mailPage + 1
+            drawInbox()
+        }
+        displayPrompt()
+        return
+    }
+    if input == "-" {
+        if mailPage > 1 {
+            mailPage = mailPage - 1
+            drawInbox()
+        }
+        displayPrompt()
+        return
+    }
+    switch upperStr(input) {
+    case "?" {
+        displayMenu()
+        displayPrompt()
+    }
+    case "L" {
+        drawInbox()
+        displayPrompt()
+    }
+    case "N" { startNewMail() }
+    case "Q" { gotoScreen("main") }
+    else { displayPrompt() }
+    }
+}
+
+// Placeholders completed in Tasks 3 and 4.
+func showMessage(n: int) {
+    displayPrompt()
+}
+
+func startNewMail() {
+    displayPrompt()
+}
