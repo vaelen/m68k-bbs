@@ -11,8 +11,11 @@
 var editLines: list of string
 var editSubject: string(63)
 var editThread: int = 0
-var editPending: char = ' '     // 'E'/'I': next line replaces/inserts
+var editPending: char = ' '     // 'E'/'I': next line replaces/inserts;
+                                // 'R': awaiting /R's Original text,
+                                // 'T': awaiting its Replacement
 var editPendingLine: int = 0
+var editOriginal: string
 
 // ponytail: 100 lines max; raise if real posts ever hit it.
 const editMaxLines: int = 100
@@ -100,9 +103,18 @@ func backToPosts() {
     displayPrompt()
 }
 
-// Numbered line prompt; a pending /E or /I prompts with its target.
+// Numbered line prompt; a pending /E or /I prompts with its target,
+// and /R's two steps prompt for the text to change.
 func editBodyPrompt() {
     var n: int = editLines.count + 1
+    if editPending == 'R' {
+        modem.send("Original: ")
+        return
+    }
+    if editPending == 'T' {
+        modem.send("Replacement: ")
+        return
+    }
     if editPending != ' ' { n = editPendingLine }
     modem.send(padLeft(intStr(n), 3) + ": ")
 }
@@ -112,6 +124,7 @@ func editorHelp() {
     sendLine("/D n  delete line n")
     sendLine("/E n  replace line n")
     sendLine("/I n  insert before line n")
+    sendLine("/R n  replace text in line n")
 }
 
 // Prefix and line sent separately: a full 255-byte line would clamp
@@ -167,6 +180,15 @@ func editorCommand(input: string) {
         }
         displayPrompt()
     }
+    case 'R' {
+        if n >= 1 and n <= editLines.count {
+            editPending = 'R'
+            editPendingLine = n
+        } else {
+            sendLine("No such line.")
+        }
+        displayPrompt()
+    }
     case '?' {
         editorHelp()
         displayPrompt()
@@ -178,9 +200,62 @@ func editorCommand(input: string) {
     }
 }
 
+// Swap `repl` in for the first occurrence of editOriginal in the /R
+// target line, then echo the result.
+func applyReplace(repl: string) {
+    var line: string = editLines[editPendingLine - 1]
+    var i: int = line.indexOf(editOriginal)
+    var tail: string
+    var tmp: list of string
+    var j: int = 0
+    editPending = ' '
+    if i < 0 {
+        sendLine("Not found.")
+        displayPrompt()
+        return
+    }
+    if line.length - editOriginal.length + repl.length > 255 {
+        sendLine("Line too long.")
+        displayPrompt()
+        return
+    }
+    tail = line[i + editOriginal.length, line.length - i - editOriginal.length]
+    line = line[0, i] + repl + tail
+    tmp = editLines.clone()
+    editLines.clear()
+    while j < tmp.count {
+        if j == editPendingLine - 1 {
+            editLines.add(line)
+        } else {
+            editLines.add(tmp[j])
+        }
+        j = j + 1
+    }
+    modem.send(padLeft(intStr(editPendingLine), 3) + ": ")
+    sendLine(line)
+    displayPrompt()
+}
+
 func editBodyInput(input: string) {
     var tmp: list of string
     var i: int = 0
+    // /R's sub-prompts take their input literally (a body line may
+    // well contain slashes); empty Original cancels.
+    if editPending == 'R' {
+        if input == "" {
+            editPending = ' '
+            sendLine("Nothing to replace.")
+        } else {
+            editOriginal = input
+            editPending = 'T'
+        }
+        displayPrompt()
+        return
+    }
+    if editPending == 'T' {
+        applyReplace(input)
+        return
+    }
     if input.length >= 1 and input[0] == '/' {
         editorCommand(input)
         return
