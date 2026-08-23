@@ -84,6 +84,31 @@ exists) is lost on crash.
 of each operation and written back immediately when it changes
 (allocation, root growth). See §3.1 for the general pattern.
 
+### 1.6 Compaction leaves duplicate records behind on a crash
+
+`CompactDatabase` moves each record to its new location but never
+clears the old pages — during the sweep, every moved record is active
+in two places at once. That is fine if compaction completes (the
+truncate and index rebuild sort it out), but a crash mid-sweep leaves
+duplicates that `RebuildAllIndexes` then indexes **twice** (both
+copies inserted under the same record ID). From there updates and
+deletes hit one copy while lookups can return the other — stale-data
+resurrection.
+
+**v2 fix**, two halves: (a) the sweep clears each moved record's old
+page run immediately after writing the new copy (skipping any pages
+the two runs share); (b) the recovery-time primary rebuild checks for
+an already-indexed record ID and, on a duplicate, keeps the first
+(lower-page, i.e. moved-to) copy and marks the later copy's pages
+empty — so even the crash-between-write-and-clear window heals.
+
+### 1.7 `last_compacted` is set to zero
+
+`CompactDatabase` finishes with `db->header.last_compacted = 0;` —
+the field the operation exists to stamp is reset instead. v2 stamps
+the current time, and also recounts `record_count` during the sweep
+(free accuracy — the sweep visits every active record anyway).
+
 ## 2. Design gaps closed (the C library wants these)
 
 ### 2.1 Secondary indexes actually work: `DBIndexInfo` gains a field offset

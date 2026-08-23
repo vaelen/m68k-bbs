@@ -202,6 +202,68 @@ on App.startCLI(args: list of string) {
     expect(dbFindByInt(db, "Age", 30) == id1, "int index also rebuilt")
     dbClose(db)
 
+    // 11. compaction: five records, two holes, then squeeze
+    db = dbCreate("VDBT5", 32, "68BB")
+    id1 = dbAdd(db, "aaaa")
+    dbAdd(db, "bbbb")
+    id3 = dbAdd(db, "cccc")
+    dbAdd(db, "dddd")
+    expect(dbAdd(db, "eeee") == 5, "five records added")
+    expect(dbDelete(db, 2) and dbDelete(db, 4), "two holes punched")
+    expect(dataSize(db) == 3584, "file still holds seven pages")
+    expect(dbCompact(db), "compact succeeds")
+    expect(dataSize(db) == 2560, "file truncated to header + three records")
+    r = dbFind(db, id1)
+    expect(r[0, 4] == "aaaa", "unmoved record intact")
+    r = dbFind(db, id3)
+    expect(r[0, 4] == "cccc", "moved record intact")
+    r = dbFind(db, 5)
+    expect(r[0, 4] == "eeee", "last record intact")
+    expect(dbFind(db, 2).length == 0 and dbFind(db, 4).length == 0, "deleted records still gone")
+    expect(dbRecordCount(db) == 3, "record count recounted")
+    expect(dbCompact(db), "no-op compact succeeds")
+    expect(dataSize(db) == 2560, "no-op compact changes nothing")
+    expect(dbAdd(db, "ffff") == 6, "IDs still never reused after compact")
+    expect(dataSize(db) == 3072, "new record appended, free list truly empty")
+    dbClose(db)
+    f = file.open("VDBT5.DAT")
+    f.readAt(0, 512, r)
+    f.close()
+    expect(r.intAt(18) != 0, "last_compacted stamped")
+
+    // 12. compaction rebuilds the indexes (VDBT4: zelda p2, hole p3,
+    //     carla p4 after tests 9-10)
+    db = dbOpen("VDBT4", "68BB")
+    expect(dataSize(db) == 2560, "VDBT4 has one hole before compaction")
+    expect(dbCompact(db), "indexed db compacts")
+    expect(dataSize(db) == 2048, "hole squeezed out")
+    expect(dbFindByString(db, "Username", "zelda") == 1, "unmoved record still indexed")
+    expect(dbFindByString(db, "Username", "carla") == 3, "moved record re-indexed")
+    expect(dbFindByInt(db, "Age", 26) == 3, "int index survives compaction")
+    dbClose(db)
+
+    // 13. duplicate-copy healing: fake a crash mid-compaction by
+    //     copying record 1's page over a free page, then recover
+    db = dbCreate("VDBT6", 16, "68BB")
+    id1 = dbAdd(db, "aaaa")
+    id2 = dbAdd(db, "bbbb")
+    expect(dbDelete(db, id2), "second record deleted")
+    dbClose(db)
+    f = file.open("VDBT6.DAT")
+    f.readAt(1024, 512, r)       // page 2: record 1
+    f.writeAt(1536, r)           // page 3: now a duplicate active copy
+    f.writeAt(22, "\x01")        // journal_pending = true
+    f.close()
+    db = dbOpen("VDBT6", "68BB")
+    expect(dbIsOpen(db), "recovery with duplicate copy succeeds")
+    r = dbFind(db, id1)
+    expect(r[0, 4] == "aaaa", "record readable after dedup")
+    expect(dbAdd(db, "cccc") == 3, "new record added after heal")
+    expect(dataSize(db) == 2048, "healed duplicate page was reused")
+    r = dbFind(db, 3)
+    expect(r[0, 4] == "cccc", "new record landed on the healed page")
+    dbClose(db)
+
     if failures > 0 {
         log("vdb-test: FAILED")
         quit 1
