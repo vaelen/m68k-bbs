@@ -190,6 +190,7 @@ func displayMenu() {
     case "posts"       { drawPostsMenu() }
     case "postview"    { drawPostViewMenu() }
     case "mail"        { drawMailMenu() }
+    case "mailview"    { drawMailViewMenu() }
     }
 }
 
@@ -219,7 +220,8 @@ func displayPrompt() {
     case "delboardconfirm" { modem.send("Delete this board? (Y/N): ") }
     case "boards" { modem.send("Board ID> ") }
     case "posts", "postview" { postsPrompt() }
-    case "mail" { mailPrompt() }
+    case "mail", "mailview" { mailPrompt() }
+    case "delmailconfirm" { modem.send("Delete this message? (Y/N): ") }
     case "editsubject" { editSubjectPrompt() }
     case "editbody"    { editBodyPrompt() }
     case "delpostnum"     { modem.send("Delete post #: ") }
@@ -295,6 +297,8 @@ func processInput(input: string) {
     case "posts"  { postsChoice(input) }
     case "postview" { postViewChoice(input) }
     case "mail" { mailChoice(input) }
+    case "mailview" { mailViewChoice(input) }
+    case "delmailconfirm" { delMailConfirm(input) }
     case "editsubject" { editSubjectInput(input) }
     case "editbody"    { editBodyInput(input) }
     case "delpostnum"     { delPostNumInput(input) }

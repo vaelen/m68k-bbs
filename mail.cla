@@ -153,11 +153,168 @@ func mailChoice(input: string) {
     }
 }
 
-// Placeholders completed in Tasks 3 and 4.
+// --- Message view ------------------------------------------------------
+// Same frame as the post view: subject title bar, From/Date meta,
+// wrapped body paged inside the border, "Message N - Page X of Y".
+// Viewing marks the message read.
+
+var mailNum: int = 0
+
 func showMessage(n: int) {
+    if not loadMessageView(n) { return }
+    user.screen = "mailview"
     displayPrompt()
 }
 
+func loadMessageView(n: int): bool {
+    var w: list of int
+    postViewWidths(w)
+    if not loadMessage(mailIds[n - 1]) {
+        sendLine("Message unavailable.")
+        displayPrompt()
+        return false
+    }
+    mailNum = n
+    markRead(message.id)
+    wrapText(messageBody(message.id), w[0], bodyLines)
+    bodyPage = 1
+    drawMessageView()
+    return true
+}
+
+func drawMessageView() {
+    var w: list of int
+    var cells: list of string
+    var pageRows: int = 0
+    var i: int = 0
+    var last: int = 0
+    var d: string = dateTimeStr(message.created)
+
+    postViewWidths(w)
+    if terminal.columns < 80 {
+        pageRows = terminal.rows - 10
+    } else {
+        pageRows = terminal.rows - 9
+    }
+    bodyPages = (bodyLines.count + pageRows - 1) / pageRows
+    if bodyPages < 1 { bodyPages = 1 }
+    if bodyPage > bodyPages { bodyPage = bodyPages }
+    if bodyPage < 1 { bodyPage = 1 }
+
+    sendTableTitle(message.subject, w)
+    cells.clear()
+    if terminal.columns < 80 {
+        cells.add("From: " + message.fromName)
+        sendLine(rowLine(cells, w))
+        cells.clear()
+        cells.add("Date: " + d)
+        sendLine(rowLine(cells, w))
+    } else {
+        cells.add(pad("From: " + message.fromName, w[0] - 23) + "Date: " + d)
+        sendLine(rowLine(cells, w))
+    }
+    sendRule(CenterLeft, Center, CenterRight, w)
+    i = (bodyPage - 1) * pageRows
+    last = i + pageRows
+    while i < bodyLines.count and i < last {
+        cells.clear()
+        cells.add(bodyLines[i])
+        sendLine(rowLine(cells, w))
+        i = i + 1
+    }
+    sendTableFooter("Message " + intStr(mailNum) + " - Page " + intStr(bodyPage) + " of " + intStr(bodyPages), w)
+}
+
+func drawMailViewMenu() {
+    sendLine("")
+    sendLine("+) Next Page (or Enter)")
+    sendLine("-) Previous Page")
+    sendLine(">) Next Message (or .)")
+    sendLine("<) Previous Message (or ,)")
+    sendLine("L) Redraw This Page")
+    sendLine("R) Reply")
+    sendLine("D) Delete Message")
+    sendLine("Q) Return to Inbox")
+    sendLine("")
+}
+
+func mailViewChoice(input: string) {
+    if input == "" or input == "+" {
+        if bodyPage < bodyPages {
+            bodyPage = bodyPage + 1
+            drawMessageView()
+        }
+        displayPrompt()
+        return
+    }
+    if input == "-" {
+        if bodyPage > 1 {
+            bodyPage = bodyPage - 1
+            drawMessageView()
+        }
+        displayPrompt()
+        return
+    }
+    if input == ">" or input == "." {
+        if mailNum < mailIds.count {
+            showMessage(mailNum + 1)
+        } else {
+            displayPrompt()
+        }
+        return
+    }
+    if input == "<" or input == "," {
+        if mailNum > 1 {
+            showMessage(mailNum - 1)
+        } else {
+            displayPrompt()
+        }
+        return
+    }
+    switch upperStr(input) {
+    case "?" {
+        displayMenu()
+        displayPrompt()
+    }
+    case "L" {
+        drawMessageView()
+        displayPrompt()
+    }
+    case "R" { startMailReply() }
+    case "D" {
+        user.screen = "delmailconfirm"
+        displayPrompt()
+    }
+    case "Q" { backToInbox() }
+    else { displayPrompt() }
+    }
+}
+
+// --- Delete ------------------------------------------------------------
+// The recipient deletes from the view (confirming over the drawn
+// message); body bytes stay orphaned in Mail.MSG (maildb design).
+// ponytail: no delete-by-number from the list; add if callers ask.
+
+func delMailConfirm(input: string) {
+    if upperStr(input) == "Y" {
+        if deleteMessage(message.id) {
+            sendLine("Message deleted.")
+        } else {
+            sendLine("Delete failed: " + lastError.message)
+        }
+        backToInbox()
+        return
+    }
+    sendLine("Cancelled.")
+    user.screen = "mailview"
+    displayPrompt()
+}
+
+// Placeholders completed in Task 4.
 func startNewMail() {
+    displayPrompt()
+}
+
+func startMailReply() {
     displayPrompt()
 }
