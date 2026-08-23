@@ -470,7 +470,12 @@ func drawEditUserCard() {
     sendDetailRow("ID",          intStr(editId), w)
     sendDetailRow("N) Username", editName, w)
     sendDetailRow("E) Email",    editEmail, w)
-    sendDetailRow("A) Access",   accessName(editAccess), w)
+    if editId == user.id {
+        // No demoting yourself -- the system must keep a sysop.
+        sendDetailRow("Access", accessName(editAccess), w)
+    } else {
+        sendDetailRow("A) Access", accessName(editAccess), w)
+    }
     sendDetailRow("P) Password", "(hidden)", w)
     sendDetailRow("Created",     dateTimeStr(editCreated), w)
     if editLastSeen != 0 {
@@ -484,6 +489,11 @@ func drawEditUserCard() {
 func editUserChoice(input: string) {
     switch upperStr(input) {
     case "N", "E", "A", "P" {
+        if upperStr(input) == "A" and editId == user.id {
+            sendLine("You cannot change your own access level.")
+            displayPrompt()
+            return
+        }
         editField = upperStr(input)[0]
         user.screen = "edituserval"
         displayPrompt()
