@@ -27,6 +27,10 @@ Early development. Working today:
 - Private mail: one recipient-indexed Mail database plus a body heap
   (`docs/mail.md`); inbox with unread markers, framed reader, reply,
   delete; `To:` must be a local user (netmail addressing later)
+- File areas (storage only so far): an Areas database plus per-area
+  file-entry databases with a filename index and long-description
+  heap; the files themselves live in an ordinary Finder folder per
+  area (`docs/files.md`). Browsing and transfers come next.
 - Sysop area: paged user/board lists, detail cards, lettered-field
   editors, deletion with confirmation, board creation, post deletion;
   safety rails so the system always keeps a sysop

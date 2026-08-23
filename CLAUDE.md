@@ -118,8 +118,8 @@ Full background: `docs/snow-hdd-howto.md`.
 
 Before an e2e test run against the emulator, delete all database files
 from the image (while Snow is stopped) so every run starts from the
-same baseline: `hdel` the vDB files — `Users.*`, `Boards.*`, `BRD*` —
-then reseed. The vDB format is identical on both lanes (big-endian),
+same baseline: `hdel` the vDB files — `Users.*`, `Boards.*`, `BRD*`,
+`Mail.*`, `Areas.*`, `ARE*` — then reseed. The vDB format is identical on both lanes (big-endian),
 so seed data can be built with a host-lane CLI program and `hcopy -r`'d
 onto the image (file type/creator don't matter; the app opens by name).
 
@@ -162,7 +162,15 @@ The received-byte path is:
   database (256-byte header records: from/to names, from/to user IDs
   with the recipient indexed, created, flags bit 0 = read) plus an
   append-only `Mail.MSG` body heap, same write ordering as posts
-  (`docs/mail.md`).
+  (`docs/mail.md`). `areasdb.cla` — the "Areas" database (256-byte
+  records: name/description/folder path/access byte, record ID =
+  area ID). `filesdb.cla` — one area's file entries at a time
+  (`filesOpen(areaId)`): header records in `ARE<nn>.*` (filename
+  indexed case-insensitively, uploader name, description, created,
+  size, downloads, flags: pending/offline) plus long descriptions in
+  an append-only `ARE<nn>.MSG` heap, same write ordering as posts;
+  the file itself lives at `<area folder>:<name>` (`filePath`) —
+  storage only so far, no UI or transfers (`docs/files.md`).
 - `user.cla` — `User` record (name, authenticated, passwordHash,
   screen, input mode, buffer, id, email, access, created, lastSeen)
   + global `user`; `hashPassword` (djb2,
@@ -259,8 +267,8 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
 - `editor.cla` — line editor for new posts, replies, and mail (/S /A
   /L /D /E /I /R)
 - `scanner.cla`, `user.cla`, `usersdb.cla`, `boardsdb.cla`,
-  `postsdb.cla`, `maildb.cla`, `terminal.cla`, `termio.cla`, `btree.cla`,
-  `vdb.cla` — modules above
+  `postsdb.cla`, `maildb.cla`, `areasdb.cla`, `filesdb.cla`,
+  `terminal.cla`, `termio.cla`, `btree.cla`, `vdb.cla` — modules above
 - `tests/` — host-lane test suites; `scripts/` — build/test/deploy
 - `bin/`, `vendor/` — pinned compiler + runtime/toolbox snapshot
 - `docs/` — language reference + Snow how-to (symlinks), language-gaps.md
