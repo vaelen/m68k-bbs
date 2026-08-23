@@ -182,9 +182,10 @@ same table senders and paging helpers.
     un-enterable by, non-sysop callers;
   - **pending files** (`fileFlagPending`) are hidden from non-sysop
     callers, and excluded from the page count.
-  The view shows the metadata card (Name title, then the short
-  Description, From / Date, and Size / Downloads) and the paged long
-  description below it. Sysops additionally get
+  The view shows the metadata card (Name title, From / Date,
+  Size / Downloads, then the short description word-wrapped to the
+  frame width as the last header line) and the paged long description
+  below it. Sysops additionally get
   `D`elete (a `dbDelete` of the header; the physical file and heap
   bytes stay behind, like post deletion). There is no download yet.
 

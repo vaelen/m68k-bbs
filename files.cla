@@ -317,20 +317,27 @@ func drawFileView() {
     var last: int = 0
     var d: string = dateTimeStr(fileRec.created)
     var meta: string = "Size: " + sizeStr(fileRec.size) + "  Downloads: " + intStr(fileRec.downloads)
-    var hasDesc: bool = fileRec.description.length > 0
+    var descHdr: list of string
+    var dt: text
     var metaRows: int = 0
 
     fileViewWidths(w)
+    // The short description is word-wrapped to the frame width and shown
+    // as the last header line(s) -- matters most in 40-column mode.
+    if fileRec.description.length > 0 {
+        dt.append(fileRec.description)
+        wrapText(dt, w[0], descHdr)
+    }
     // Frame from the top rule down is 9 fixed lines (blank, top rule,
     // title, joint, mid rule, footer joint, footer, bottom, prompt)
     // plus one per meta row: From, Date (or the two combined when wide),
-    // Size/Downloads, and the short description when it has one.
+    // Size/Downloads, and each wrapped description line.
     if terminal.columns < 80 {
         metaRows = 3
     } else {
         metaRows = 2
     }
-    if hasDesc { metaRows = metaRows + 1 }
+    metaRows = metaRows + descHdr.count
     pageRows = terminal.rows - 9 - metaRows
     descPages = (descLines.count + pageRows - 1) / pageRows
     if descPages < 1 { descPages = 1 }
@@ -338,11 +345,6 @@ func drawFileView() {
     if descPage < 1 { descPage = 1 }
 
     sendTableTitle(fileRec.name, w)
-    if hasDesc {
-        cells.clear()
-        cells.add("Desc: " + fileRec.description)
-        sendLine(rowLine(cells, w))
-    }
     cells.clear()
     if terminal.columns < 80 {
         cells.add("From: " + fileRec.uploader)
@@ -359,6 +361,13 @@ func drawFileView() {
         cells.clear()
         cells.add(meta)
         sendLine(rowLine(cells, w))
+    }
+    i = 0
+    while i < descHdr.count {
+        cells.clear()
+        cells.add(descHdr[i])
+        sendLine(rowLine(cells, w))
+        i = i + 1
     }
     sendRule(CenterLeft, Center, CenterRight, w)
     i = (descPage - 1) * pageRows
