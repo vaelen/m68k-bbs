@@ -1,0 +1,203 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// Private mail: one shared "Mail" vDB database of fixed-size header
+// records (indexed by recipient user ID) plus an append-only Mail.MSG
+// body heap -- the same header/heap split as a board's posts
+// (postsdb.cla). Layout and rationale: docs/mail.md.
+//
+// On-disk header record (256 bytes, vDB record ID = message ID):
+//   0    fromName, 64-byte Pascal field (a display name, not an ID)
+//   64   toName, 64-byte Pascal field
+//   128  subject, 64-byte Pascal field
+//   192  fromUserId (i32; 0 = not a local user)
+//   196  toUserId (i32, indexed; 0 = not a local user)
+//   200  created (i32, Mac-epoch seconds)
+//   204  body offset in Mail.MSG (i32)
+//   208  body length (i32; 0 = no body)
+//   212  flags (u16; bit 0 = read, bits 1-15 reserved)
+//   214+ reserved (intended for Fidonet addresses -- docs/mail.md)
+//
+// sendMail appends + flushes the body BEFORE the journaled header add,
+// so a crash can only orphan heap bytes, never point at missing text.
+// Deleted messages orphan their body bytes (no heap compactor).
+
+include "vdb.cla"
+
+const mailRecordSize: int = 256
+const mOffFrom: int = 0
+const mOffTo: int = 64
+const mOffSubject: int = 128
+const mOffFromId: int = 192
+const mOffToId: int = 196
+const mOffCreated: int = 200
+const mOffBodyOff: int = 204
+const mOffBodyLen: int = 208
+const mOffFlags: int = 212
+const mailFlagRead: int = 1
+
+record Message {
+    id: int
+    fromName: string(63)
+    toName: string(63)
+    subject: string(63)
+    fromUserId: int
+    toUserId: int
+    created: int
+    flags: int
+}
+
+var mailDb: Database
+var mailBody: filehandle
+var message: Message    // last loaded message header
+
+// Open the Mail database and heap, creating them (with the recipient
+// index) on first run.
+func mailOpen(): bool {
+    mailClose()
+    mailDb = dbOpen("Mail", "68BB")
+    if not dbIsOpen(mailDb) {
+        mailDb = dbCreate("Mail", mailRecordSize, "68BB")
+        if not dbIsOpen(mailDb) { return false }
+        if not dbAddIndex(mailDb, "ToUser", itID, mOffToId) {
+            mailClose()
+            return false
+        }
+    }
+    mailBody = file.open("Mail.MSG")
+    if mailBody == nil {
+        mailBody = file.create("Mail.MSG", "TEXT", "68BB")
+    }
+    if mailBody == nil {
+        mailClose()
+        return false
+    }
+    return true
+}
+
+func mailClose() {
+    var b: filehandle = mailBody
+    if dbIsOpen(mailDb) { dbClose(mailDb) }
+    mailDb = new Database
+    if b != nil { b.close() }
+    mailBody = nil
+}
+
+func mailCount(): int {
+    return dbRecordCount(mailDb)
+}
+
+func mailNextId(): int {
+    return dbNextRecordId(mailDb)
+}
+
+func packMessage(fromName: string, fromUserId: int, toName: string, toUserId: int, subject: string, bodyOff: int, bodyLen: int): text {
+    var t: text
+    var f: string = fromName
+    var tn: string = toName
+    var sub: string = subject
+    if f.length > 63 { f = f[0, 63] }
+    if tn.length > 63 { tn = tn[0, 63] }
+    if sub.length > 63 { sub = sub[0, 63] }
+    t.append(char(f.length))
+    t.append(f)
+    while t.length < mOffTo {
+        t.append(char(0))
+    }
+    t.append(char(tn.length))
+    t.append(tn)
+    while t.length < mOffSubject {
+        t.append(char(0))
+    }
+    t.append(char(sub.length))
+    t.append(sub)
+    while t.length < mOffFromId {
+        t.append(char(0))
+    }
+    btAppendInt(t, fromUserId)
+    btAppendInt(t, toUserId)
+    btAppendInt(t, now())
+    btAppendInt(t, bodyOff)
+    btAppendInt(t, bodyLen)
+    btAppendWord(t, 0)      // flags: unread
+    return t
+}
+
+// Store a message; returns the new message ID, or -1.
+func sendMail(fromName: string, fromUserId: int, toName: string, toUserId: int, subject: string, body: text): int {
+    var b: filehandle = mailBody
+    var off: int
+    if not dbIsOpen(mailDb) or b == nil { return -1 }
+    off = b.size()
+    if off < 0 { return -1 }
+    if body.length > 0 {
+        // body first, then the journaled header (see file comment)
+        if not b.append(body) { return -1 }
+        if not b.flush() { return -1 }
+    }
+    return dbAdd(mailDb, packMessage(fromName, fromUserId, toName, toUserId, subject, off, body.length))
+}
+
+// Load message `id`'s header into the global `message`.
+func loadMessage(id: int): bool {
+    var rec: text = dbFind(mailDb, id)
+    if rec.length != mailRecordSize { return false }
+    message.id = id
+    message.fromName = dbExtractString(rec, mOffFrom)
+    message.toName = dbExtractString(rec, mOffTo)
+    message.subject = dbExtractString(rec, mOffSubject)
+    message.fromUserId = rec.intAt(mOffFromId)
+    message.toUserId = rec.intAt(mOffToId)
+    message.created = rec.intAt(mOffCreated)
+    message.flags = rec.wordAt(mOffFlags)
+    return true
+}
+
+// Fetch message `id`'s body from the heap; empty if none (or if the
+// message doesn't exist).
+func messageBody(id: int): text {
+    var none: text
+    var out: text
+    var rec: text = dbFind(mailDb, id)
+    var b: filehandle = mailBody
+    if rec.length != mailRecordSize or b == nil { return none }
+    if rec.intAt(mOffBodyLen) == 0 { return none }
+    if not b.readAt(rec.intAt(mOffBodyOff), rec.intAt(mOffBodyLen), out) { return none }
+    if out.length != rec.intAt(mOffBodyLen) { return none }
+    return out
+}
+
+// All message IDs addressed to `userId`, oldest first.
+func inboxIds(userId: int, ids: list of int) {
+    dbFindAllByInt(mailDb, "ToUser", userId, ids)
+}
+
+// Set the read flag (idempotent).
+func markRead(id: int): bool {
+    var rec: text = dbFind(mailDb, id)
+    if rec.length != mailRecordSize { return false }
+    if (rec.wordAt(mOffFlags) & mailFlagRead) != 0 { return true }
+    rec.setWordAt(mOffFlags, rec.wordAt(mOffFlags) | mailFlagRead)
+    return dbUpdate(mailDb, id, rec)
+}
+
+func deleteMessage(id: int): bool {
+    return dbDelete(mailDb, id)
+}
+
+// Unread messages addressed to `userId`.
+func unreadCount(userId: int): int {
+    var ids: list of int
+    var rec: text
+    var n: int = 0
+    var i: int = 0
+    inboxIds(userId, ids)
+    while i < ids.count {
+        rec = dbFind(mailDb, ids[i])
+        if rec.length == mailRecordSize and (rec.wordAt(mOffFlags) & mailFlagRead) == 0 {
+            n = n + 1
+        }
+        i = i + 1
+    }
+    return n
+}

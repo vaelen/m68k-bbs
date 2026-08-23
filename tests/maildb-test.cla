@@ -1,0 +1,110 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for the private mail module (maildb.cla): header
+// records in the Mail vDB database, bodies in the Mail.MSG heap.
+// Run by scripts/test.sh from a scratch directory.
+// Exits 0 on pass, 1 on the first failure.
+
+include "../maildb.cla"
+
+var failures: int = 0
+var ids: list of int
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+func heapSize(): int {
+    var b: filehandle = mailBody
+    return b.size()
+}
+
+on App.startCLI(args: list of string) {
+    var id1: int
+    var id2: int
+    var id3: int
+    var r: text
+    var body1: text
+    var body2: text
+    var none: text
+
+    body1 = "Hi Alice, lunch tomorrow?"
+    body2 = "Hi Bob, sure -- noon at the usual place."
+
+    expect(mailOpen(), "mail db created")
+    expect(mailCount() == 0, "no mail yet")
+    expect(heapSize() == 0, "body heap starts empty")
+
+    // bob (#2) -> alice (#1); alice -> bob; bob -> alice, no body
+    id1 = sendMail("bob", 2, "alice", 1, "Lunch?", body1)
+    expect(id1 == 1, "first message sent")
+    id2 = sendMail("alice", 1, "bob", 2, "Re: Lunch?", body2)
+    expect(id2 == 2, "reply sent")
+    id3 = sendMail("bob", 2, "alice", 1, "Empty", none)
+    expect(id3 == 3, "bodyless message sent")
+    expect(heapSize() == body1.length + body2.length, "bodies packed exactly; empty body wrote nothing")
+
+    expect(loadMessage(id1), "load first header")
+    expect(message.fromName == "bob", "fromName roundtrip")
+    expect(message.toName == "alice", "toName roundtrip")
+    expect(message.subject == "Lunch?", "subject roundtrip")
+    expect(message.fromUserId == 2 and message.toUserId == 1, "user IDs roundtrip")
+    expect(message.created != 0, "created timestamp set")
+    expect(message.flags == 0, "new message is unread")
+    r = messageBody(id1)
+    expect(r == body1, "first body roundtrip")
+    r = messageBody(id2)
+    expect(r == body2, "second body read from its heap offset")
+    expect(messageBody(id3).length == 0, "no body comes back empty")
+    expect(messageBody(99).length == 0, "missing message has no body")
+    expect(not loadMessage(99), "missing message does not load")
+
+    // inboxes are separate and in sending order
+    inboxIds(1, ids)
+    expect(ids.count == 2 and ids[0] == id1 and ids[1] == id3, "alice's inbox: 1 then 3")
+    inboxIds(2, ids)
+    expect(ids.count == 1 and ids[0] == id2, "bob's inbox: 2")
+    inboxIds(3, ids)
+    expect(ids.count == 0, "unknown user has an empty inbox")
+
+    // read flag
+    expect(unreadCount(1) == 2, "alice has two unread")
+    expect(markRead(id1), "mark first read")
+    expect(loadMessage(id1) and (message.flags & mailFlagRead) != 0, "read flag set")
+    expect(unreadCount(1) == 1, "alice has one unread")
+    expect(markRead(id1), "marking read twice is fine")
+    expect(unreadCount(1) == 1, "still one unread")
+    expect(not markRead(99), "marking a missing message fails")
+
+    // delete
+    expect(deleteMessage(id1), "delete first message")
+    expect(not loadMessage(id1), "deleted message gone")
+    inboxIds(1, ids)
+    expect(ids.count == 1 and ids[0] == id3, "inbox index updated on delete")
+    expect(heapSize() == body1.length + body2.length, "delete leaves heap bytes orphaned")
+    expect(not deleteMessage(id1), "deleting twice fails")
+
+    // persistence
+    mailClose()
+    expect(mailOpen(), "mail db reopens")
+    expect(mailCount() == 2, "count survives reopen")
+    expect(mailNextId() == 4, "next ID survives reopen")
+    r = messageBody(id2)
+    expect(r == body2, "heap offsets still valid after reopen")
+    inboxIds(2, ids)
+    expect(ids.count == 1, "recipient index survives reopen")
+    mailClose()
+
+    if failures > 0 {
+        log("maildb-test: FAILED")
+        quit 1
+    }
+    log("maildb-test: all passed")
+    quit
+}
