@@ -154,7 +154,11 @@ The received-byte path is:
   created/threadId/subject, thread ID indexed; 0 = thread starter,
   else the starter's post ID) plus exact-fit bodies in an append-only
   `BRD<nn>.MSG` heap, written and flushed before the journaled header
-  add so a crash only orphans heap bytes.
+  add so a crash only orphans heap bytes. `maildb.cla` — the "Mail"
+  database (256-byte header records: from/to names, from/to user IDs
+  with the recipient indexed, created, flags bit 0 = read) plus an
+  append-only `Mail.MSG` body heap, same write ordering as posts
+  (`docs/mail.md`).
 - `user.cla` — `User` record (name, authenticated, passwordHash,
   screen, input mode, buffer, id, email, access, created, lastSeen)
   + global `user`; `hashPassword` (djb2,
@@ -203,8 +207,15 @@ The received-byte path is:
   `L` redraw, `>`/`.` and `<`/`,` next/previous post, `R` reply,
   `N` new post, sysop-only `D` delete (confirms over the drawn
   post), `Q` up one level.
-- `editor.cla` — WWIV-style line editor for new posts and replies:
-  numbered line prompts; `/S` save, `/A` abort, `/L` list, `/D n`,
+- `mail.cla` — private mail UI: main-menu `M` → paged inbox (`*`
+  marks unread, newest first) → framed message view (viewing marks
+  read; `R` reply, `D` delete with Y/N confirm, `>`/`<` between
+  messages) → compose via `editor.cla` with `editTarget = 'M'`:
+  `To:` must resolve to a local user (`findUserId`), empty `To:`
+  cancels.
+- `editor.cla` — WWIV-style line editor for new posts, replies, and
+  private mail (`editTarget` picks the save target): numbered line
+  prompts; `/S` save, `/A` abort, `/L` list, `/D n`,
   `/E n`, `/I n`, `/R n` (Original/Replacement text swap), `/?`.
   Replies default the subject to `Re: <orig>` and thread to the
   starter's ID. Lines are stored as typed (≤255 bytes, no column
@@ -237,10 +248,11 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
   cards, lettered field editors, delete confirmations
 - `boards.cla` — caller-facing bulletin board reader: board picker,
   paged post list, framed post view
-- `editor.cla` — line editor for new posts and replies (/S /A /L /D
-  /E /I)
+- `mail.cla` — private mail: inbox, message view, compose/reply
+- `editor.cla` — line editor for new posts, replies, and mail (/S /A
+  /L /D /E /I /R)
 - `scanner.cla`, `user.cla`, `usersdb.cla`, `boardsdb.cla`,
-  `postsdb.cla`, `terminal.cla`, `termio.cla`, `btree.cla`,
+  `postsdb.cla`, `maildb.cla`, `terminal.cla`, `termio.cla`, `btree.cla`,
   `vdb.cla` — modules above
 - `tests/` — host-lane test suites; `scripts/` — build/test/deploy
 - `bin/`, `vendor/` — pinned compiler + runtime/toolbox snapshot

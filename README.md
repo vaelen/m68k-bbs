@@ -24,6 +24,9 @@ Early development. Working today:
   (`/S /A /L /D /E /I /R` commands); flat threading in the message
   base, per-board header databases plus an append-only body heap
   (`docs/boards.md`)
+- Private mail: one recipient-indexed Mail database plus a body heap
+  (`docs/mail.md`); inbox with unread markers, framed reader, reply,
+  delete; `To:` must be a local user (netmail addressing later)
 - Sysop area: paged user/board lists, detail cards, lettered-field
   editors, deletion with confirmation, board creation, post deletion;
   safety rails so the system always keeps a sysop

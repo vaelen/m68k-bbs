@@ -7,8 +7,8 @@ Pre-v1: no backward compatibility is promised — data structures may
 change freely, always starting from a clean database.
 
 The UI over this storage (main-menu `M - Mail`: inbox list, message
-view, composer reusing `editor.cla`) is described in CLAUDE.md's
-architecture notes once it exists.
+view, composer reusing `editor.cla`) lives in `mail.cla`; see
+CLAUDE.md's architecture notes.
 
 ## Shape
 
