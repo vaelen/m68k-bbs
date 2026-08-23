@@ -47,6 +47,9 @@ var isConnected: bool = false
 // Login/signup state between prompts (reset on connect).
 var pendingId: int = 0      // account found at the login prompt
 var pendingHash: int = 0    // first password entered during signup
+var returning: bool = false // logged into an existing account: show the welcome-back banner
+var previousSeen: int = 0   // that account's lastSeen before this login (Mac seconds can be
+                            // negative as an int past 2^31, so no sentinel value -- hence the bool)
 
 
 // Collect connected-caller input, one char at a time. Called by
@@ -346,14 +349,8 @@ func loginPassword(input: string) {
 func loginOk() {
     user.authenticated = true
     log("User logged in: " + user.name + " (#" + intStr(user.id) + ")")
-    sendLine("")
-    sendLine("Welcome back, " + user.name + "!")
-    if user.lastSeen != 0 {
-        sendLine("Last on: " + dateTimeStr(user.lastSeen))
-    }
-    if unreadCount(user.id) > 0 {
-        sendLine("You have " + intStr(unreadCount(user.id)) + " new message(s).")
-    }
+    returning = true
+    previousSeen = user.lastSeen
     user.lastSeen = now()
     saveUser()
     gotoScreen("terminal")
@@ -447,6 +444,18 @@ func applyTerminal(t: TerminalType, cols: int, colorOn: bool) {
     msg = "User: " + user.name + ", Terminal: " + termTypeName(t)
     msg = msg + " " + intStr(terminal.columns) + "x" + intStr(terminal.rows)
     log(msg)
+    if returning {
+        // welcome-back banner, shown once, after the terminal is known
+        sendLine("")
+        sendLine("Welcome back, " + user.name + "!")
+        if previousSeen != 0 {
+            sendLine("Last on: " + dateTimeStr(previousSeen))
+        }
+        if unreadCount(user.id) > 0 {
+            sendLine("You have " + intStr(unreadCount(user.id)) + " new message(s).")
+        }
+        returning = false
+    }
     gotoScreen("main")
 }
 
@@ -522,6 +531,7 @@ func connected() {
     hangupPhase = 0
     pendingId = 0
     pendingHash = 0
+    returning = false
     log("Caller connected.")
     sendLine("Welcome to 68kBBS!")
     sendLine("Type NEW at the login prompt to create an account.")
