@@ -7,9 +7,10 @@ for the message-board databases this mirrors). Pre-v1: no backward
 compatibility is promised — data structures may change freely, always
 starting from a clean database.
 
-This is the storage layer only. The caller-facing area browser, sysop
-area management, and upload/download transfers are later steps that
-use exactly the API below.
+The sysop area management (`sysop.cla`) and the caller-facing browser
+(`files.cla`) are built on top of the API below; upload/download
+transfers are a later step. This document covers the storage layer;
+the two UIs are summarized under "The UIs" at the end.
 
 ## Shape
 
@@ -160,6 +161,31 @@ area, creating the database, name index, and heap on first use.
 - Folder path ≤ 63 chars; names, uploaders, descriptions ≤ 63 chars.
 - Long descriptions: no format cap (i32 offset/length); the line
   editor sets the practical limit.
+
+## The UIs
+
+Both mirror the message-board screens (`docs/boards.md`), reusing the
+same table senders and paging helpers.
+
+- **Sysop** (`sysop.cla`, Sysop menu `F`): a paged area list, a detail
+  card, a lettered-field edit card buffered in the global `area`
+  (`N`ame / `D`escription / `F`older / `A`ccess; `S` saves via
+  `saveArea`, `Q` discards; in edit, `-` clears the folder back to the
+  app directory), a Y/N delete over the detail card, and a New Area
+  wizard (name → description → folder → access, empty name cancels).
+  Deleting an area leaves its `ARE<nn>` files and folder behind.
+
+- **Caller** (`files.cla`, main menu `F`): area picker → paged file
+  list → framed file view. Two visibility rules enforced here (the
+  storage layer stores everything; the reader filters):
+  - **sysop-only areas** (`access == 'S'`) are hidden from, and
+    un-enterable by, non-sysop callers;
+  - **pending files** (`fileFlagPending`) are hidden from non-sysop
+    callers, and excluded from the page count.
+  The view shows the metadata card (Name / From / Date / Size /
+  Downloads) and the paged long description. Sysops additionally get
+  `D`elete (a `dbDelete` of the header; the physical file and heap
+  bytes stay behind, like post deletion). There is no download yet.
 
 ## Later steps (what this layout already supports)
 

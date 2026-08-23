@@ -1,0 +1,481 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// File-area reader: the caller-facing area picker, file list, and file
+// view. Included by bbs.cla, which owns the screen dispatch; sysop.cla
+// owns the admin screens for the same data (areasdb.cla/filesdb.cla).
+//
+// Read-only for now: there is no download yet (transfers are a later
+// step), so a caller browses metadata and long descriptions. Sysops
+// get D)elete, like the board reader.
+
+// The numbered file list: number N at the prompt = fileNumIds[N-1].
+// File IDs stay hidden from callers. Numbering restarts at 1 on every
+// page; filePage/filePages track where we are (page 1 = newest).
+var fileNumIds: list of int
+var filePage: int = 1
+var filePages: int = 1
+
+// A file record is visible to the current caller unless it is pending
+// approval and the caller is not a sysop.
+func fileVisible(rec: text): bool {
+    if user.access == accessSysop { return true }
+    return (rec.intAt(fOffFlags) & fileFlagPending) == 0
+}
+
+// An area is visible to the current caller unless it is sysop-only and
+// the caller is not a sysop.
+func areaVisible(rec: text): bool {
+    if user.access == accessSysop { return true }
+    return rec[aOffAccess] != accessSysop
+}
+
+// A byte count as a short string: bytes under 1K, else whole K.
+func sizeStr(n: int): string {
+    if n < 1024 { return intStr(n) }
+    return intStr(n / 1024) + "K"
+}
+
+// --- Area picker -------------------------------------------------------
+
+// Content widths: narrow (<80 columns) is ID/Name (total 40), wide is
+// ID/Name/Description (total 80).
+func areaPickerWidths(w: list of int) {
+    w.clear()
+    w.add(4)
+    if terminal.columns < 80 {
+        w.add(29)
+        return
+    }
+    w.add(30)
+    w.add(36)
+}
+
+// ponytail: the picker shows every visible area unpaged; page it if a
+// system ever has more areas than screen rows.
+func drawAreaPicker() {
+    var w: list of int
+    var cells: list of string
+    var nextId: int = dbNextRecordId(areasDb)
+    var id: int = 1
+    var rec: text
+
+    areaPickerWidths(w)
+    cells.add("ID")
+    cells.add("Name")
+    if terminal.columns >= 80 {
+        cells.add("Description")
+    }
+    sendTableHeader("File Areas", cells, w)
+    while id < nextId {
+        rec = dbFind(areasDb, id)
+        if rec.length == areaRecordSize and areaVisible(rec) {
+            cells.clear()
+            cells.add(intStr(id))
+            cells.add(dbExtractString(rec, aOffName))
+            if terminal.columns >= 80 {
+                cells.add(dbExtractString(rec, aOffDescription))
+            }
+            sendLine(rowLine(cells, w))
+        }
+        id = id + 1
+    }
+    sendRule(BottomLeft, BottomCenter, BottomRight, w)
+}
+
+// Empty input or Q returns to the main menu; an area ID enters it.
+func areaPickerInput(input: string) {
+    var rec: text
+    var id: int
+    if input == "" or upperStr(input) == "Q" {
+        gotoScreen("main")
+        return
+    }
+    id = parseIntStr(input)
+    if id >= 1 { rec = dbFind(areasDb, id) }
+    if rec.length != areaRecordSize or not areaVisible(rec) {
+        sendLine("No such area.")
+        displayPrompt()
+        return
+    }
+    if not loadArea(id) {
+        sendLine("No such area.")
+        displayPrompt()
+        return
+    }
+    enterArea()
+}
+
+func enterArea() {
+    if not filesOpen(area.id) {
+        sendLine("Area unavailable: " + lastError.message)
+        displayPrompt()
+        return
+    }
+    user.screen = "files"
+    filePage = 1
+    drawFileList()
+    displayPrompt()
+}
+
+// --- File list ---------------------------------------------------------
+
+// Files visible to the current caller (pending hidden from non-sysops).
+func visibleFileCount(): int {
+    var n: int = 0
+    var id: int = 1
+    var nextId: int = filesNextId()
+    var rec: text
+    while id < nextId {
+        rec = dbFind(filesDb, id)
+        if rec.length == fileRecordSize and fileVisible(rec) {
+            n = n + 1
+        }
+        id = id + 1
+    }
+    return n
+}
+
+// Content widths: narrow (<80 columns) is #/Name (total 40), wide adds
+// Size and Description (total 80).
+func fileListWidths(w: list of int) {
+    w.clear()
+    w.add(3)
+    if terminal.columns < 80 {
+        w.add(30)
+        return
+    }
+    w.add(28)
+    w.add(8)
+    w.add(28)
+}
+
+// One page of files, newest (highest file ID) first, numbered from 1
+// on every page. Frame is 8 lines from the top rule down (top, title,
+// joint, header, joint, footer, bottom, prompt).
+func drawFileList() {
+    var w: list of int
+    var cells: list of string
+    var id: int = filesNextId() - 1
+    var pageRows: int = terminal.rows - 8
+    var skip: int = 0
+    var rec: text
+
+    filePages = (visibleFileCount() + pageRows - 1) / pageRows
+    if filePages < 1 { filePages = 1 }
+    if filePage > filePages { filePage = filePages }
+    if filePage < 1 { filePage = 1 }
+    skip = (filePage - 1) * pageRows
+
+    fileNumIds.clear()
+    fileListWidths(w)
+    cells.add("#")
+    cells.add("Name")
+    if terminal.columns >= 80 {
+        cells.add("Size")
+        cells.add("Description")
+    }
+    sendTableHeader(area.name, cells, w)
+    while id >= 1 and fileNumIds.count < pageRows {
+        rec = dbFind(filesDb, id)
+        if rec.length == fileRecordSize and fileVisible(rec) {
+            if skip > 0 {
+                skip = skip - 1
+            } else {
+                fileNumIds.add(id)
+                cells.clear()
+                cells.add(intStr(fileNumIds.count))
+                cells.add(dbExtractString(rec, fOffName))
+                if terminal.columns >= 80 {
+                    cells.add(sizeStr(rec.intAt(fOffSize)))
+                    cells.add(dbExtractString(rec, fOffDescription))
+                }
+                sendLine(rowLine(cells, w))
+            }
+        }
+        id = id - 1
+    }
+    sendTableFooter("Page " + intStr(filePage) + " of " + intStr(filePages), w)
+    if fileNumIds.count == 0 {
+        sendLine("No files yet.")
+    }
+}
+
+func drawFilesMenu() {
+    sendLine("")
+    sendLine("#) Show File Number #")
+    sendLine("+) Next Page (or Enter)")
+    sendLine("-) Previous Page")
+    sendLine("L) List Files")
+    if user.access == accessSysop {
+        sendLine("D) Delete File")
+    }
+    sendLine("Q) Return to Area List")
+    sendLine("")
+}
+
+func filesPrompt() {
+    modem.send(area.name + "> ")
+}
+
+// Enter and + page forward, - pages back; at either end they just
+// re-prompt.
+func filesChoice(input: string) {
+    var n: int = parseIntStr(input)
+    if n >= 1 and n <= fileNumIds.count {
+        showFile(n)
+        return
+    }
+    if input == "" or input == "+" {
+        if filePage < filePages {
+            filePage = filePage + 1
+            drawFileList()
+        }
+        displayPrompt()
+        return
+    }
+    if input == "-" {
+        if filePage > 1 {
+            filePage = filePage - 1
+            drawFileList()
+        }
+        displayPrompt()
+        return
+    }
+    switch upperStr(input) {
+    case "?" {
+        displayMenu()
+        displayPrompt()
+    }
+    case "L" {
+        drawFileList()
+        displayPrompt()
+    }
+    case "D" {
+        if user.access == accessSysop {
+            delFileFromView = false
+            user.screen = "delfilenum"
+        }
+        displayPrompt()
+    }
+    case "Q" {
+        filesClose()
+        gotoScreen("areas")
+    }
+    else { displayPrompt() }
+    }
+}
+
+// --- File view ---------------------------------------------------------
+// A metadata card (Name/From/Date/Size/Downloads) followed by the long
+// description wrapped inside the border and paged, "File N - Page X of
+// Y" footer. No download yet.
+
+var fileNum: int = 0            // display number in the current list page
+var descLines: list of string
+var descPage: int = 1
+var descPages: int = 1
+
+// Single-span content width for the file frame.
+func fileViewWidths(w: list of int) {
+    w.clear()
+    if terminal.columns < 80 {
+        w.add(36)
+        return
+    }
+    w.add(76)
+}
+
+func showFile(n: int) {
+    if not loadFileView(n) { return }
+    user.screen = "fileview"
+    displayPrompt()
+}
+
+// Load and draw file number n (shared by viewing and the sysop
+// delete-from-list flow, which confirms over the drawn file).
+func loadFileView(n: int): bool {
+    var w: list of int
+    fileViewWidths(w)
+    if not loadFile(fileNumIds[n - 1]) {
+        sendLine("File unavailable.")
+        displayPrompt()
+        return false
+    }
+    fileNum = n
+    wrapText(fileLongDesc(fileRec.id), w[0], descLines)
+    descPage = 1
+    drawFileView()
+    return true
+}
+
+func drawFileView() {
+    var w: list of int
+    var cells: list of string
+    var pageRows: int = 0
+    var i: int = 0
+    var last: int = 0
+    var d: string = dateTimeStr(fileRec.created)
+    var meta: string = "Size: " + sizeStr(fileRec.size) + "  Downloads: " + intStr(fileRec.downloads)
+
+    fileViewWidths(w)
+    // Frame from the top rule down: meta rows vary by width.
+    if terminal.columns < 80 {
+        pageRows = terminal.rows - 12
+    } else {
+        pageRows = terminal.rows - 10
+    }
+    descPages = (descLines.count + pageRows - 1) / pageRows
+    if descPages < 1 { descPages = 1 }
+    if descPage > descPages { descPage = descPages }
+    if descPage < 1 { descPage = 1 }
+
+    sendTableTitle(fileRec.name, w)
+    cells.clear()
+    if terminal.columns < 80 {
+        cells.add("From: " + fileRec.uploader)
+        sendLine(rowLine(cells, w))
+        cells.clear()
+        cells.add("Date: " + d)
+        sendLine(rowLine(cells, w))
+        cells.clear()
+        cells.add(meta)
+        sendLine(rowLine(cells, w))
+    } else {
+        cells.add(pad("From: " + fileRec.uploader, w[0] - 23) + "Date: " + d)
+        sendLine(rowLine(cells, w))
+        cells.clear()
+        cells.add(meta)
+        sendLine(rowLine(cells, w))
+    }
+    sendRule(CenterLeft, Center, CenterRight, w)
+    i = (descPage - 1) * pageRows
+    last = i + pageRows
+    while i < descLines.count and i < last {
+        cells.clear()
+        cells.add(descLines[i])
+        sendLine(rowLine(cells, w))
+        i = i + 1
+    }
+    sendTableFooter("File " + intStr(fileNum) + " - Page " + intStr(descPage) + " of " + intStr(descPages), w)
+}
+
+func drawFileViewMenu() {
+    sendLine("")
+    sendLine("+) Next Page (or Enter)")
+    sendLine("-) Previous Page")
+    sendLine(">) Next File (or .)")
+    sendLine("<) Previous File (or ,)")
+    sendLine("L) Redraw This Page")
+    if user.access == accessSysop {
+        sendLine("D) Delete File")
+    }
+    sendLine("Q) Return to File List")
+    sendLine("")
+}
+
+// +/Enter/- page within the description; >/. and </, move between
+// files in list order; all quietly re-prompt at their ends.
+func fileViewChoice(input: string) {
+    if input == "" or input == "+" {
+        if descPage < descPages {
+            descPage = descPage + 1
+            drawFileView()
+        }
+        displayPrompt()
+        return
+    }
+    if input == "-" {
+        if descPage > 1 {
+            descPage = descPage - 1
+            drawFileView()
+        }
+        displayPrompt()
+        return
+    }
+    if input == ">" or input == "." {
+        if fileNum < fileNumIds.count {
+            showFile(fileNum + 1)
+        } else {
+            displayPrompt()
+        }
+        return
+    }
+    if input == "<" or input == "," {
+        if fileNum > 1 {
+            showFile(fileNum - 1)
+        } else {
+            displayPrompt()
+        }
+        return
+    }
+    switch upperStr(input) {
+    case "?" {
+        displayMenu()
+        displayPrompt()
+    }
+    case "L" {
+        drawFileView()
+        displayPrompt()
+    }
+    case "D" {
+        if user.access == accessSysop {
+            delFileFromView = true
+            user.screen = "delfileconfirm"
+        }
+        displayPrompt()
+    }
+    case "Q" {
+        user.screen = "files"
+        drawFileList()
+        displayPrompt()
+    }
+    else { displayPrompt() }
+    }
+}
+
+// --- File deletion (sysop only) ----------------------------------------
+// From the list: D, then a file number -- the file is drawn and
+// confirmed over. From the view: D confirms the file on screen. The
+// physical file and its heap bytes stay behind (filesdb design).
+
+var delFileFromView: bool = false
+
+func delFileNumInput(input: string) {
+    var n: int = parseIntStr(input)
+    if input == "" {
+        user.screen = "files"
+        displayPrompt()
+        return
+    }
+    if n < 1 or n > fileNumIds.count {
+        sendLine("No such file.")
+        displayPrompt()
+        return
+    }
+    if not loadFileView(n) { return }
+    user.screen = "delfileconfirm"
+    displayPrompt()
+}
+
+func delFileConfirm(input: string) {
+    if upperStr(input) == "Y" {
+        if dbDelete(filesDb, fileRec.id) {
+            sendLine("File deleted.")
+        } else {
+            sendLine("Delete failed: " + lastError.message)
+        }
+        user.screen = "files"
+        drawFileList()
+        displayPrompt()
+        return
+    }
+    sendLine("Cancelled.")
+    if delFileFromView {
+        user.screen = "fileview"
+    } else {
+        user.screen = "files"
+        drawFileList()
+    }
+    displayPrompt()
+}

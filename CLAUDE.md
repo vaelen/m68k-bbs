@@ -224,6 +224,15 @@ The received-byte path is:
   `L` redraw, `>`/`.` and `<`/`,` next/previous post, `R` reply,
   `N` new post, sysop-only `D` delete (confirms over the drawn
   post), `Q` up one level.
+- `files.cla` — the caller-facing file-area reader: main-menu `F` →
+  area picker (unpaged, sysop-only areas hidden) → paged file list
+  (newest first, `pending` files hidden from non-sysops, `# | Name`
+  narrow / `+ Size + Description` wide) → framed file view
+  (Name title bar, From/Date/Size/Downloads meta, long description
+  wrapped by `wrapText` and paged). Keys mirror the board reader:
+  `+`/Enter next page, `-` previous, `L` redraw, `>`/`.` and `<`/`,`
+  next/previous file, sysop-only `D` delete, `Q` up one level. No
+  download yet (transfers are a later step); read-only browsing.
 - `mail.cla` — private mail UI: main-menu `M` → paged inbox (`*`
   marks unread, newest first) → framed message view (viewing marks
   read; `R` reply, `D` delete with Y/N confirm, `>`/`<` between
@@ -265,6 +274,8 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
   detail cards, lettered field editors, delete confirmations
 - `boards.cla` — caller-facing bulletin board reader: board picker,
   paged post list, framed post view
+- `files.cla` — caller-facing file-area reader: area picker, paged
+  file list, framed file view (browse-only; no transfers yet)
 - `mail.cla` — private mail: inbox, message view, compose/reply
 - `editor.cla` — line editor for new posts, replies, and mail (/S /A
   /L /D /E /I /R)
