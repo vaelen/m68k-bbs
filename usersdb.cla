@@ -16,8 +16,9 @@
 include "vdb.cla"
 
 const userRecordSize: int = 160
-const accessUser: char = 'U'
-const accessSysop: char = 'S'
+
+// accessUser / accessSysop live in user.cla, next to the `access`
+// field they describe.
 
 const uOffName: int = 0
 const uOffHash: int = 64

@@ -21,6 +21,14 @@ record User {
 
 var user: User
 
+// Access levels for the `access` field above (a plain char so richer
+// levels can slot in later). Also reused by the file-area access byte
+// (areasdb.cla): accessAll = visible to everyone, accessSysop = staff
+// only.
+const accessAll:   char = '\x00'
+const accessUser:  char = 'U'
+const accessSysop: char = 'S'
+
 // djb2 hash of a password, masked positive -- the same per-byte step
 // the runtime's text.hashStep uses.
 // ponytail: not cryptographic; fine for a hobby BBS on a 68k. If real

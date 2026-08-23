@@ -1039,7 +1039,7 @@ func editAreaValue(input: string) {
         }
         case 'A' {
             switch upperStr(input) {
-            case "A" { area.access = char(0) }
+            case "A" { area.access = accessAll }
             case "S" { area.access = accessSysop }
             else {
                 sendLine("A or S.")
@@ -1101,7 +1101,7 @@ func startNewArea() {
     area.name = ""
     area.description = ""
     area.folder = ""
-    area.access = char(0)
+    area.access = accessAll
     user.screen = "newareaname"
     displayPrompt()
 }
@@ -1147,7 +1147,7 @@ func newAreaFolder(input: string) {
 func newAreaAccess(input: string) {
     var id: int = 0
     switch upperStr(input) {
-    case "", "A" { area.access = char(0) }
+    case "", "A" { area.access = accessAll }
     case "S"     { area.access = accessSysop }
     else {
         sendLine("A or S.")
