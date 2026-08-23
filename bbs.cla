@@ -217,6 +217,8 @@ func displayPrompt() {
     case "posts", "postview" { postsPrompt() }
     case "editsubject" { editSubjectPrompt() }
     case "editbody"    { editBodyPrompt() }
+    case "delpostnum"     { modem.send("Delete post #: ") }
+    case "delpostconfirm" { modem.send("Delete this post? (Y/N): ") }
     }
 }
 
@@ -281,6 +283,8 @@ func processInput(input: string) {
     case "postview" { postViewChoice(input) }
     case "editsubject" { editSubjectInput(input) }
     case "editbody"    { editBodyInput(input) }
+    case "delpostnum"     { delPostNumInput(input) }
+    case "delpostconfirm" { delPostConfirm(input) }
     case "logoff"   { }   // ignore trailing input (e.g. the modem's OK)
     }
 }

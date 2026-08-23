@@ -150,6 +150,9 @@ func drawPostsMenu() {
     sendLine("-) Previous Page")
     sendLine("L) List Posts")
     sendLine("N) New Post")
+    if user.access == accessSysop {
+        sendLine("D) Delete Post")
+    }
     sendLine("Q) Return to Board List")
     sendLine("")
 }
@@ -192,6 +195,13 @@ func postsChoice(input: string) {
         displayPrompt()
     }
     case "N" { startNewPost() }
+    case "D" {
+        if user.access == accessSysop {
+            delFromView = false
+            user.screen = "delpostnum"
+        }
+        displayPrompt()
+    }
     case "Q" {
         postsClose()
         gotoScreen("boards")
@@ -220,19 +230,26 @@ func postViewWidths(w: list of int) {
 }
 
 func showPost(n: int) {
+    if not loadPostView(n) { return }
+    user.screen = "postview"
+    displayPrompt()
+}
+
+// Load and draw post number n (shared by viewing and the sysop
+// delete-from-list flow, which confirms over the drawn post).
+func loadPostView(n: int): bool {
     var w: list of int
     postViewWidths(w)
     if not loadPost(postIds[n - 1]) {
         sendLine("Post unavailable.")
         displayPrompt()
-        return
+        return false
     }
     postNum = n
     wrapText(postBody(post.id), w[0], bodyLines)
     bodyPage = 1
-    user.screen = "postview"
     drawPostView()
-    displayPrompt()
+    return true
 }
 
 func drawPostView() {
@@ -288,6 +305,9 @@ func drawPostViewMenu() {
     sendLine("<) Previous Post (or ,)")
     sendLine("L) Redraw This Page")
     sendLine("R) Reply")
+    if user.access == accessSysop {
+        sendLine("D) Delete Post")
+    }
     sendLine("Q) Return to Post List")
     sendLine("")
 }
@@ -337,6 +357,13 @@ func postViewChoice(input: string) {
         displayPrompt()
     }
     case "R" { startReply() }
+    case "D" {
+        if user.access == accessSysop {
+            delFromView = true
+            user.screen = "delpostconfirm"
+        }
+        displayPrompt()
+    }
     case "Q" {
         user.screen = "posts"
         drawPostList()
@@ -344,4 +371,50 @@ func postViewChoice(input: string) {
     }
     else { displayPrompt() }
     }
+}
+
+// --- Post deletion (sysop only) ----------------------------------------
+// From the list: D, then a post number -- the post is drawn and
+// confirmed over. From the view: D confirms the post on screen.
+// Deleted bodies stay orphaned in the .MSG heap (postsdb design).
+
+var delFromView: bool = false
+
+func delPostNumInput(input: string) {
+    var n: int = parseIntStr(input)
+    if input == "" {
+        user.screen = "posts"
+        displayPrompt()
+        return
+    }
+    if n < 1 or n > postIds.count {
+        sendLine("No such post.")
+        displayPrompt()
+        return
+    }
+    if not loadPostView(n) { return }
+    user.screen = "delpostconfirm"
+    displayPrompt()
+}
+
+func delPostConfirm(input: string) {
+    if upperStr(input) == "Y" {
+        if dbDelete(postsDb, post.id) {
+            sendLine("Post deleted.")
+        } else {
+            sendLine("Delete failed: " + lastError.message)
+        }
+        user.screen = "posts"
+        drawPostList()
+        displayPrompt()
+        return
+    }
+    sendLine("Cancelled.")
+    if delFromView {
+        user.screen = "postview"
+    } else {
+        user.screen = "posts"
+        drawPostList()
+    }
+    displayPrompt()
 }
