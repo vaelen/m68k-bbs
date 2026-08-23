@@ -8,7 +8,7 @@ data structures may change freely, always starting from a clean
 database.
 
 The UI over this storage lives in `boards.cla` (caller-facing
-reader), `editor.cla` (post composer), and `sysop.cla` (board
+reader), `editor.cla` (post composer, shared with private mail), and `sysop.cla` (board
 management); see CLAUDE.md's architecture notes.
 
 ## Shape

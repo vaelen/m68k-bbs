@@ -34,8 +34,9 @@ Early development. Working today:
   (cp437), and VT100 (DEC Special Graphics) callers: box-drawn
   tables, paged views, color helpers (`docs/tables.md`)
 
-Planned: Fidonet-style echomail (the message base is laid out for it),
-message search, and full-screen ANSI niceties.
+Planned: Fidonet-style echomail and netmail (the message base and the
+mail database are laid out for them), message search, and full-screen
+ANSI niceties.
 
 ## Building
 

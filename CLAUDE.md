@@ -32,6 +32,10 @@ Key points:
   to mirror them into the UI (our log window does this).
 - Mac textview `text` property caps at 32,000 bytes (TextEdit limit);
   oversized stores truncate silently and set `lastError`.
+- `now()` is Mac-epoch seconds, already past 2^31 in 2026, so
+  timestamps are **negative** as Clarus `int`s. Storing, comparing
+  for equality, and `dateTimeStr` all work; never use `< 0` / `-1`
+  as an "unset" sentinel on a timestamp — use a separate flag or 0.
 
 ## Compiler
 
@@ -176,7 +180,10 @@ The received-byte path is:
   enters the signup flow (newname → newpass → newpass2 → newemail,
   empty name cancels; first account gets sysop access). Logins are
   checked against the Users database (case-insensitive; wrong
-  password returns to login; last-seen shown and updated on login).
+  password returns to login). Last-seen is updated at login; the
+  "Welcome back / Last on / You have N new message(s)" banner is
+  printed by `applyTerminal` once the terminal type is known, just
+  before the main menu (`returning`/`previousSeen` carry it across).
   Menu conventions: `gotoScreen(s)`
   sets the screen and draws menu + prompt; `displayMenu`/`displayPrompt`
   switch on `user.screen`; choices are case-insensitive (`upperStr`);
