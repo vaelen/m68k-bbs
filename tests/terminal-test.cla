@@ -23,6 +23,8 @@ on App.startCLI(args: list of string) {
     var i: int = 0
     var digit: char
     var want: string
+    var w: list of int
+    var cells: list of string
 
     // All 16 foreground sequences: values 0-7 are "\x1B[22;3Xm",
     // 8-15 are the same X with bold ("\x1B[1;3Xm").
@@ -117,6 +119,44 @@ on App.startCLI(args: list of string) {
     expect(center("Hi", 5)  == " Hi  ",  "center odd remainder goes right")
     expect(center("Foobar", 3) == "Foo", "center truncates")
     expect(center("", 2)    == "  ",     "center empty string")
+
+    // --- ruleLine / rowLine ---------------------------------------------
+
+    // ASCII, two columns of content widths 6 and 12 (the example table).
+    w.add(6)
+    w.add(12)
+    cells.add("Foo")
+    cells.add("Bar")
+    expect(ruleLine(TopLeft, TopCenter, TopRight, w) == "+--------+--------------+",
+           "ascii top rule")
+    expect(ruleLine(CenterLeft, Center, CenterRight, w) == "+--------+--------------+",
+           "ascii mid rule")
+    expect(rowLine(cells, w) == "| Foo    | Bar          |", "ascii row")
+
+    // A one-element widths list spans the table (title bar).
+    w.clear()
+    w.add(21)
+    expect(ruleLine(BottomLeft, BottomCenter, BottomRight, w) ==
+           "+-----------------------+", "ascii single-span rule")
+
+    // ANSI uses the cp437 pieces.
+    terminal.type = ANSI
+    w.clear()
+    w.add(1)
+    w.add(1)
+    expect(ruleLine(CenterLeft, Center, CenterRight, w) ==
+           "\xC3\xC4\xC4\xC4\xC5\xC4\xC4\xC4\xB4", "ansi mid rule")
+    cells.clear()
+    cells.add("a")
+    cells.add("b")
+    expect(rowLine(cells, w) == "\xB3 a \xB3 b \xB3", "ansi row")
+
+    // VT100: rules are bare DEC letters (caller wraps via sendDrawing);
+    // rows carry SO/SI around each bar.
+    terminal.type = VT100
+    expect(ruleLine(TopLeft, TopCenter, TopRight, w) == "lqqqwqqqk", "vt100 rule")
+    expect(rowLine(cells, w) == "\x0Ex\x0F a \x0Ex\x0F b \x0Ex\x0F", "vt100 row")
+    terminal.type = ASCII
 
     if failures > 0 {
         log("terminal-test: FAILED")

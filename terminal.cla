@@ -165,6 +165,35 @@ func vbar(): string {
     return startDrawing() + boxChar(Vertical) + stopDrawing()
 }
 
+// A full horizontal rule for a table: `l`, joints of `m` between
+// columns, `r`. Widths are content widths; each column adds the two
+// padding spaces rowLine uses. Bare drawing chars -- send with
+// sendDrawing.
+func ruleLine(l: BoxPiece, m: BoxPiece, r: BoxPiece, widths: list of int): string {
+    var out: string = ""
+    var i: int = 0
+    out = out + boxChar(l)
+    while i < widths.count {
+        if i > 0 { out = out + boxChar(m) }
+        out = out + hbar(widths[i] + 2)
+        i = i + 1
+    }
+    return out + boxChar(r)
+}
+
+// A table data row: cells padded to their content widths, one space of
+// padding each side, vbar-separated. Self-contained (vbar carries its
+// own SO/SI) -- send as-is.
+func rowLine(cells: list of string, widths: list of int): string {
+    var out: string = ""
+    var i: int = 0
+    while i < widths.count {
+        out = out + vbar() + " " + pad(cells[i], widths[i]) + " "
+        i = i + 1
+    }
+    return out + vbar()
+}
+
 // Left-align s in a field of `width` spaces, truncating if longer.
 func pad(s: string, width: int): string {
     var out: string = s

@@ -39,6 +39,7 @@ var isConnected: bool = false
 // Login/signup state between prompts (reset on connect).
 var pendingId: int = 0      // account found at the login prompt
 var pendingHash: int = 0    // first password entered during signup
+var listFromId: int = 1     // paging cursor for the user list
 
 
 // Collect connected-caller input, one char at a time. Called by
@@ -213,6 +214,7 @@ func processInput(input: string) {
     case "sysop"       { sysopChoice(input) }
     case "sysopboards" { sysopBoardsChoice(input) }
     case "sysopusers"  { sysopUsersChoice(input) }
+    case "userlist"    { userListInput(input) }
     case "logoff"   { }   // ignore trailing input (e.g. the modem's OK)
     }
 }
@@ -428,12 +430,130 @@ func sysopUsersChoice(input: string) {
         displayMenu()
         displayPrompt()
     }
-    case "L" { stubOption("List Users") }
+    case "L" { startUserList() }
     case "S" { stubOption("Show User Details") }
     case "E" { stubOption("Edit User") }
     case "D" { stubOption("Delete User") }
     case "Q" { gotoScreen("sysop") }
     else     { displayPrompt() }
+    }
+}
+
+// --- User list ---------------------------------------------------------
+// A paged table of all accounts, read straight off the Users database
+// records (the session's `user` global is never touched).
+
+// Content widths: narrow (<80 columns) is ID/Username/Access (total 40
+// with borders), wide adds Last On and Email (total 80).
+func userListWidths(w: list of int) {
+    w.clear()
+    w.add(4)
+    w.add(21)
+    w.add(5)
+    if terminal.columns < 80 { return }
+    w.add(17)
+    w.add(17)
+}
+
+func sendRule(l: BoxPiece, m: BoxPiece, r: BoxPiece, w: list of int) {
+    sendDrawing(modem, ruleLine(l, m, r, w))
+    modem.send(terminal.eol)
+}
+
+func startUserList() {
+    user.screen = "userlist"
+    listFromId = 1
+    drawUserListPage()
+}
+
+// Enter (or anything but Q) shows the next page; Q returns to the menu.
+func userListInput(input: string) {
+    if upperStr(input) == "Q" {
+        gotoScreen("sysopusers")
+    } else {
+        drawUserListPage()
+    }
+}
+
+func drawUserListPage() {
+    var w: list of int
+    var span: list of int
+    var cells: list of string
+    var nextId: int = dbNextRecordId(usersDb)
+    var pageRows: int = terminal.rows - 8
+    var shown: int = 0
+    var total: int = 0
+    var i: int = 0
+    var id: int = 0
+    var rec: text
+    var more: bool = false
+
+    userListWidths(w)
+    // A one-column span the full table width, for the title bar.
+    while i < w.count {
+        total = total + w[i]
+        i = i + 1
+    }
+    span.add(total + 3 * (w.count - 1))
+
+    sendLine("")
+    sendRule(TopLeft, TopCenter, TopRight, span)
+    cells.add(center("Users", span[0]))
+    sendLine(rowLine(cells, span))
+    sendRule(CenterLeft, TopCenter, CenterRight, w)
+    cells.clear()
+    cells.add("ID")
+    cells.add("Username")
+    cells.add("Acc")
+    if terminal.columns >= 80 {
+        cells.add("Last On")
+        cells.add("Email")
+    }
+    sendLine(rowLine(cells, w))
+    sendRule(CenterLeft, Center, CenterRight, w)
+
+    id = listFromId
+    while id < nextId and shown < pageRows {
+        rec = dbFind(usersDb, id)
+        if rec.length == userRecordSize {
+            cells.clear()
+            cells.add(intStr(id))
+            cells.add(dbExtractString(rec, uOffName))
+            if rec[uOffAccess] == accessSysop {
+                cells.add("Sysop")
+            } else {
+                cells.add("User")
+            }
+            if terminal.columns >= 80 {
+                if rec.intAt(uOffLastSeen) != 0 {
+                    cells.add(dateTimeStr(rec.intAt(uOffLastSeen)))
+                } else {
+                    cells.add("Never")
+                }
+                cells.add(dbExtractString(rec, uOffEmail))
+            }
+            sendLine(rowLine(cells, w))
+            shown = shown + 1
+        }
+        id = id + 1
+    }
+    sendRule(BottomLeft, BottomCenter, BottomRight, w)
+
+    // Anything left to show? (Skips trailing deleted records.)
+    listFromId = id
+    while id < nextId {
+        rec = dbFind(usersDb, id)
+        if rec.length == userRecordSize {
+            more = true
+            break
+        }
+        id = id + 1
+    }
+    if more {
+        modem.send("[Enter] More  [Q] Menu > ")
+    } else {
+        user.screen = "sysopusers"
+        displayPrompt()
     }
 }
 

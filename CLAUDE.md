@@ -77,6 +77,15 @@ client with `nc localhost 1234` while the emulator runs.
 The workspace is `snow/MacII.snoww` (plain JSON; SCSI ID 1 is free for a
 build disk).
 
+## Shell notes (zsh)
+
+The workstation shell is zsh, which unlike bash aborts on two things
+that look innocent: an unmatched glob is an error, not a literal
+(`rm -f Users.*` fails with "no matches found" when nothing matches —
+guard with `rm -f Users.* 2>/dev/null || true` or check first), and a
+word starting with `=` triggers `=command` expansion (`echo =====`
+fails with "===== not found" — quote it).
+
 ## Modem emulator
 
 `simple-modem-emulator/` is a tiny C TCP bridge that makes a telnet
@@ -102,6 +111,13 @@ Rules: only touch the image while Snow is NOT running; quit Snow cleanly
 can be left half-written. Files the emulated Mac writes to "BBS HD"
 persist in the image and can be pulled out with `hcopy` after Snow exits.
 Full background: `docs/snow-hdd-howto.md`.
+
+Before an e2e test run against the emulator, delete all database files
+from the image (while Snow is stopped) so every run starts from the
+same baseline: `hdel` the vDB files — `Users.*`, `Boards.*`, `BRD*` —
+then reseed. The vDB format is identical on both lanes (big-endian),
+so seed data can be built with a host-lane CLI program and `hcopy -r`'d
+onto the image (file type/creator don't matter; the app opens by name).
 
 ## Reading the Mac-side log
 
@@ -145,8 +161,10 @@ The received-byte path is:
   non-cryptographic). `terminal.cla` — `Terminal` record (columns,
   rows, color, type: ASCII/ANSI/VT100) + global `terminal`, `Color`
   enum, and pure ANSI sequence builders (`colorSeq`, `backgroundSeq`,
-  clear consts). `termio.cla` — connection-facing send wrappers over
-  those (take a `connection` parameter, gated on `terminal.color`).
+  clear consts), plus the box-drawing/table builders (`boxChar`,
+  `ruleLine`, `rowLine`, `pad`, `center` — see `docs/tables.md`).
+  `termio.cla` — connection-facing send wrappers over those (take a
+  `connection` parameter, gated on `terminal.color`).
 - `bbs.cla` — app/UI declarations, session flow. `dataChar` assembles
   input (Line mode: buffer until CR; Character mode: each char).
   `processInput` dispatches on `user.screen`: login → password →
