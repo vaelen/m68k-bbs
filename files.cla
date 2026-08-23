@@ -317,20 +317,32 @@ func drawFileView() {
     var last: int = 0
     var d: string = dateTimeStr(fileRec.created)
     var meta: string = "Size: " + sizeStr(fileRec.size) + "  Downloads: " + intStr(fileRec.downloads)
+    var hasDesc: bool = fileRec.description.length > 0
+    var metaRows: int = 0
 
     fileViewWidths(w)
-    // Frame from the top rule down: meta rows vary by width.
+    // Frame from the top rule down is 9 fixed lines (blank, top rule,
+    // title, joint, mid rule, footer joint, footer, bottom, prompt)
+    // plus one per meta row: From, Date (or the two combined when wide),
+    // Size/Downloads, and the short description when it has one.
     if terminal.columns < 80 {
-        pageRows = terminal.rows - 12
+        metaRows = 3
     } else {
-        pageRows = terminal.rows - 10
+        metaRows = 2
     }
+    if hasDesc { metaRows = metaRows + 1 }
+    pageRows = terminal.rows - 9 - metaRows
     descPages = (descLines.count + pageRows - 1) / pageRows
     if descPages < 1 { descPages = 1 }
     if descPage > descPages { descPage = descPages }
     if descPage < 1 { descPage = 1 }
 
     sendTableTitle(fileRec.name, w)
+    if hasDesc {
+        cells.clear()
+        cells.add("Desc: " + fileRec.description)
+        sendLine(rowLine(cells, w))
+    }
     cells.clear()
     if terminal.columns < 80 {
         cells.add("From: " + fileRec.uploader)
