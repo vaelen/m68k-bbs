@@ -29,3 +29,10 @@ func clearBackground(conn: connection) {
     if not terminal.color { return }
     conn.send(clearBackgroundSeq)
 }
+
+// Send a run of box-drawing characters (boxChar/hbar output) as one
+// drawing-mode shift, so a whole rule line costs a single SO/SI pair
+// on VT100.
+func sendDrawing(conn: connection, s: string) {
+    conn.send(startDrawing() + s + stopDrawing())
+}

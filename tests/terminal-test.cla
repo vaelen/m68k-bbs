@@ -53,6 +53,71 @@ on App.startCLI(args: list of string) {
     expect(clearColorSeq      == "\x1B[22;39m", "clearColorSeq")
     expect(clearBackgroundSeq == "\x1B[49m",    "clearBackgroundSeq")
 
+    // --- Box drawing ----------------------------------------------------
+
+    // Default eol is CRLF.
+    expect(terminal.eol == "\x0D\x0A", "default eol is CRLF")
+
+    // ASCII (the default type): corners and crossings are all '+'.
+    expect(boxChar(TopLeft)    == '+', "ascii TopLeft")
+    expect(boxChar(Center)     == '+', "ascii Center")
+    expect(boxChar(Horizontal) == '-', "ascii Horizontal")
+    expect(boxChar(Vertical)   == '|', "ascii Vertical")
+    expect(hbar(3) == "---", "ascii hbar")
+    expect(hbar(0) == "",    "hbar 0 is empty")
+    expect(vbar() == "|",    "ascii vbar")
+    expect(startDrawing() == "", "ascii startDrawing empty")
+    expect(stopDrawing()  == "", "ascii stopDrawing empty")
+
+    // ANSI: the cp437 line-drawing set.
+    terminal.type = ANSI
+    expect(boxChar(TopLeft)      == '\xDA', "ansi TopLeft")
+    expect(boxChar(TopCenter)    == '\xC2', "ansi TopCenter")
+    expect(boxChar(TopRight)     == '\xBF', "ansi TopRight")
+    expect(boxChar(CenterLeft)   == '\xC3', "ansi CenterLeft")
+    expect(boxChar(Center)       == '\xC5', "ansi Center")
+    expect(boxChar(CenterRight)  == '\xB4', "ansi CenterRight")
+    expect(boxChar(BottomLeft)   == '\xC0', "ansi BottomLeft")
+    expect(boxChar(BottomCenter) == '\xC1', "ansi BottomCenter")
+    expect(boxChar(BottomRight)  == '\xD9', "ansi BottomRight")
+    expect(boxChar(Horizontal)   == '\xC4', "ansi Horizontal")
+    expect(boxChar(Vertical)     == '\xB3', "ansi Vertical")
+    expect(hbar(2) == "\xC4\xC4", "ansi hbar")
+    expect(vbar() == "\xB3",      "ansi vbar")
+    expect(startDrawing() == "", "ansi startDrawing empty")
+
+    // VT100: DEC Special Graphics letters, shifted in/out with SO/SI.
+    terminal.type = VT100
+    expect(boxChar(TopLeft)      == 'l', "vt100 TopLeft")
+    expect(boxChar(TopCenter)    == 'w', "vt100 TopCenter")
+    expect(boxChar(TopRight)     == 'k', "vt100 TopRight")
+    expect(boxChar(CenterLeft)   == 't', "vt100 CenterLeft")
+    expect(boxChar(Center)       == 'n', "vt100 Center")
+    expect(boxChar(CenterRight)  == 'u', "vt100 CenterRight")
+    expect(boxChar(BottomLeft)   == 'm', "vt100 BottomLeft")
+    expect(boxChar(BottomCenter) == 'v', "vt100 BottomCenter")
+    expect(boxChar(BottomRight)  == 'j', "vt100 BottomRight")
+    expect(boxChar(Horizontal)   == 'q', "vt100 Horizontal")
+    expect(boxChar(Vertical)     == 'x', "vt100 Vertical")
+    expect(hbar(3) == "qqq",         "vt100 hbar is bare")
+    expect(vbar() == "\x0Ex\x0F",    "vt100 vbar wraps itself")
+    expect(startDrawing() == "\x0E", "vt100 startDrawing is SO")
+    expect(stopDrawing()  == "\x0F", "vt100 stopDrawing is SI")
+    expect(vt100SetupSeq == "\x1B)0", "vt100 setup designates G1")
+    terminal.type = ASCII
+
+    // --- pad / center ---------------------------------------------------
+
+    expect(pad("Foo", 6)    == "Foo   ", "pad right-fills")
+    expect(pad("Foobar", 3) == "Foo",    "pad truncates")
+    expect(pad("Foo", 3)    == "Foo",    "pad exact fit")
+    expect(pad("", 2)       == "  ",     "pad empty string")
+    expect(pad("Foo", 0)    == "",       "pad width 0")
+    expect(center("Table Title", 23) == "      Table Title      ", "center even")
+    expect(center("Hi", 5)  == " Hi  ",  "center odd remainder goes right")
+    expect(center("Foobar", 3) == "Foo", "center truncates")
+    expect(center("", 2)    == "  ",     "center empty string")
+
     if failures > 0 {
         log("terminal-test: FAILED")
         quit 1

@@ -11,6 +11,7 @@ record Terminal {
     rows:    int = 24
     color:   bool                     // defaults false
     type:    TerminalType             // defaults to ASCII
+    eol:     string(2) = "\x0D\x0A"   // line terminator sent to the caller
 }
 
 var terminal: Terminal
@@ -72,3 +73,120 @@ func backgroundSeq(color: Color): string {
 // default background.
 const clearColorSeq:      string = "\x1B[22;39m"
 const clearBackgroundSeq: string = "\x1B[49m"
+
+// --- Box drawing -------------------------------------------------------
+
+enum BoxPiece {
+    TopLeft, TopCenter, TopRight
+    CenterLeft, Center, CenterRight
+    BottomLeft, BottomCenter, BottomRight
+    Horizontal, Vertical
+}
+
+// Designate G1 = DEC Special Graphics. Sent once when a caller picks
+// VT100; startDrawing/stopDrawing then shift in and out of it.
+const vt100SetupSeq: string = "\x1B)0"
+
+// The box-drawing character for the caller's terminal: ASCII uses
+// + - |, ANSI the cp437 line-drawing set, VT100 the DEC Special
+// Graphics letters (which render as lines only between
+// startDrawing/stopDrawing).
+func boxChar(p: BoxPiece): char {
+    switch terminal.type {
+    case ANSI {
+        switch p {
+        case TopLeft      { return '\xDA' }
+        case TopCenter    { return '\xC2' }
+        case TopRight     { return '\xBF' }
+        case CenterLeft   { return '\xC3' }
+        case Center       { return '\xC5' }
+        case CenterRight  { return '\xB4' }
+        case BottomLeft   { return '\xC0' }
+        case BottomCenter { return '\xC1' }
+        case BottomRight  { return '\xD9' }
+        case Horizontal   { return '\xC4' }
+        case Vertical     { return '\xB3' }
+        }
+    }
+    case VT100 {
+        switch p {
+        case TopLeft      { return 'l' }
+        case TopCenter    { return 'w' }
+        case TopRight     { return 'k' }
+        case CenterLeft   { return 't' }
+        case Center       { return 'n' }
+        case CenterRight  { return 'u' }
+        case BottomLeft   { return 'm' }
+        case BottomCenter { return 'v' }
+        case BottomRight  { return 'j' }
+        case Horizontal   { return 'q' }
+        case Vertical     { return 'x' }
+        }
+    }
+    case ASCII {
+        switch p {
+        case Horizontal { return '-' }
+        case Vertical   { return '|' }
+        else            { return '+' }
+        }
+    }
+    }
+    return '+'
+}
+
+// Shift to / from the VT100 drawing set (SO/SI); empty for the other
+// types. Wrap a whole run of drawing characters in one pair.
+func startDrawing(): string {
+    if terminal.type == VT100 { return "\x0E" }
+    return ""
+}
+
+func stopDrawing(): string {
+    if terminal.type == VT100 { return "\x0F" }
+    return ""
+}
+
+// A horizontal rule segment, bare -- meant for inside a
+// startDrawing/stopDrawing pair (see termio.cla's sendDrawing).
+func hbar(width: int): string {
+    var out: string = ""
+    var h: char = boxChar(Horizontal)
+    var i: int = 0
+    while i < width {
+        out = out + h
+        i = i + 1
+    }
+    return out
+}
+
+// A self-contained vertical bar for data rows, where normal text sits
+// between bars: on VT100 it carries its own SO/SI.
+func vbar(): string {
+    return startDrawing() + boxChar(Vertical) + stopDrawing()
+}
+
+// Left-align s in a field of `width` spaces, truncating if longer.
+func pad(s: string, width: int): string {
+    var out: string = s
+    if width <= 0 { return "" }
+    if s.length >= width { return s[0, width] }
+    while out.length < width {
+        out = out + " "
+    }
+    return out
+}
+
+// Center s in a field of `width` spaces (odd leftover space goes
+// right), truncating if longer.
+func center(s: string, width: int): string {
+    var out: string = ""
+    var left: int = (width - s.length) / 2
+    var i: int = 0
+    if width <= 0 { return "" }
+    if s.length >= width { return s[0, width] }
+    while i < left {
+        out = out + " "
+        i = i + 1
+    }
+    return pad(out + s, width)
+}

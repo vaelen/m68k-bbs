@@ -63,10 +63,8 @@ func dataChar(c: char) {
     user.buffer = user.buffer + c
 }
 
-const crlf: string = "\x0D\x0A"
-
 func sendLine(s: string) {
-    modem.send(s + crlf)
+    modem.send(s + terminal.eol)
 }
 
 // Decimal string of a non-negative int (no int-to-string builtin).
@@ -347,6 +345,7 @@ func applyTerminal(t: TerminalType, cols: int, colorOn: bool) {
     terminal.columns = cols
     terminal.rows = 24
     terminal.color = colorOn
+    if t == VT100 { modem.send(vt100SetupSeq) }
     msg = "User: " + user.name + ", Terminal: " + termTypeName(t)
     msg = msg + " " + intStr(terminal.columns) + "x" + intStr(terminal.rows)
     log(msg)
