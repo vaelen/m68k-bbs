@@ -1,0 +1,76 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for the Areas database module (areasdb.cla).
+// Run by scripts/test.sh from a scratch directory.
+// Exits 0 on pass, 1 on the first failure.
+
+include "../areasdb.cla"
+
+var failures: int = 0
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+on App.startCLI(args: list of string) {
+    var id1: int
+    var id2: int
+
+    expect(areasOpen(), "areas db created on first open")
+    expect(areaCount() == 0, "no areas yet")
+    expect(not loadArea(1), "missing area fails to load")
+
+    id1 = createArea("Utilities", "Handy tools", "BBS HD:Files:Utilities", char(0))
+    id2 = createArea("Sysop Only", "Uploads awaiting review", "", 'S')
+    expect(id1 == 1 and id2 == 2, "area IDs assigned in order")
+    expect(areaCount() == 2, "count tracks creation")
+    expect(areasNextId() == 3, "next ID exposed for enumeration")
+
+    expect(loadArea(id1), "load first area")
+    expect(area.id == id1, "area id set")
+    expect(area.name == "Utilities", "name roundtrip")
+    expect(area.description == "Handy tools", "description roundtrip")
+    expect(area.folder == "BBS HD:Files:Utilities", "folder roundtrip")
+    expect(int(area.access) == 0, "access 0 means everyone")
+
+    expect(loadArea(id2), "load second area")
+    expect(area.folder == "", "empty folder roundtrip")
+    expect(area.access == 'S', "sysop-only access roundtrip")
+
+    // edit through the global and save
+    area.description = "Pending uploads"
+    area.folder = "BBS HD:Files:Pending"
+    area.access = char(0)
+    expect(saveArea(), "save edited area")
+    expect(loadArea(id1), "load other area in between")
+    expect(loadArea(id2), "reload edited area")
+    expect(area.description == "Pending uploads", "description edit persisted")
+    expect(area.folder == "BBS HD:Files:Pending", "folder edit persisted")
+    expect(int(area.access) == 0, "access edit persisted")
+
+    // long fields are truncated to 63 chars
+    id1 = createArea("0123456789012345678901234567890123456789012345678901234567890123456789", "d", "f", char(0))
+    expect(loadArea(id1), "load area with long name")
+    expect(area.name.length == 63, "name truncated to 63 chars")
+
+    // persistence across close/open
+    areasClose()
+    expect(areasOpen(), "areas db reopens")
+    expect(areaCount() == 3, "count survives reopen")
+    expect(loadArea(2), "records survive reopen")
+    expect(area.name == "Sysop Only", "name intact after reopen")
+    areasClose()
+
+    if failures > 0 {
+        log("areasdb-test: FAILED")
+        quit 1
+    }
+    log("areasdb-test: all passed")
+    quit
+}

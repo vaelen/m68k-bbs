@@ -1,0 +1,110 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// The Areas database: one record per file area. Each area's file
+// entries live in their own database (filesdb.cla), keyed by area ID,
+// and its physical files live in the area's folder on disk.
+// Layout and rationale: docs/files.md.
+//
+// On-disk record ("Areas" database, 256 bytes, vDB record ID =
+// area ID):
+//   0    name, 64-byte Pascal field
+//   64   description, 64-byte Pascal field
+//   128  folder, 64-byte Pascal field: HFS path of the area's folder,
+//        no trailing colon; empty = the app's own directory
+//   192  access (1 byte: 0 = everyone, 'S' = sysops only; the same
+//        encoding as the user record's access byte)
+//   193+ reserved
+
+include "vdb.cla"
+
+const areaRecordSize: int = 256
+const aOffName: int = 0
+const aOffDescription: int = 64
+const aOffFolder: int = 128
+const aOffAccess: int = 192
+
+record Area {
+    id: int
+    name: string(63)
+    description: string(63)
+    folder: string(63)
+    access: char
+}
+
+var areasDb: Database
+var area: Area      // last loaded area
+
+// Open the Areas database, creating it on first run.
+func areasOpen(): bool {
+    areasDb = dbOpen("Areas", "68BB")
+    if dbIsOpen(areasDb) { return true }
+    areasDb = dbCreate("Areas", areaRecordSize, "68BB")
+    return dbIsOpen(areasDb)
+}
+
+func areasClose() {
+    if dbIsOpen(areasDb) { dbClose(areasDb) }
+    areasDb = new Database
+}
+
+func areaCount(): int {
+    return dbRecordCount(areasDb)
+}
+
+// For enumerating areas: loop loadArea over 1 .. areasNextId()-1.
+func areasNextId(): int {
+    return dbNextRecordId(areasDb)
+}
+
+// Serialize area fields into a record image (dbAdd/dbUpdate zero-pad
+// it to record_size).
+func packArea(name: string, description: string, folder: string, access: char): text {
+    var t: text
+    var n: string = name
+    var d: string = description
+    var f: string = folder
+    if n.length > 63 { n = n[0, 63] }
+    if d.length > 63 { d = d[0, 63] }
+    if f.length > 63 { f = f[0, 63] }
+    t.append(char(n.length))
+    t.append(n)
+    while t.length < aOffDescription {
+        t.append(char(0))
+    }
+    t.append(char(d.length))
+    t.append(d)
+    while t.length < aOffFolder {
+        t.append(char(0))
+    }
+    t.append(char(f.length))
+    t.append(f)
+    while t.length < aOffAccess {
+        t.append(char(0))
+    }
+    t.append(access)
+    return t
+}
+
+// Create an area; returns the new area ID, or -1.
+func createArea(name: string, description: string, folder: string, access: char): int {
+    return dbAdd(areasDb, packArea(name, description, folder, access))
+}
+
+// Write the global `area` back to its record.
+func saveArea(): bool {
+    if area.id < 1 { return false }
+    return dbUpdate(areasDb, area.id, packArea(area.name, area.description, area.folder, area.access))
+}
+
+// Load area `id` into the global `area`.
+func loadArea(id: int): bool {
+    var rec: text = dbFind(areasDb, id)
+    if rec.length != areaRecordSize { return false }
+    area.id = id
+    area.name = dbExtractString(rec, aOffName)
+    area.description = dbExtractString(rec, aOffDescription)
+    area.folder = dbExtractString(rec, aOffFolder)
+    area.access = rec[aOffAccess]
+    return true
+}
