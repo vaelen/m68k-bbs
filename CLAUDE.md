@@ -204,7 +204,14 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
 
 ## Layout
 
-- `bbs.cla` — app entry: UI, session flow, menus (includes the rest)
+- `bbs.cla` — app entry: UI, session flow, screen dispatch, shared
+  helpers and table senders (includes the rest)
+- `sysop.cla` — sysop menu tree: paged user/board lists, detail
+  cards, lettered field editors, delete confirmations
+- `boards.cla` — caller-facing bulletin board reader: board picker,
+  paged post list, framed post view
+- `editor.cla` — line editor for new posts and replies (/S /A /L /D
+  /E /I)
 - `scanner.cla`, `user.cla`, `usersdb.cla`, `boardsdb.cla`,
   `postsdb.cla`, `terminal.cla`, `termio.cla`, `btree.cla`,
   `vdb.cla` — modules above

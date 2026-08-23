@@ -13,6 +13,7 @@ include "postsdb.cla"
 include "termio.cla"
 include "sysop.cla"
 include "boards.cla"
+include "editor.cla"
 include "toolbox/osutils.cla"   // DateTimeRec / SecondsToDate (via --rtdir)
 
 app BBS {
@@ -64,11 +65,19 @@ func dataChar(c: char) {
         return
     }
     if c == LF { return }
+    if user.buffer.length >= 255 {
+        modem.send("\x07")      // line full: drop the char, ring the bell
+        return
+    }
     user.buffer = user.buffer + c
 }
 
+// Two sends: `s + terminal.eol` as one expression would clamp at the
+// 255-byte string cap when s is already full, silently dropping the
+// line ending.
 func sendLine(s: string) {
-    modem.send(s + terminal.eol)
+    modem.send(s)
+    modem.send(terminal.eol)
 }
 
 // --- Table output ------------------------------------------------------
@@ -140,6 +149,15 @@ func timestamp(): string {
     return s
 }
 
+// Strip leading and trailing spaces.
+func trimStr(s: string): string {
+    var a: int = 0
+    var b: int = s.length
+    while a < b and s[a] == ' ' { a = a + 1 }
+    while b > a and s[b - 1] == ' ' { b = b - 1 }
+    return s[a, b - a]
+}
+
 func upperStr(s: string): string {
     var r: string = s
     var i: int = 0
@@ -197,6 +215,8 @@ func displayPrompt() {
     case "delboardconfirm" { modem.send("Delete this board? (Y/N): ") }
     case "boards" { modem.send("Board ID> ") }
     case "posts", "postview" { postsPrompt() }
+    case "editsubject" { editSubjectPrompt() }
+    case "editbody"    { editBodyPrompt() }
     }
 }
 
@@ -259,6 +279,8 @@ func processInput(input: string) {
     case "boards" { boardPickerInput(input) }
     case "posts"  { postsChoice(input) }
     case "postview" { postViewChoice(input) }
+    case "editsubject" { editSubjectInput(input) }
+    case "editbody"    { editBodyInput(input) }
     case "logoff"   { }   // ignore trailing input (e.g. the modem's OK)
     }
 }

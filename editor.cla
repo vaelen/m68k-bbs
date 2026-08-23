@@ -1,0 +1,229 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// Post editor: a classic BBS line editor for new posts and replies
+// (WWIV style). Lines are entered one at a time at a numbered prompt;
+// a line starting with '/' is a command (/S save, /A abort, /L list,
+// /D n, /E n, /I n, /?). Lines are stored as typed (up to 255 bytes);
+// the viewer re-wraps them to each reader's width, so no column limit
+// is enforced here.
+
+var editLines: list of string
+var editSubject: string(63)
+var editThread: int = 0
+var editPending: char = ' '     // 'E'/'I': next line replaces/inserts
+var editPendingLine: int = 0
+
+// ponytail: 100 lines max; raise if real posts ever hit it.
+const editMaxLines: int = 100
+
+// A closed one-row banner (title only, no open frame below it).
+func sendEditorBanner(title: string) {
+    var w: list of int
+    var cells: list of string
+    postViewWidths(w)
+    cells.add(center(title, w[0]))
+    sendLine("")
+    sendRule(TopLeft, TopCenter, TopRight, w)
+    sendLine(rowLine(cells, w))
+    sendRule(BottomLeft, BottomCenter, BottomRight, w)
+}
+
+func startNewPost() {
+    editThread = 0
+    editSubject = ""
+    editLines.clear()
+    editPending = ' '
+    sendEditorBanner("New Post - " + board.name)
+    user.screen = "editsubject"
+    displayPrompt()
+}
+
+// Reply to the currently viewed post: subject defaults to Re: <orig>,
+// thread is the original's thread (its own id if it's the starter).
+func startReply() {
+    var sub: string = post.subject
+    if post.threadId == 0 {
+        editThread = post.id
+    } else {
+        editThread = post.threadId
+    }
+    if sub.length < 4 or sub[0, 4] != "Re: " {
+        if sub.length > 59 { sub = sub[0, 59] }
+        sub = "Re: " + sub
+    }
+    editSubject = sub
+    editLines.clear()
+    editPending = ' '
+    sendEditorBanner("Reply - " + board.name)
+    user.screen = "editsubject"
+    displayPrompt()
+}
+
+func editSubjectPrompt() {
+    if editSubject == "" {
+        modem.send("Subject: ")
+    } else {
+        modem.send("Subject [" + editSubject + "]: ")
+    }
+}
+
+// Empty input takes the default (replies) or aborts (new posts, which
+// have none); /A always aborts.
+func editSubjectInput(input: string) {
+    if upperStr(input) == "/A" or (input == "" and editSubject == "") {
+        abortEditor()
+        return
+    }
+    if input != "" {
+        if input.length > 63 {
+            sendLine("Subjects are limited to 63 characters.")
+            displayPrompt()
+            return
+        }
+        editSubject = input
+    }
+    sendLine("Enter your message, one line at a time.")
+    sendLine("/S saves, /A aborts, /? lists commands.")
+    user.screen = "editbody"
+    displayPrompt()
+}
+
+func abortEditor() {
+    sendLine("Post aborted.")
+    backToPosts()
+}
+
+func backToPosts() {
+    user.screen = "posts"
+    drawPostList()
+    displayPrompt()
+}
+
+// Numbered line prompt; a pending /E or /I prompts with its target.
+func editBodyPrompt() {
+    var n: int = editLines.count + 1
+    if editPending != ' ' { n = editPendingLine }
+    modem.send(padLeft(intStr(n), 3) + ": ")
+}
+
+func editorHelp() {
+    sendLine("/S save    /A abort    /L list")
+    sendLine("/D n  delete line n")
+    sendLine("/E n  replace line n")
+    sendLine("/I n  insert before line n")
+}
+
+// Prefix and line sent separately: a full 255-byte line would clamp
+// off the tail if concatenated with its number.
+func listEditLines() {
+    var i: int = 0
+    while i < editLines.count {
+        modem.send(padLeft(intStr(i + 1), 3) + ": ")
+        sendLine(editLines[i])
+        i = i + 1
+    }
+}
+
+func editorCommand(input: string) {
+    var letter: char = ' '
+    var n: int = 0
+    if input.length >= 2 { letter = upperStr(input)[1] }
+    if input.length > 2 {
+        n = parseIntStr(trimStr(input[2, input.length - 2]))
+    }
+    switch letter {
+    case 'S' { saveEditor() }
+    case 'A' { abortEditor() }
+    case 'L' {
+        listEditLines()
+        displayPrompt()
+    }
+    case 'D' {
+        if n >= 1 and n <= editLines.count {
+            editLines.remove(n - 1)
+        } else {
+            sendLine("No such line.")
+        }
+        displayPrompt()
+    }
+    case 'E' {
+        if n >= 1 and n <= editLines.count {
+            modem.send(intStr(n) + " was: ")
+            sendLine(editLines[n - 1])
+            editPending = 'E'
+            editPendingLine = n
+        } else {
+            sendLine("No such line.")
+        }
+        displayPrompt()
+    }
+    case 'I' {
+        if n >= 1 and n <= editLines.count {
+            editPending = 'I'
+            editPendingLine = n
+        } else {
+            sendLine("No such line.")
+        }
+        displayPrompt()
+    }
+    case '?' {
+        editorHelp()
+        displayPrompt()
+    }
+    else {
+        sendLine("Unknown command. /? for help.")
+        displayPrompt()
+    }
+    }
+}
+
+func editBodyInput(input: string) {
+    var tmp: list of string
+    var i: int = 0
+    if input.length >= 1 and input[0] == '/' {
+        editorCommand(input)
+        return
+    }
+    if editPending != ' ' {
+        // replace ('E') or insert-before ('I') via rebuild -- lists
+        // have no assign-at or insert-at.
+        tmp = editLines.clone()
+        editLines.clear()
+        while i < tmp.count {
+            if i == editPendingLine - 1 {
+                editLines.add(input)
+                if editPending == 'I' { editLines.add(tmp[i]) }
+            } else {
+                editLines.add(tmp[i])
+            }
+            i = i + 1
+        }
+        editPending = ' '
+        displayPrompt()
+        return
+    }
+    if editLines.count >= editMaxLines {
+        sendLine("Message full -- /S to save or /A to abort.")
+        displayPrompt()
+        return
+    }
+    editLines.add(input)
+    displayPrompt()
+}
+
+func saveEditor() {
+    var body: text
+    var i: int = 0
+    while i < editLines.count {
+        body = body + editLines[i] + "\n"
+        i = i + 1
+    }
+    if addPost(user.name, editThread, editSubject, body) >= 1 {
+        sendLine("Post saved.")
+        postPage = 1
+    } else {
+        sendLine("Save failed: " + lastError.message)
+    }
+    backToPosts()
+}

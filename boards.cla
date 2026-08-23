@@ -191,7 +191,7 @@ func postsChoice(input: string) {
         drawPostList()
         displayPrompt()
     }
-    case "N" { stubOption("New Post") }
+    case "N" { startNewPost() }
     case "Q" {
         postsClose()
         gotoScreen("boards")
@@ -336,7 +336,7 @@ func postViewChoice(input: string) {
         drawPostView()
         displayPrompt()
     }
-    case "R" { stubOption("Reply") }
+    case "R" { startReply() }
     case "Q" {
         user.screen = "posts"
         drawPostList()
