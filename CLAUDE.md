@@ -212,8 +212,10 @@ The received-byte path is:
   detail cards, lettered-field edit cards (buffered; `S` saves, `Q`
   discards; a sysop cannot change their own access level or delete
   their own account), Y/N delete confirmations over the detail card,
-  and the New Board wizard. `parseIntStr` (all-digits or 0) lets
-  ID-or-name prompts disambiguate naturally.
+  the New Board wizard, and the same L/S/E/N/D tree over file areas
+  (`Areas` database: name/description/folder/access; Sysop menu `F`).
+  `parseIntStr` (all-digits or 0) lets ID-or-name prompts
+  disambiguate naturally.
 - `boards.cla` — the caller-facing reader: main-menu `B` → board
   picker (unpaged table) → paged post list (newest first, numbered
   from 1 per page, post IDs hidden, `Page X of Y` footer) → framed
@@ -259,8 +261,8 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
 
 - `bbs.cla` — app entry: UI, session flow, screen dispatch, shared
   helpers and table senders (includes the rest)
-- `sysop.cla` — sysop menu tree: paged user/board lists, detail
-  cards, lettered field editors, delete confirmations
+- `sysop.cla` — sysop menu tree: paged user/board/file-area lists,
+  detail cards, lettered field editors, delete confirmations
 - `boards.cla` — caller-facing bulletin board reader: board picker,
   paged post list, framed post view
 - `mail.cla` — private mail: inbox, message view, compose/reply

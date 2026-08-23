@@ -31,9 +31,10 @@ Early development. Working today:
   file-entry databases with a filename index and long-description
   heap; the files themselves live in an ordinary Finder folder per
   area (`docs/files.md`). Browsing and transfers come next.
-- Sysop area: paged user/board lists, detail cards, lettered-field
-  editors, deletion with confirmation, board creation, post deletion;
-  safety rails so the system always keeps a sysop
+- Sysop area: paged user/board/file-area lists, detail cards,
+  lettered-field editors, deletion with confirmation, board and file-
+  area creation, post deletion; safety rails so the system always
+  keeps a sysop
 - Terminal-aware rendering at 40 or 80 columns for ASCII, ANSI
   (cp437), and VT100 (DEC Special Graphics) callers: box-drawn
   tables, paged views, color helpers (`docs/tables.md`)

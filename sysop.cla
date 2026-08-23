@@ -25,6 +25,7 @@ func drawSysopMenu() {
     sendLine("")
     sendLine("Sysop Menu:")
     sendLine("B) Message Boards")
+    sendLine("F) File Areas")
     sendLine("U) Users")
     sendLine("Q) Return to Main Menu")
     sendLine("")
@@ -67,6 +68,7 @@ func sysopChoice(input: string) {
         displayPrompt()
     }
     case "B" { gotoScreen("sysopboards") }
+    case "F" { gotoScreen("sysopareas") }
     case "U" { gotoScreen("sysopusers") }
     case "Q" { gotoScreen("main") }
     else     { displayPrompt() }
@@ -788,5 +790,380 @@ func newBoardNet(input: string) {
     sendLine("Board " + intStr(id) + " created.")
     drawBoardDetails()
     user.screen = "sysopboards"
+    displayPrompt()
+}
+
+// --- File areas --------------------------------------------------------
+// The board screens again, over the Areas database (areasdb.cla): a
+// paged list, a detail card, a lettered edit card buffered in the
+// global `area`, Y/N delete, and a New Area wizard. Files inside an
+// area are not managed here yet.
+
+func drawSysopAreasMenu() {
+    sendLine("")
+    sendLine("Sysop - File Areas:")
+    sendLine("L) List Areas")
+    sendLine("S) Show Area Details")
+    sendLine("E) Edit Area")
+    sendLine("N) New Area")
+    sendLine("D) Delete Area")
+    sendLine("Q) Return to Sysop Menu")
+    sendLine("")
+}
+
+func sysopAreasChoice(input: string) {
+    switch upperStr(input) {
+    case "?" {
+        displayMenu()
+        displayPrompt()
+    }
+    case "L" { startAreaList() }
+    case "S" { startShowArea() }
+    case "E" { startEditArea() }
+    case "N" { startNewArea() }
+    case "D" { startDeleteArea() }
+    case "Q" { gotoScreen("sysop") }
+    else     { displayPrompt() }
+    }
+}
+
+// The area access byte as shown to the sysop: 0 = All, 'S' = Sysop.
+func areaAccessName(a: char): string {
+    if a == accessSysop { return "Sysop" }
+    return "All"
+}
+
+// Content widths: narrow (<80 columns) is ID/Name (total 40), wide is
+// ID/Name/Description/Access (total 80).
+func areaListWidths(w: list of int) {
+    w.clear()
+    w.add(4)
+    if terminal.columns < 80 {
+        w.add(29)
+        return
+    }
+    w.add(20)
+    w.add(36)
+    w.add(7)
+}
+
+func startAreaList() {
+    user.screen = "arealist"
+    listFromId = 1
+    drawAreaListPage()
+}
+
+func areaListInput(input: string) {
+    if upperStr(input) == "Q" {
+        gotoScreen("sysopareas")
+    } else {
+        drawAreaListPage()
+    }
+}
+
+func drawAreaListPage() {
+    var w: list of int
+    var cells: list of string
+    var nextId: int = dbNextRecordId(areasDb)
+    var pageRows: int = terminal.rows - 8
+    var shown: int = 0
+    var id: int = 0
+    var rec: text
+
+    areaListWidths(w)
+    cells.add("ID")
+    cells.add("Name")
+    if terminal.columns >= 80 {
+        cells.add("Description")
+        cells.add("Access")
+    }
+    sendTableHeader("File Areas", cells, w)
+
+    id = listFromId
+    while id < nextId and shown < pageRows {
+        rec = dbFind(areasDb, id)
+        if rec.length == areaRecordSize {
+            cells.clear()
+            cells.add(intStr(id))
+            cells.add(dbExtractString(rec, aOffName))
+            if terminal.columns >= 80 {
+                cells.add(dbExtractString(rec, aOffDescription))
+                cells.add(areaAccessName(rec[aOffAccess]))
+            }
+            sendLine(rowLine(cells, w))
+            shown = shown + 1
+        }
+        id = id + 1
+    }
+    listFromId = id
+    finishListPage(areasDb, nextId, areaRecordSize, "sysopareas", w)
+}
+
+func startShowArea() {
+    user.screen = "showarea"
+    displayPrompt()
+}
+
+// Empty input cancels; otherwise an area id.
+func showAreaInput(input: string) {
+    if input == "" {
+        gotoScreen("sysopareas")
+        return
+    }
+    if not loadArea(parseIntStr(input)) {
+        sendLine("No such area.")
+        displayPrompt()
+        return
+    }
+    drawAreaDetails()
+    user.screen = "sysopareas"
+    displayPrompt()
+}
+
+func folderName(folder: string): string {
+    if folder == "" { return "(app directory)" }
+    return folder
+}
+
+// Renders the globally loaded `area` (see loadArea in areasdb.cla).
+func drawAreaDetails() {
+    var w: list of int
+    detailWidths(w)
+    sendTableTitle("Area Details", w)
+    sendDetailRow("ID",          intStr(area.id), w)
+    sendDetailRow("Name",        area.name, w)
+    sendDetailRow("Description", area.description, w)
+    sendDetailRow("Folder",      folderName(area.folder), w)
+    sendDetailRow("Access",      areaAccessName(area.access), w)
+    sendRule(BottomLeft, BottomCenter, BottomRight, w)
+}
+
+func startEditArea() {
+    user.screen = "editareaid"
+    displayPrompt()
+}
+
+// Edits buffer in the global `area`; Q discards (the next loadArea
+// overwrites it), S writes it back.
+func editAreaIdInput(input: string) {
+    if input == "" {
+        gotoScreen("sysopareas")
+        return
+    }
+    if not loadArea(parseIntStr(input)) {
+        sendLine("No such area.")
+        displayPrompt()
+        return
+    }
+    user.screen = "editarea"
+    drawEditAreaCard()
+    displayPrompt()
+}
+
+func drawEditAreaCard() {
+    var w: list of int
+    editWidths(w)
+    sendTableTitle("Edit Area", w)
+    sendDetailRow("ID",             intStr(area.id), w)
+    sendDetailRow("N) Name",        area.name, w)
+    sendDetailRow("D) Description", area.description, w)
+    sendDetailRow("F) Folder",      folderName(area.folder), w)
+    sendDetailRow("A) Access",      areaAccessName(area.access), w)
+    sendRule(BottomLeft, BottomCenter, BottomRight, w)
+}
+
+func editAreaChoice(input: string) {
+    switch upperStr(input) {
+    case "N", "D", "F", "A" {
+        editField = upperStr(input)[0]
+        user.screen = "editareaval"
+        displayPrompt()
+    }
+    case "S" {
+        if saveArea() {
+            sendLine("Saved.")
+        } else {
+            sendLine("Save failed: " + lastError.message)
+        }
+        gotoScreen("sysopareas")
+    }
+    case "Q" { gotoScreen("sysopareas") }
+    case "?" {
+        drawEditAreaCard()
+        displayPrompt()
+    }
+    else { displayPrompt() }
+    }
+}
+
+func editAreaValuePrompt() {
+    switch editField {
+    case 'N' { modem.send("Name [" + area.name + "]: ") }
+    case 'D' { modem.send("Description [" + area.description + "]: ") }
+    case 'F' { modem.send("Folder (- = app directory) [" + folderName(area.folder) + "]: ") }
+    case 'A' { modem.send("Access (A=all, S=sysop) [" + areaAccessName(area.access) + "]: ") }
+    }
+}
+
+// Enter keeps the current value; a folder of "-" clears it (the app
+// directory), since an empty entry means keep like every other field.
+func editAreaValue(input: string) {
+    var ok: bool = true
+    if input != "" {
+        switch editField {
+        case 'N' {
+            if input.length > 63 {
+                sendLine("Names are limited to 63 characters.")
+                ok = false
+            } else {
+                area.name = input
+            }
+        }
+        case 'D' {
+            if input.length > 63 {
+                sendLine("Descriptions are limited to 63 characters.")
+                ok = false
+            } else {
+                area.description = input
+            }
+        }
+        case 'F' {
+            if input == "-" {
+                area.folder = ""
+            } else if input.length > 63 {
+                sendLine("Folders are limited to 63 characters.")
+                ok = false
+            } else {
+                area.folder = input
+            }
+        }
+        case 'A' {
+            switch upperStr(input) {
+            case "A" { area.access = char(0) }
+            case "S" { area.access = accessSysop }
+            else {
+                sendLine("A or S.")
+                ok = false
+            }
+            }
+        }
+        }
+    }
+    if not ok {
+        displayPrompt()
+        return
+    }
+    user.screen = "editarea"
+    drawEditAreaCard()
+    displayPrompt()
+}
+
+func startDeleteArea() {
+    user.screen = "delareaid"
+    displayPrompt()
+}
+
+// ponytail: deleting an area leaves its ARE<nn> files and folder
+// behind (Clarus has no file delete); clean up when it does.
+func delAreaIdInput(input: string) {
+    if input == "" {
+        gotoScreen("sysopareas")
+        return
+    }
+    if not loadArea(parseIntStr(input)) {
+        sendLine("No such area.")
+        displayPrompt()
+        return
+    }
+    drawAreaDetails()
+    user.screen = "delareaconfirm"
+    displayPrompt()
+}
+
+func delAreaConfirm(input: string) {
+    if upperStr(input) == "Y" {
+        if dbDelete(areasDb, area.id) {
+            sendLine("Area deleted.")
+        } else {
+            sendLine("Delete failed: " + lastError.message)
+        }
+    } else {
+        sendLine("Cancelled.")
+    }
+    gotoScreen("sysopareas")
+}
+
+// New area: name -> description -> folder (default app directory) ->
+// access (default all), then create and show the details. Empty name
+// cancels.
+
+func startNewArea() {
+    area.name = ""
+    area.description = ""
+    area.folder = ""
+    area.access = char(0)
+    user.screen = "newareaname"
+    displayPrompt()
+}
+
+func newAreaName(input: string) {
+    if input == "" {
+        sendLine("Cancelled.")
+        gotoScreen("sysopareas")
+        return
+    }
+    if input.length > 63 {
+        sendLine("Names are limited to 63 characters.")
+        displayPrompt()
+        return
+    }
+    area.name = input
+    user.screen = "newareadesc"
+    displayPrompt()
+}
+
+func newAreaDesc(input: string) {
+    if input.length > 63 {
+        sendLine("Descriptions are limited to 63 characters.")
+        displayPrompt()
+        return
+    }
+    area.description = input
+    user.screen = "newareafolder"
+    displayPrompt()
+}
+
+func newAreaFolder(input: string) {
+    if input.length > 63 {
+        sendLine("Folders are limited to 63 characters.")
+        displayPrompt()
+        return
+    }
+    area.folder = input
+    user.screen = "newareaaccess"
+    displayPrompt()
+}
+
+func newAreaAccess(input: string) {
+    var id: int = 0
+    switch upperStr(input) {
+    case "", "A" { area.access = char(0) }
+    case "S"     { area.access = accessSysop }
+    else {
+        sendLine("A or S.")
+        displayPrompt()
+        return
+    }
+    }
+    id = createArea(area.name, area.description, area.folder, area.access)
+    if id < 1 {
+        sendLine("Create failed: " + lastError.message)
+        gotoScreen("sysopareas")
+        return
+    }
+    area.id = id
+    sendLine("Area " + intStr(id) + " created.")
+    drawAreaDetails()
+    user.screen = "sysopareas"
     displayPrompt()
 }

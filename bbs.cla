@@ -190,6 +190,7 @@ func displayMenu() {
     case "main"        { drawMainMenu() }
     case "sysop"       { drawSysopMenu() }
     case "sysopboards" { drawSysopBoardsMenu() }
+    case "sysopareas"  { drawSysopAreasMenu() }
     case "sysopusers"  { drawSysopUsersMenu() }
     case "boards"      { drawBoardPicker() }
     case "posts"       { drawPostsMenu() }
@@ -211,18 +212,24 @@ func displayPrompt() {
     case "main"        { modem.send("Main Menu> ") }
     case "sysop"       { modem.send("Sysop Menu> ") }
     case "sysopboards" { modem.send("Sysop:Boards> ") }
+    case "sysopareas"  { modem.send("Sysop:Areas> ") }
     case "sysopusers"  { modem.send("Sysop:Users> ") }
     case "showuser"    { modem.send("User ID or name: ") }
     case "showboard"   { modem.send("Board ID: ") }
+    case "showarea"    { modem.send("Area ID: ") }
     case "edituserid"  { modem.send("User ID or name: ") }
     case "editboardid" { modem.send("Board ID: ") }
-    case "edituser", "editboard" { modem.send("Field letter, S)ave, Q)uit: ") }
+    case "editareaid"  { modem.send("Area ID: ") }
+    case "edituser", "editboard", "editarea" { modem.send("Field letter, S)ave, Q)uit: ") }
     case "edituserval"  { editUserValuePrompt() }
     case "editboardval" { editBoardValuePrompt() }
+    case "editareaval"  { editAreaValuePrompt() }
     case "deluserid"    { modem.send("User ID or name: ") }
     case "delboardid"   { modem.send("Board ID: ") }
+    case "delareaid"    { modem.send("Area ID: ") }
     case "deluserconfirm"  { modem.send("Delete this user? (Y/N): ") }
     case "delboardconfirm" { modem.send("Delete this board? (Y/N): ") }
+    case "delareaconfirm"  { modem.send("Delete this area? (Y/N): ") }
     case "boards" { modem.send("Board ID> ") }
     case "posts", "postview" { postsPrompt() }
     case "mail", "mailview" { mailPrompt() }
@@ -235,6 +242,10 @@ func displayPrompt() {
     case "newboardname" { modem.send("Board name: ") }
     case "newboarddesc" { modem.send("Description: ") }
     case "newboardnet"  { modem.send("Network [local]: ") }
+    case "newareaname"   { modem.send("Area name: ") }
+    case "newareadesc"   { modem.send("Description: ") }
+    case "newareafolder" { modem.send("Folder (Enter = app directory): ") }
+    case "newareaaccess" { modem.send("Access (A=all, S=sysop) [A]: ") }
     }
 }
 
@@ -284,21 +295,29 @@ func processInput(input: string) {
     case "main"        { mainChoice(input) }
     case "sysop"       { sysopChoice(input) }
     case "sysopboards" { sysopBoardsChoice(input) }
+    case "sysopareas"  { sysopAreasChoice(input) }
     case "sysopusers"  { sysopUsersChoice(input) }
     case "userlist"    { userListInput(input) }
     case "boardlist"   { boardListInput(input) }
+    case "arealist"    { areaListInput(input) }
     case "showuser"    { showUserInput(input) }
     case "showboard"   { showBoardInput(input) }
+    case "showarea"    { showAreaInput(input) }
     case "edituserid"   { editUserIdInput(input) }
     case "edituser"     { editUserChoice(input) }
     case "edituserval"  { editUserValue(input) }
     case "editboardid"  { editBoardIdInput(input) }
     case "editboard"    { editBoardChoice(input) }
     case "editboardval" { editBoardValue(input) }
+    case "editareaid"   { editAreaIdInput(input) }
+    case "editarea"     { editAreaChoice(input) }
+    case "editareaval"  { editAreaValue(input) }
     case "deluserid"       { delUserIdInput(input) }
     case "deluserconfirm"  { delUserConfirm(input) }
     case "delboardid"      { delBoardIdInput(input) }
     case "delboardconfirm" { delBoardConfirm(input) }
+    case "delareaid"       { delAreaIdInput(input) }
+    case "delareaconfirm"  { delAreaConfirm(input) }
     case "boards" { boardPickerInput(input) }
     case "posts"  { postsChoice(input) }
     case "postview" { postViewChoice(input) }
@@ -313,6 +332,10 @@ func processInput(input: string) {
     case "newboardname" { newBoardName(input) }
     case "newboarddesc" { newBoardDesc(input) }
     case "newboardnet"  { newBoardNet(input) }
+    case "newareaname"   { newAreaName(input) }
+    case "newareadesc"   { newAreaDesc(input) }
+    case "newareafolder" { newAreaFolder(input) }
+    case "newareaaccess" { newAreaAccess(input) }
     case "logoff"   { }   // ignore trailing input (e.g. the modem's OK)
     }
 }
