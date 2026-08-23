@@ -239,3 +239,11 @@ no knowledge of vDB, exactly as `btree.c` is in libvdb.
 
 Records and arrays can hold `filehandle` values, so a `Database`
 record owns its open files, mirroring the C struct.
+
+**TODO — iteration API.** vDB has no way to walk records except
+`dbNextRecordId(db)` + probing `dbFind` over 1 .. next−1 (IDs are
+dense and never reused, so this works but does one index lookup per
+probe, misses included). Add a real cursor — e.g. `dbFirstId`/
+`dbNextId(afterId)` walking the primary index's leaf chain (which is
+already maintained in sorted order for exactly this) — when boards
+get big enough for probing to hurt.

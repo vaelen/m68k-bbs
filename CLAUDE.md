@@ -132,6 +132,13 @@ The received-byte path is:
   design: `docs/vdb.md`). `usersdb.cla` — the "Users" vDB database
   (160-byte records: username/hash/email/access/created/lastSeen;
   vDB record ID = user ID; username indexed case-insensitively).
+  `boardsdb.cla` — the "Boards" database (name/description/network,
+  record ID = board ID). `postsdb.cla` — one board's posts at a time
+  (`postsOpen(boardId)`): header records in `BRD<nn>.*` (sender/
+  created/threadId/subject, thread ID indexed; 0 = thread starter,
+  else the starter's post ID) plus exact-fit bodies in an append-only
+  `BRD<nn>.MSG` heap, written and flushed before the journaled header
+  add so a crash only orphans heap bytes.
 - `user.cla` — `User` record (name, authenticated, passwordHash,
   screen, input mode, buffer, id, email, access, created, lastSeen)
   + global `user`; `hashPassword` (djb2,
@@ -180,8 +187,9 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
 ## Layout
 
 - `bbs.cla` — app entry: UI, session flow, menus (includes the rest)
-- `scanner.cla`, `user.cla`, `usersdb.cla`, `terminal.cla`,
-  `termio.cla`, `btree.cla`, `vdb.cla` — modules above
+- `scanner.cla`, `user.cla`, `usersdb.cla`, `boardsdb.cla`,
+  `postsdb.cla`, `terminal.cla`, `termio.cla`, `btree.cla`,
+  `vdb.cla` — modules above
 - `tests/` — host-lane test suites; `scripts/` — build/test/deploy
 - `bin/`, `vendor/` — pinned compiler + runtime/toolbox snapshot
 - `docs/` — language reference + Snow how-to (symlinks), language-gaps.md

@@ -805,6 +805,17 @@ func dbRecordCount(db: Database): int {
     return hdr.intAt(10)
 }
 
+// The next record ID this database will assign; -1 on error. IDs are
+// dense and never reused, so callers can enumerate all records by
+// probing dbFind over 1 .. dbNextRecordId-1 (deleted IDs miss).
+// TODO: replace with a real iteration/cursor API (docs/vdb-clarus.md).
+func dbNextRecordId(db: Database): int {
+    var hdr: text
+    if not dbIsOpen(db) { return -1 }
+    if not dbReadHeader(db, hdr) { return -1 }
+    return hdr.intAt(14)
+}
+
 // --- Maintenance ------------------------------------------------------
 
 // Compact the database: slide every active record down into the empty
@@ -949,6 +960,38 @@ func dbFindByString(db: Database, fieldName: string, value: string): int {
         i = i + 1
     }
     return -1
+}
+
+// All records whose indexed i32 field equals `value`, in insertion
+// order; fills `ids` (cleared), each candidate verified against the
+// actual field. Returns true if any matched.
+func dbFindAllByInt(db: Database, fieldName: string, value: int, ids: list of int): bool {
+    var hdr: text
+    var rec: text
+    var cands: list of int
+    var idx: filehandle
+    var slot: int
+    var base: int
+    var offset: int
+    var i: int = 0
+    ids.clear()
+    if not dbIsOpen(db) { return false }
+    if not dbReadHeader(db, hdr) { return false }
+    slot = dbFindIndexSlot(hdr, fieldName)
+    if slot < 0 { return false }
+    base = 32 + slot * 32
+    if int(hdr[base + 30]) != itID { return false }
+    offset = hdr.wordAt(base + 28)
+    idx = btOpen(dbIndexPath(db.name, int(hdr[base + 31])))
+    if idx == nil { return false }
+    btFind(idx, value, cands)
+    idx.close()
+    while i < cands.count {
+        rec = dbFind(db, cands[i])
+        if rec.length > 0 and dbExtractKey(rec, offset, itID) == value { ids.add(cands[i]) }
+        i = i + 1
+    }
+    return ids.count > 0
 }
 
 // Find the first record whose indexed i32 field equals `value`.

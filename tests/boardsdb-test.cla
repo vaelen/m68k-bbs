@@ -1,0 +1,53 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for the Boards database module (boardsdb.cla).
+// Run by scripts/test.sh from a scratch directory.
+// Exits 0 on pass, 1 on the first failure.
+
+include "../boardsdb.cla"
+
+var failures: int = 0
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+on App.startCLI(args: list of string) {
+    var id1: int
+    var id2: int
+
+    expect(boardsOpen(), "boards db created on first open")
+    expect(boardCount() == 0, "no boards yet")
+    expect(not loadBoard(1), "missing board fails to load")
+
+    id1 = createBoard("General", "General discussion", "local")
+    id2 = createBoard("Retro", "Retrocomputing talk", "local")
+    expect(id1 == 1 and id2 == 2, "board IDs assigned in order")
+    expect(boardCount() == 2, "count tracks creation")
+    expect(boardsNextId() == 3, "next ID exposed for enumeration")
+
+    expect(loadBoard(id1), "load first board")
+    expect(board.id == id1, "board id set")
+    expect(board.name == "General", "name roundtrip")
+    expect(board.description == "General discussion", "description roundtrip")
+    expect(board.network == "local", "network roundtrip")
+
+    boardsClose()
+    expect(boardsOpen(), "existing db reopens")
+    expect(boardCount() == 2, "count survives reopen")
+    expect(loadBoard(id2) and board.name == "Retro", "boards survive reopen")
+    boardsClose()
+
+    if failures > 0 {
+        log("boardsdb-test: FAILED")
+        quit 1
+    }
+    log("boardsdb-test: all passed")
+    quit
+}

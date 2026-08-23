@@ -1,0 +1,88 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// The Boards database: one record per message board. Each board's
+// posts live in their own database (postsdb.cla), keyed by board ID,
+// so posts never need a board-ID index.
+//
+// On-disk record ("Boards" database, 160 bytes, vDB record ID =
+// board ID):
+//   0    name, 64-byte Pascal field
+//   64   description, 64-byte Pascal field
+//   128  network, 16-byte Pascal field ("local" for now; Fidonet-style
+//        echomail networks later)
+//   144+ reserved
+
+include "vdb.cla"
+
+const boardRecordSize: int = 160
+const bOffName: int = 0
+const bOffDescription: int = 64
+const bOffNetwork: int = 128
+
+record Board {
+    id: int
+    name: string(63)
+    description: string(63)
+    network: string(15)
+}
+
+var boardsDb: Database
+var board: Board    // last loaded board
+
+// Open the Boards database, creating it on first run.
+func boardsOpen(): bool {
+    boardsDb = dbOpen("Boards", "68BB")
+    if dbIsOpen(boardsDb) { return true }
+    boardsDb = dbCreate("Boards", boardRecordSize, "68BB")
+    return dbIsOpen(boardsDb)
+}
+
+func boardsClose() {
+    if dbIsOpen(boardsDb) { dbClose(boardsDb) }
+    boardsDb = new Database
+}
+
+func boardCount(): int {
+    return dbRecordCount(boardsDb)
+}
+
+// For enumerating boards: loop loadBoard over 1 .. boardsNextId()-1.
+func boardsNextId(): int {
+    return dbNextRecordId(boardsDb)
+}
+
+// Create a board; returns the new board ID, or -1.
+func createBoard(name: string, description: string, network: string): int {
+    var t: text
+    var n: string = name
+    var d: string = description
+    var w: string = network
+    if n.length > 63 { n = n[0, 63] }
+    if d.length > 63 { d = d[0, 63] }
+    if w.length > 15 { w = w[0, 15] }
+    t.append(char(n.length))
+    t.append(n)
+    while t.length < bOffDescription {
+        t.append(char(0))
+    }
+    t.append(char(d.length))
+    t.append(d)
+    while t.length < bOffNetwork {
+        t.append(char(0))
+    }
+    t.append(char(w.length))
+    t.append(w)
+    return dbAdd(boardsDb, t)
+}
+
+// Load board `id` into the global `board`.
+func loadBoard(id: int): bool {
+    var rec: text = dbFind(boardsDb, id)
+    if rec.length != boardRecordSize { return false }
+    board.id = id
+    board.name = dbExtractString(rec, bOffName)
+    board.description = dbExtractString(rec, bOffDescription)
+    board.network = dbExtractString(rec, bOffNetwork)
+    return true
+}

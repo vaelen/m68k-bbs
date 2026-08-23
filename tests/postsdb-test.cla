@@ -1,0 +1,95 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for the per-board posts module (postsdb.cla):
+// header records in vDB, bodies in the append-only .MSG heap.
+// Run by scripts/test.sh from a scratch directory.
+// Exits 0 on pass, 1 on the first failure.
+
+include "../postsdb.cla"
+
+var failures: int = 0
+var ids: list of int
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+func heapSize(): int {
+    var b: filehandle = postsBody
+    return b.size()
+}
+
+on App.startCLI(args: list of string) {
+    var id1: int
+    var id2: int
+    var id3: int
+    var r: text
+    var body1: text
+    var body2: text
+
+    body1 = "Hello, world!"
+    body2 = "This is a longer reply body, packed right after the first."
+
+    expect(not postsOpen(0), "board ID 0 rejected")
+    expect(postsOpen(1), "board 1 posts db created")
+    expect(postCount() == 0, "no posts yet")
+    expect(heapSize() == 0, "body heap starts empty")
+
+    // a thread starter and a reply
+    id1 = addPost("andrew", 0, "First post!", body1)
+    expect(id1 == 1, "thread starter added")
+    id2 = addPost("alice", id1, "Re: First post!", body2)
+    expect(id2 == 2, "reply added")
+    expect(heapSize() == body1.length + body2.length, "bodies packed exactly")
+
+    expect(loadPost(id1), "load starter header")
+    expect(post.sender == "andrew", "sender roundtrip")
+    expect(post.threadId == 0, "starter thread ID is 0")
+    expect(post.subject == "First post!", "subject roundtrip")
+    expect(post.created != 0, "created timestamp set")
+    r = postBody(id1)
+    expect(r == body1, "starter body roundtrip")
+    r = postBody(id2)
+    expect(r == body2, "reply body read from its heap offset")
+
+    // a bodyless post and a second reply
+    id3 = addPost("bob", id1, "Re: First post!", postBody(99))
+    expect(id3 == 3, "bodyless post added")
+    expect(postBody(id3).length == 0, "no body comes back empty")
+    expect(heapSize() == body1.length + body2.length, "empty body wrote nothing")
+
+    // thread listing: starter first, replies in posting order
+    threadPosts(id1, ids)
+    expect(ids.count == 3, "thread has three posts")
+    expect(ids[0] == id1 and ids[1] == id2 and ids[2] == id3, "thread order is starter then replies")
+    threadPosts(99, ids)
+    expect(ids.count == 0, "missing thread is empty")
+
+    // boards are isolated from each other
+    expect(postsOpen(2), "board 2 posts db created")
+    expect(postCount() == 0, "board 2 is empty")
+    expect(addPost("carol", 0, "Other board", postBody(99)) == 1, "board 2 gets its own ID space")
+
+    // persistence: reopen board 1, headers and heap offsets intact
+    expect(postsOpen(1), "board 1 reopens")
+    expect(postCount() == 3, "post count survives reopen")
+    expect(postsNextId() == 4, "next ID survives reopen")
+    r = postBody(id2)
+    expect(r == body2, "heap offsets still valid after reopen")
+    threadPosts(id1, ids)
+    expect(ids.count == 3, "thread index survives reopen")
+    postsClose()
+
+    if failures > 0 {
+        log("postsdb-test: FAILED")
+        quit 1
+    }
+    log("postsdb-test: all passed")
+    quit
+}

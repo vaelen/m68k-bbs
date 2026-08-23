@@ -1,0 +1,174 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// Posts for one message board: fixed-size header records in a vDB
+// database plus an append-only body heap, the classic message-base
+// split (Hudson/Squish/JAM). A board's files are BRD<nn>.DAT/.IDX/
+// .I00/.JNL (headers, board IDs 1-99) and BRD<nn>.MSG (bodies).
+//
+// On-disk header record (160 bytes, vDB record ID = post ID):
+//   0    sender, 64-byte Pascal field (a name, not a user ID, so
+//        echomail senders need not be local users)
+//   64   created (i32, Mac-epoch seconds)
+//   68   thread ID (i32, indexed): 0 for a thread starter; the
+//        starter's post ID on replies
+//   72   subject, 64-byte Pascal field
+//   136  body offset in the .MSG heap (i32)
+//   140  body length (i32; 0 = no body)
+//   144+ reserved
+//
+// Bodies are exact-fit and never journaled: addPost appends + flushes
+// the body BEFORE the journaled header add, so a crash can only leave
+// orphaned heap bytes, never a header pointing at missing text.
+// Deleted posts orphan their body bytes; a heap compactor can come
+// later if it ever matters.
+
+include "vdb.cla"
+
+const postRecordSize: int = 160
+const pOffSender: int = 0
+const pOffCreated: int = 64
+const pOffThread: int = 68
+const pOffSubject: int = 72
+const pOffBodyOff: int = 136
+const pOffBodyLen: int = 140
+
+record Post {
+    id: int
+    sender: string(63)
+    created: int
+    threadId: int
+    subject: string(63)
+}
+
+var postsDb: Database
+var postsBody: filehandle
+var post: Post      // last loaded post header
+
+func postsName(boardId: int): string {
+    return "BRD" + char(int('0') + boardId / 10) + char(int('0') + boardId mod 10)
+}
+
+// Open board `boardId`'s posts (closing any board already open),
+// creating its files on first use.
+func postsOpen(boardId: int): bool {
+    var name: string
+    postsClose()
+    if boardId < 1 or boardId > 99 { return false }
+    name = postsName(boardId)
+    postsDb = dbOpen(name, "68BB")
+    if not dbIsOpen(postsDb) {
+        postsDb = dbCreate(name, postRecordSize, "68BB")
+        if not dbIsOpen(postsDb) { return false }
+        if not dbAddIndex(postsDb, "Thread", itID, pOffThread) {
+            postsClose()
+            return false
+        }
+    }
+    postsBody = file.open(name + ".MSG")
+    if postsBody == nil {
+        postsBody = file.create(name + ".MSG", "TEXT", "68BB")
+    }
+    if postsBody == nil {
+        postsClose()
+        return false
+    }
+    return true
+}
+
+func postsClose() {
+    var b: filehandle = postsBody
+    if dbIsOpen(postsDb) { dbClose(postsDb) }
+    postsDb = new Database
+    if b != nil { b.close() }
+    postsBody = nil
+}
+
+func postCount(): int {
+    return dbRecordCount(postsDb)
+}
+
+// For enumerating posts: loop loadPost over 1 .. postsNextId()-1.
+func postsNextId(): int {
+    return dbNextRecordId(postsDb)
+}
+
+func packPost(sender: string, threadId: int, subject: string, bodyOff: int, bodyLen: int): text {
+    var t: text
+    var s: string = sender
+    var sub: string = subject
+    if s.length > 63 { s = s[0, 63] }
+    if sub.length > 63 { sub = sub[0, 63] }
+    t.append(char(s.length))
+    t.append(s)
+    while t.length < pOffCreated {
+        t.append(char(0))
+    }
+    btAppendInt(t, now())
+    btAppendInt(t, threadId)
+    t.append(char(sub.length))
+    t.append(sub)
+    while t.length < pOffBodyOff {
+        t.append(char(0))
+    }
+    btAppendInt(t, bodyOff)
+    btAppendInt(t, bodyLen)
+    return t
+}
+
+// Add a post; threadId is 0 for a new thread, or the thread starter's
+// post ID for a reply. Returns the new post ID, or -1.
+func addPost(sender: string, threadId: int, subject: string, body: text): int {
+    var b: filehandle = postsBody
+    var off: int
+    if not dbIsOpen(postsDb) or b == nil { return -1 }
+    off = b.size()
+    if off < 0 { return -1 }
+    if body.length > 0 {
+        // body first, then the journaled header (see file comment)
+        if not b.append(body) { return -1 }
+        if not b.flush() { return -1 }
+    }
+    return dbAdd(postsDb, packPost(sender, threadId, subject, off, body.length))
+}
+
+// Load post `id`'s header into the global `post`.
+func loadPost(id: int): bool {
+    var rec: text = dbFind(postsDb, id)
+    if rec.length != postRecordSize { return false }
+    post.id = id
+    post.sender = dbExtractString(rec, pOffSender)
+    post.created = rec.intAt(pOffCreated)
+    post.threadId = rec.intAt(pOffThread)
+    post.subject = dbExtractString(rec, pOffSubject)
+    return true
+}
+
+// Fetch post `id`'s body from the heap; empty if the post has none
+// (or doesn't exist).
+func postBody(id: int): text {
+    var none: text
+    var out: text
+    var rec: text = dbFind(postsDb, id)
+    var b: filehandle = postsBody
+    if rec.length != postRecordSize or b == nil { return none }
+    if rec.intAt(pOffBodyLen) == 0 { return none }
+    if not b.readAt(rec.intAt(pOffBodyOff), rec.intAt(pOffBodyLen), out) { return none }
+    if out.length != rec.intAt(pOffBodyLen) { return none }
+    return out
+}
+
+// All post IDs in a thread: the starter first, then replies in
+// posting order. Empty if `root` doesn't exist.
+func threadPosts(root: int, ids: list of int) {
+    var more: list of int
+    var i: int = 0
+    ids.clear()
+    if dbFind(postsDb, root).length != postRecordSize { return }
+    ids.add(root)
+    dbFindAllByInt(postsDb, "Thread", root, more)
+    while i < more.count {
+        ids.add(more[i])
+        i = i + 1
+    }
+}
