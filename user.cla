@@ -3,15 +3,12 @@
 
 // Session state for the connected caller.
 
-enum InputMode { Line, Character }
-
 record User {
     name:          string(31)
     authenticated: bool
     passwordHash:  int
     screen:        string(31) = "login"
-    mode:          InputMode          // defaults to Line
-    buffer:        string(255)
+    buffer:        string(255)        // line-mode input so far
     id:            int                // vDB record ID; 0 = not stored
     email:         string(63)
     access:        char = 'U'         // 'U' user, 'S' sysop

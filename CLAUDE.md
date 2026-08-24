@@ -187,10 +187,11 @@ inputChar (bbs.cla) → processInput`.
   the file itself lives at `<area folder>:<name>` (`filePath`) —
   storage only so far, no UI or transfers (`docs/files.md`).
 - `user.cla` — `User` record (name, authenticated, passwordHash,
-  screen, input mode, buffer, id, email, access, created, lastSeen)
+  screen, buffer, id, email, access, created, lastSeen)
   + global `user`; `hashPassword` (djb2,
   non-cryptographic). `terminal.cla` — `Terminal` record (columns,
-  rows, color, echo — on by default, type: ASCII/ANSI/VT100, ansi — set for the ANSI and
+  rows, color, echo — on by default, linemode — off by default, set per screen by
+  `displayPrompt` via `lineScreen`, type: ASCII/ANSI/VT100, ansi — set for the ANSI and
   VT100 types, telnet, reportedTerminalType, reportedSpeed) + global
   `terminal`, `Color`
   enum, and pure ANSI sequence builders (`colorSeq`, `backgroundSeq`,
@@ -199,8 +200,10 @@ inputChar (bbs.cla) → processInput`.
   `termio.cla` — connection-facing send wrappers over those (take a
   `connection` parameter, gated on `terminal.color`).
 - `bbs.cla` — app/UI declarations, session flow. `inputChar` assembles
-  input (Line mode: buffer until CR, BS/DEL rubs out; Character mode:
-  each char) and echoes it back when `terminal.echo` (classic remote
+  input (`terminal.linemode` on — text prompts, IDs, item numbers,
+  editor lines: buffer until CR, BS/DEL rubs out; off — menus, Y/N,
+  pagers: each key acts at once, Enter arrives as "", echoed hotkey
+  style with a newline) and echoes it back when `terminal.echo` (classic remote
   echo; CR echoes as `terminal.eol`, echo fully off on the probe and
   logoff screens, characters hidden — newline still echoed — on the
   password screens and the sysop password reset). Echo hard-wraps at

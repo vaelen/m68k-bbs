@@ -116,16 +116,22 @@ func echoBuffer() {
 
 // Collect connected-caller input, one char at a time. Called by
 // telnet.cla with every byte left after modem result-code filtering
-// (scanner.cla) and telnet command processing. Line mode buffers until
+// (scanner.cla) and telnet command processing. Line mode
+// (terminal.linemode, set per screen by displayPrompt) buffers until
 // CR (LF is dropped, so CRLF terminals work) and handles BS/DEL;
-// Character mode forwards each char immediately. Data arriving with no
-// caller connected is dropped.
+// otherwise each key acts at once: Enter arrives as "", any other key
+// as itself, echoed hotkey-style with a newline after it. Data
+// arriving with no caller connected is dropped.
 func inputChar(c: char) {
     var single: string(1)
     if not isConnected { return }
-    if user.mode == Character {
-        echoChar(c)
-        single = single + c
+    if not terminal.linemode {
+        if c == LF or c == BS or c == DEL { return }
+        if c != CR {
+            single = single + c
+            echoChar(c)
+        }
+        if echoActive() { sendData(terminal.eol) }
         processInput(single)
         return
     }
@@ -284,7 +290,25 @@ func displayMenu() {
     }
 }
 
+// Screens that take typed text (names, IDs, numbers, editor lines)
+// buffer until Enter; every other prompt acts on the first key.
+func lineScreen(s: string): bool {
+    switch s {
+    case "login", "password", "newname", "newpass", "newpass2", "newemail" { return true }
+    case "showuser", "showboard", "showarea" { return true }
+    case "edituserid", "editboardid", "editareaid" { return true }
+    case "edituserval", "editboardval", "editareaval" { return true }
+    case "deluserid", "delboardid", "delareaid" { return true }
+    case "boards", "areas", "posts", "files", "mail" { return true }   // IDs / item numbers
+    case "mailto", "editsubject", "editbody", "delpostnum", "delfilenum" { return true }
+    case "newboardname", "newboarddesc", "newboardnet" { return true }
+    case "newareaname", "newareadesc", "newareafolder" { return true }
+    }
+    return false
+}
+
 func displayPrompt() {
+    terminal.linemode = lineScreen(user.screen)
     switch user.screen {
     case "login"    { sendData("Username: ") }
     case "password" { sendData("Password: ") }
@@ -370,8 +394,8 @@ func drawMainMenu() {
     sendLine("")
 }
 
-// Act on one completed input (a line, or a single char in Character
-// mode) according to the screen the user is on.
+// Act on one completed input (a line, or a single key on hotkey
+// screens -- "" for Enter) according to the screen the user is on.
 func processInput(input: string) {
     switch user.screen {
     case "login"    { loginName(input) }
@@ -669,7 +693,7 @@ every 30 ticks {
 // Called by scanner.cla's feedChar on a full "\r\nCONNECT <n>\r\n".
 func connected() {
     isConnected = true
-    user = new User          // fresh session: login screen, Line mode
+    user = new User          // fresh session: login screen
     terminal = new Terminal  // fresh session: 80x24 ASCII, no color
     telnetReset()
     telnetIntercept = true   // watch for negotiation during the probe

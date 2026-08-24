@@ -61,6 +61,7 @@ on App.startCLI(args: list of string) {
     // Default eol is CRLF.
     expect(terminal.eol == "\x0D\x0A", "default eol is CRLF")
     expect(terminal.echo, "echo defaults on")
+    expect(not terminal.linemode, "line mode defaults off")
 
     // output column tracking
     trackOutput("Username: ")

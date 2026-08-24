@@ -13,6 +13,8 @@ record Terminal {
     type:    TerminalType             // defaults to ASCII
     eol:     string(2) = "\x0D\x0A"   // line terminator sent to the caller
     echo:    bool = true              // BBS echoes received chars back
+    linemode: bool                    // buffer input until Enter (text
+                                      // prompts); off = each key acts
     ansi:    bool                     // terminal honors ANSI escape codes
     telnet:  bool                     // caller is a telnet client
     reportedTerminalType: string(40)  // client's TERMINAL-TYPE reply
