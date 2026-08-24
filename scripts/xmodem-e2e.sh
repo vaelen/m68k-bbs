@@ -3,8 +3,9 @@
 # against a real receiver: a small CLI harness (scanner + telnet +
 # xmodem, the same byte path bbs.cla uses, minus the menus -- the host
 # runtime has no UI lane, so bbs.cla itself only runs on the Mac)
-# listens on TCP, starts sending sample.bin on CONNECT in the mode
-# given as its argument, and lrz receives it. Needs socat and lrzsz.
+# listens on TCP and on CONNECT either sends sample.bin (arg X/1/Y;
+# lrz receives it) or receives into recv/ (arg RX/R1/RY; lsz sends
+# sample.bin). Needs socat and lrzsz.
 # Usage: scripts/xmodem-e2e.sh [port]
 set -e
 cd "$(dirname "$0")/.."
@@ -20,12 +21,19 @@ include "$REPO/xmodem.cla"
 
 var modem: connection
 var mode: char = 'X'
+var recv: bool = false
 
 func connected() {
     log("connected")
-    telnetSend(modem, "Start your receive now...\x0D\x0A")
-    xmodemSendStart("sample.bin", "sample.bin", mode)
+    telnetSend(modem, "Start now...\x0D\x0A")
+    if recv {
+        xmodemRecvStart(mode, "", "upload.bin")
+    } else {
+        xmodemSendStart("sample.bin", "sample.bin", mode)
+    }
 }
+func xferReceived(name: string, bytes: int) { log("received " + name + " " + string(bytes)) }
+func xferAcceptName(name: string): bool { return true }
 func disconnected() { log("disconnected") }
 func inputChar(c: char) { xmodemChar(c) }
 func telnetOut(s: string) { modem.send(s) }
@@ -48,7 +56,14 @@ func xferDone(ok: bool) {
 // can't build; the unit suite covers the timeouts.
 
 on App.startCLI(args: list of string) {
-    if args.count > 0 { mode = args[0][0] }
+    if args.count > 0 {
+        if args[0].length == 2 {
+            recv = true
+            mode = args[0][1]
+        } else {
+            mode = args[0][0]
+        }
+    }
     modem.open(serial "modem:57600")
 }
 on modem.received(data: text) {
@@ -96,8 +111,38 @@ EOF
     fi
 }
 
+# Uploads: the harness runs in recv/ (so the file lands there) and lsz
+# sends sample.bin from the driver.
+run_up() {   # $1 = mode (RX/R1/RY), $2 = lsz flags, $3 = expected name, $4 = expected size
+    (cd "$WORK/recv" && CLARUS_SERIAL_MODEM=listen:$PORT ../harness $1 > "../harness-up-$1.log" 2>&1) &
+    HARNESS=$!
+    sleep 1
+    cat > "$WORK/drive.sh" <<EOF
+#!/bin/sh
+printf '\r\nCONNECT 57600\r\n'; sleep 1
+cd "$WORK" && exec lsz $2 sample.bin
+EOF
+    chmod +x "$WORK/drive.sh"
+    rm -f "$WORK/recv/$3"
+    socat TCP:localhost:$PORT EXEC:"$WORK/drive.sh" 2>"$WORK/lsz-$1.log" || true
+    sleep 1
+    kill $HARNESS 2>/dev/null || true
+    wait $HARNESS 2>/dev/null || true
+    if head -c 3000 "$WORK/recv/$3" | cmp - "$WORK/sample.bin" \
+        && [ "$(wc -c < "$WORK/recv/$3")" -eq "$4" ] \
+        && grep -q "received $3 $4" "$WORK/harness-up-$1.log" \
+        && grep -q "transfer ok" "$WORK/harness-up-$1.log"; then
+        echo "ok: upload $1 -> $3"
+    else
+        echo "FAIL: upload $1"; cat "$WORK/lsz-$1.log" "$WORK/harness-up-$1.log"; exit 1
+    fi
+}
+
 run_one X "-X -b" checksum.bin 3072 checksum.bin
 run_one X "-X -b -c" crc.bin 3072 crc.bin
 run_one 1 "-X -b -c" xmodem1k.bin 3072 xmodem1k.bin
 run_one Y "--ymodem -b" sample.bin 3000 ""      # YMODEM names the file itself
+run_up RX "-X -b" upload.bin 3072
+run_up R1 "-X -b -k" upload.bin 3072
+run_up RY "--ymodem -b" sample.bin 3000
 echo "xmodem e2e passed"
