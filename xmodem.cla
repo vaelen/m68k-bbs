@@ -1,30 +1,49 @@
 // Copyright 2026, Andrew C. Young <andrew@vaelen.org>
 // SPDX-License-Identifier: MIT
 
-// XMODEM sender (128-byte blocks, CRC-16 or checksum), driven one
-// byte / one tick at a time so the runtime's receive pump is never
-// starved. Pure: talks to the world only through readAt on its own
-// handle and two callbacks the including program defines:
-//   xferOut(s: string)   -- bytes for the caller (bbs.cla: telnetSend)
+// XMODEM / XMODEM-1K / YMODEM sender, driven one byte / one tick at a
+// time so the runtime's receive pump is never starved. Pure: talks to
+// the world only through readAt on its own handle and two callbacks
+// the including program defines:
+//   xferOut(t: text)     -- bytes for the caller (bbs.cla: telnetSend)
 //   xferDone(ok: bool)   -- transfer over; the engine is idle already
 // bbs.cla feeds xmodemChar from inputChar on the "xfer" screen and
 // xmodemTick from the 30-tick timer (one tick = half a second).
+//
+// Modes (xmMode): 'X' XMODEM, 128-byte blocks, CRC if the receiver
+// starts with C, checksum on NAK. '1' XMODEM-1K: 1024-byte STX blocks
+// while at least 1K remains, 128-byte SOH blocks for the tail. 'Y'
+// YMODEM: 1K/CRC plus block 0 (name NUL size NUL) before the data
+// and an empty block 0 after the EOT to end the one-file batch.
 // Design: docs/file-transfers.md.
 
 const xmSOH: char = '\x01'
+const xmSTX: char = '\x02'
 const xmEOT: char = '\x04'
 const xmACK: char = '\x06'
 const xmNAK: char = '\x15'
 const xmCAN: char = '\x18'
 const xmSUB: char = '\x1A'
+const xmNUL: char = '\x00'
 
 const xmStartTicks: int = 120   // 60 s for the receiver's first C/NAK
 const xmAckTicks: int = 20      // 10 s per ACK
 const xmMaxErrors: int = 10
 
-enum XmState { xmIdle, xmWaitStart, xmWaitAck, xmWaitEotAck }
+enum XmState {
+    xmIdle
+    xmWaitStart        // receiver's first C / NAK
+    xmWaitHeaderAck    // YMODEM: block 0 sent
+    xmWaitDataStart    // YMODEM: block 0 ACKed, waiting for C
+    xmWaitAck          // data block sent
+    xmWaitEotAck       // EOT sent
+    xmWaitBatchStart   // YMODEM: EOT ACKed, waiting for C
+    xmWaitEndAck       // YMODEM: empty block 0 sent
+}
 
 var xmFile: filehandle
+var xmMode: char = 'X'
+var xmName: string(63)         // for YMODEM's block 0
 var xmSize: int = 0
 var xmPos: int = 0             // next file byte to send
 var xmBlock: int = 1           // next block number, wraps mod 256
@@ -33,10 +52,11 @@ var xmState: XmState = xmIdle
 var xmTimer: int = 0           // ticks in the current state
 var xmErrors: int = 0
 var xmCanCount: int = 0
-var xmLast: string(133)        // last frame, resent verbatim
+var xmLast: text               // last frame, resent verbatim
+var xmLastData: int = 0        // file bytes carried by xmLast
 
 // CRC-16/XMODEM: poly 0x1021, init 0, no reflection, no final XOR.
-// ponytail: bitwise loop (128x8 per block); swap for text.crc16x
+// ponytail: bitwise loop (8 steps per byte); swap for text.crc16x
 // when the runtime grows it (docs/language-gaps.md #8).
 func crcXmodem(t: text): int {
     var crc: int = 0
@@ -58,13 +78,15 @@ func crcXmodem(t: text): int {
     return crc
 }
 
-func xmodemSendStart(path: string) {
+func xmodemSendStart(path: string, name: string, mode: char) {
     xmFile = file.open(path)
     if xmFile == nil {
         log("XMODEM: cannot open " + path + ": " + lastError.message)
         xferDone(false)
         return
     }
+    xmMode = mode
+    xmName = name
     xmSize = xmFile.size()
     xmPos = 0
     xmBlock = 1
@@ -90,16 +112,33 @@ func xmodemChar(c: char) {
     case xmWaitStart {
         if c == 'C' {
             xmCrc = true
-        } else if c == xmNAK {
+        } else if c == xmNAK and xmMode != 'Y' {
             xmCrc = false
         } else {
             return
         }
-        xmNext()
+        if xmMode == 'Y' {
+            xmSendHeader(xmName, string(xmSize))
+            xmState = xmWaitHeaderAck
+            xmTimer = 0
+        } else {
+            xmNext()
+        }
+    }
+    case xmWaitHeaderAck {
+        if c == xmACK {
+            xmState = xmWaitDataStart
+            xmTimer = 0
+        } else if c == xmNAK {
+            xmRetry()
+        }
+    }
+    case xmWaitDataStart {
+        if c == 'C' { xmNext() }
     }
     case xmWaitAck {
         if c == xmACK {
-            xmPos = xmPos + 128
+            xmPos = xmPos + xmLastData
             xmBlock = (xmBlock + 1) mod 256
             xmNext()
         } else if c == xmNAK {
@@ -107,6 +146,25 @@ func xmodemChar(c: char) {
         }
     }
     case xmWaitEotAck {
+        if c == xmACK {
+            if xmMode == 'Y' {
+                xmState = xmWaitBatchStart
+                xmTimer = 0
+            } else {
+                xmFinish(true)
+            }
+        } else if c == xmNAK {
+            xmRetry()
+        }
+    }
+    case xmWaitBatchStart {
+        if c == 'C' {
+            xmSendHeader("", "")
+            xmState = xmWaitEndAck
+            xmTimer = 0
+        }
+    }
+    case xmWaitEndAck {
         if c == xmACK {
             xmFinish(true)
         } else if c == xmNAK {
@@ -147,45 +205,82 @@ func xmNext() {
     }
 }
 
-func xmSendBlock() {
-    var buf: text
+// Frame the payload as block xmBlock: SOH/STX, number, complement,
+// data, then CRC-16 or the 8-bit sum. Sets xmLast.
+func xmFrame(data: text) {
     var i: int = 0
     var sum: int = 0
     var crc: int = 0
-    if not xmFile.readAt(xmPos, 128, buf) {
+    xmLast = ""
+    if data.length == 1024 {
+        xmLast.append(xmSTX)
+    } else {
+        xmLast.append(xmSOH)
+    }
+    xmLast.append(char(xmBlock))
+    xmLast.append(char(255 - xmBlock))
+    while i < data.length {
+        xmLast.append(data[i])
+        sum = sum + int(data[i])
+        i = i + 1
+    }
+    if xmCrc {
+        crc = crcXmodem(data)
+        xmLast.append(char(crc >> 8))
+        xmLast.append(char(crc))
+    } else {
+        xmLast.append(char(sum))
+    }
+}
+
+func xmSendBlock() {
+    var buf: text
+    var want: int = 128
+    if xmMode != 'X' and xmSize - xmPos >= 1024 { want = 1024 }
+    if not xmFile.readAt(xmPos, want, buf) {
         log("XMODEM: read failed: " + lastError.message)
         xmCancel()
         return
     }
-    while buf.length < 128 { buf.append(xmSUB) }
-    xmLast = ""
-    xmLast = xmLast + xmSOH
-    xmLast = xmLast + char(xmBlock)
-    xmLast = xmLast + char(255 - xmBlock)
-    while i < 128 {
-        xmLast = xmLast + buf[i]
-        sum = sum + int(buf[i])
-        i = i + 1
-    }
-    if xmCrc {
-        crc = crcXmodem(buf)
-        xmLast = xmLast + char(crc >> 8)
-        xmLast = xmLast + char(crc)
-    } else {
-        xmLast = xmLast + char(sum)
-    }
+    xmLastData = buf.length
+    while buf.length < want { buf.append(xmSUB) }
+    xmFrame(buf)
     xferOut(xmLast)
     xmState = xmWaitAck
     xmTimer = 0
 }
 
+// YMODEM block 0: "name NUL size NUL", NUL-padded to 128 bytes, CRC.
+// An empty name is the end-of-batch block. The caller sets the state.
+func xmSendHeader(name: string, size: string) {
+    var buf: text
+    buf.append(name)
+    buf.append(xmNUL)
+    if name != "" {
+        buf.append(size)
+        buf.append(xmNUL)
+    }
+    while buf.length < 128 { buf.append(xmNUL) }
+    xmBlock = 0
+    xmFrame(buf)
+    xmBlock = 1
+    xferOut(xmLast)
+}
+
+func xmOutStr(s: string) {
+    var t: text
+    t = s
+    xferOut(t)
+}
+
 func xmSendEot() {
-    xferOut("\x04")
+    xmOutStr("\x04")
     xmState = xmWaitEotAck
     xmTimer = 0
 }
 
 // NAK or timeout: resend the current frame, up to the error ceiling.
+// The two YMODEM waits for a C have nothing to resend; they just wait.
 func xmRetry() {
     xmErrors = xmErrors + 1
     if xmErrors >= xmMaxErrors {
@@ -194,16 +289,16 @@ func xmRetry() {
         return
     }
     xmTimer = 0
-    if xmState == xmWaitEotAck {
-        xferOut("\x04")
-    } else {
-        xferOut(xmLast)
+    switch xmState {
+    case xmWaitEotAck { xmOutStr("\x04") }
+    case xmWaitDataStart, xmWaitBatchStart { }
+    else { xferOut(xmLast) }
     }
 }
 
 // Our side gives up: tell the receiver, then finish.
 func xmCancel() {
-    xferOut("\x18\x18\x18")
+    xmOutStr("\x18\x18\x18")
     xmFinish(false)
 }
 

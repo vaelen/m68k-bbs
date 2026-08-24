@@ -73,34 +73,44 @@ func telnetOut(s: string) {
 var xferProto: char = 'X'
 var xferPath: string
 
-func xferOut(s: string) {
-    telnetSend(modem, s)     // IAC doubling kept; no cursor tracking for binary
+// Frames can be 1K+, so send in 255-byte slices; telnetSend keeps the
+// IAC doubling, and there's no cursor tracking for binary.
+func xferOut(t: text) {
+    var i: int = 0
+    var n: int = 0
+    while i < t.length {
+        n = t.length - i
+        if n > 255 { n = 255 }
+        telnetSend(modem, t[i, n])
+        i = i + n
+    }
 }
 
-func xferStart(proto: char, path: string) {
+// proto: 'X' XMODEM, '1' XMODEM-1K, 'Y' YMODEM (all xmodem.cla).
+func xferStart(proto: char, path: string, name: string) {
     xferProto = proto
     xferPath = path
     user.screen = "xfer"
     switch proto {
-    case 'X' { xmodemSendStart(path) }
+    case 'X', '1', 'Y' { xmodemSendStart(path, name, proto) }
     }
 }
 
 func xferChar(c: char) {
     switch xferProto {
-    case 'X' { xmodemChar(c) }
+    case 'X', '1', 'Y' { xmodemChar(c) }
     }
 }
 
 func xferTick() {
     switch xferProto {
-    case 'X' { xmodemTick() }
+    case 'X', '1', 'Y' { xmodemTick() }
     }
 }
 
 func xferAbort() {
     switch xferProto {
-    case 'X' { xmodemAbort() }
+    case 'X', '1', 'Y' { xmodemAbort() }
     }
 }
 

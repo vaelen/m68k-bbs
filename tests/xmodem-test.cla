@@ -11,7 +11,7 @@ var sent: text          // everything the engine handed to xferOut
 var doneCalls: int = 0
 var doneOk: bool = false
 
-func xferOut(s: string) { sent.append(s) }
+func xferOut(t: text) { sent.append(t) }
 func xferDone(ok: bool) {
     doneCalls = doneCalls + 1
     doneOk = ok
@@ -74,6 +74,39 @@ func expectBlock(at: int, blk: int, pos: int, n: int, name: string) {
     expect(ok, name)
 }
 
+// Like expectBlock for a CRC frame carrying `size` data bytes (1024 STX
+// or 128 SOH).
+func expectBig(at: int, blk: int, pos: int, n: int, size: int, name: string) {
+    var i: int = 0
+    var ok: bool = true
+    var data: text
+    var crc: int = 0
+    if sent.length < at + size + 5 {
+        expect(false, name + ": frame too short")
+        return
+    }
+    if size == 1024 {
+        ok = ok and sent[at] == '\x02'
+    } else {
+        ok = ok and sent[at] == '\x01'
+    }
+    ok = ok and sent[at + 1] == char(blk)
+    ok = ok and sent[at + 2] == char(255 - blk)
+    while i < size {
+        if pos + i < n {
+            ok = ok and sent[at + 3 + i] == char(((pos + i) * 7) mod 256)
+        } else {
+            ok = ok and sent[at + 3 + i] == '\x1A'
+        }
+        data.append(sent[at + 3 + i])
+        i = i + 1
+    }
+    crc = crcXmodem(data)
+    ok = ok and sent[at + 3 + size] == char(crc >> 8)
+    ok = ok and sent[at + 4 + size] == char(crc)
+    expect(ok, name)
+}
+
 on App.startCLI(args: list of string) {
     var check: text
     var i: int = 0
@@ -86,7 +119,7 @@ on App.startCLI(args: list of string) {
     // 2. CRC start: 300-byte file -> blocks 1..3, last padded, EOT
     makeFile("xm300.bin", 300)
     reset()
-    xmodemSendStart("xm300.bin")
+    xmodemSendStart("xm300.bin", "xm300.bin", 'X')
     expect(sent.length == 0, "nothing sent before the receiver starts")
     xmodemChar('C')
     expect(sent.length == 133, "C: block 1 sent, 133 bytes")
@@ -114,7 +147,7 @@ on App.startCLI(args: list of string) {
 
     // 3. Checksum start (NAK): 132-byte frame with 8-bit sum
     reset()
-    xmodemSendStart("xm300.bin")
+    xmodemSendStart("xm300.bin", "xm300.bin", 'X')
     xmodemChar('\x15')
     expect(sent.length == 132, "NAK start: checksum frame is 132 bytes")
     sum = 0
@@ -130,7 +163,7 @@ on App.startCLI(args: list of string) {
     // 4. Block number wraps 255 -> 0 (256 blocks = 32768 bytes + 1)
     makeFile("xmwrap.bin", 32769)
     reset()
-    xmodemSendStart("xmwrap.bin")
+    xmodemSendStart("xmwrap.bin", "xmwrap.bin", 'X')
     xmodemChar('C')
     i = 0
     while i < 255 {
@@ -145,7 +178,7 @@ on App.startCLI(args: list of string) {
 
     // 5. Peer cancel: CAN CAN -> done(false), nothing sent back
     reset()
-    xmodemSendStart("xm300.bin")
+    xmodemSendStart("xm300.bin", "xm300.bin", 'X')
     xmodemChar('C')
     xmodemChar('\x18')
     expect(doneCalls == 0, "single CAN ignored")
@@ -158,7 +191,7 @@ on App.startCLI(args: list of string) {
 
     // 6. Timeouts: 20 ticks -> resend; 10 errors -> CAN CAN CAN + done(false)
     reset()
-    xmodemSendStart("xm300.bin")
+    xmodemSendStart("xm300.bin", "xm300.bin", 'X')
     xmodemChar('C')
     i = 0
     while i < 19 {
@@ -179,7 +212,7 @@ on App.startCLI(args: list of string) {
 
     // 7. No receiver: 120 ticks at start -> done(false)
     reset()
-    xmodemSendStart("xm300.bin")
+    xmodemSendStart("xm300.bin", "xm300.bin", 'X')
     i = 0
     while i < 119 {
         xmodemTick()
@@ -192,15 +225,69 @@ on App.startCLI(args: list of string) {
     // 8. Zero-length file: EOT on C
     makeFile("xm0.bin", 0)
     reset()
-    xmodemSendStart("xm0.bin")
+    xmodemSendStart("xm0.bin", "xm0.bin", 'X')
     xmodemChar('C')
     expect(sent == "\x04", "empty file: EOT immediately")
     xmodemChar('\x06')
     expect(doneCalls == 1 and doneOk, "empty file completes")
 
+    // 10. XMODEM-1K: 1100-byte file -> one STX block (1029 bytes), then a
+    //     128-byte SOH tail; checksum start still honoured
+    makeFile("xm1100.bin", 1100)
+    reset()
+    xmodemSendStart("xm1100.bin", "xm1100.bin", '1')
+    xmodemChar('C')
+    expect(sent.length == 1029, "1K: STX frame is 1029 bytes")
+    expectBig(0, 1, 0, 1100, 1024, "1K: block 1 framing and CRC")
+    xmodemChar('\x06')
+    expect(sent.length == 1029 + 133, "1K: tail is a 128-byte SOH block")
+    expectBig(1029, 2, 1024, 1100, 128, "1K: tail framing, padded")
+    xmodemChar('\x06')
+    expect(sent[sent.length - 1] == '\x04', "1K: EOT after the tail")
+    xmodemChar('\x06')
+    expect(doneCalls == 1 and doneOk, "1K: complete")
+    reset()
+    xmodemSendStart("xm1100.bin", "xm1100.bin", '1')
+    xmodemChar('\x15')
+    expect(sent.length == 1028 and sent[0] == '\x02', "1K: NAK start -> STX block with checksum")
+    xmodemAbort()
+
+    // 11. YMODEM: header block, C to start data, EOT, C, end block
+    reset()
+    xmodemSendStart("xm1100.bin", "xm1100.bin", 'Y')
+    xmodemChar('\x15')
+    expect(sent.length == 0, "YMODEM: NAK start ignored (CRC only)")
+    xmodemChar('C')
+    expect(sent.length == 133, "YMODEM: block 0 is a 128-byte SOH frame")
+    expect(sent[1] == '\x00' and sent[2] == '\xFF', "YMODEM: block number 0")
+    expect(sent[3, 16] == "xm1100.bin\x001100\x00", "YMODEM: name NUL size NUL")
+    expect(sent[19] == '\x00' and sent[130] == '\x00', "YMODEM: NUL padded")
+    check = ""
+    i = 0
+    while i < 128 {
+        check.append(sent[3 + i])
+        i = i + 1
+    }
+    expect(sent[131] == char(crcXmodem(check) >> 8) and sent[132] == char(crcXmodem(check)), "YMODEM: block 0 CRC")
+    xmodemChar('\x06')
+    expect(sent.length == 133, "YMODEM: ACK of block 0 sends nothing yet")
+    xmodemChar('C')
+    expect(sent.length == 133 + 1029, "YMODEM: C starts the 1K data")
+    expectBig(133, 1, 0, 1100, 1024, "YMODEM: data block 1")
+    xmodemChar('\x06')
+    xmodemChar('\x06')
+    expect(sent[sent.length - 1] == '\x04', "YMODEM: EOT")
+    xmodemChar('\x06')
+    expect(doneCalls == 0, "YMODEM: not done after EOT ACK")
+    xmodemChar('C')
+    i = sent.length - 133
+    expect(sent[i] == '\x01' and sent[i + 1] == '\x00' and sent[i + 2] == '\xFF' and sent[i + 3] == '\x00', "YMODEM: empty block 0 ends the batch")
+    xmodemChar('\x06')
+    expect(doneCalls == 1 and doneOk, "YMODEM: complete")
+
     // 9. Missing file: done(false) at start
     reset()
-    xmodemSendStart("no-such-file.bin")
+    xmodemSendStart("no-such-file.bin", "x", 'X')
     expect(doneCalls == 1 and not doneOk, "missing file -> xferDone(false)")
 
     if failures > 0 {

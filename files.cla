@@ -543,17 +543,17 @@ func drawXferProtoMenu() {
     sendLine("Download " + fileRec.name + " (" + intStr(fileRec.size) + " bytes)")
     sendLine("")
     sendLine("X) XMODEM")
+    sendLine("1) XMODEM-1K")
+    sendLine("Y) YMODEM")
     sendLine("Q) Cancel")
     sendLine("")
 }
 
 func xferProtoChoice(input: string) {
     switch upperStr(input) {
-    case "X" {
-        sendLine("Start your XMODEM receive now (Ctrl-X twice to cancel)...")
-        log("XMODEM send: " + filePath(fileRec.id))
-        xferStart('X', filePath(fileRec.id))
-    }
+    case "X" { startDownload('X', "XMODEM") }
+    case "1" { startDownload('1', "XMODEM-1K") }
+    case "Y" { startDownload('Y', "YMODEM") }
     case "", "Q" {
         user.screen = "fileview"
         displayPrompt()
@@ -561,6 +561,12 @@ func xferProtoChoice(input: string) {
     case "?" { gotoScreen("xferproto") }
     else { displayPrompt() }
     }
+}
+
+func startDownload(proto: char, label: string) {
+    sendLine("Start your " + label + " receive now (Ctrl-X twice to cancel)...")
+    log(label + " send: " + filePath(fileRec.id))
+    xferStart(proto, filePath(fileRec.id), fileRec.name)
 }
 
 // Engine callback: the transfer is over and the engine is idle.
