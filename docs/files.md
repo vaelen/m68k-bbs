@@ -186,8 +186,9 @@ same table senders and paging helpers.
   Size / Downloads, then the short description word-wrapped to the
   frame width as the last header line) and the paged long description
   below it. Sysops additionally get
-  `D`elete (a `dbDelete` of the header; the physical file and heap
-  bytes stay behind, like post deletion). There is no download yet.
+  `X` delete (a `dbDelete` of the header; the physical file and heap
+  bytes stay behind, like post deletion). `D` downloads
+  (`docs/file-transfers.md`).
 
 ## Later steps (what this layout already supports)
 
@@ -195,8 +196,8 @@ same table senders and paging helpers.
   `size()`, then `addFile`.
 - **Upload**: write the received bytes to `filePath`, then `addFile`
   with `fileFlagPending` for sysop review.
-- **Download**: `loadFile`, open `filePath`, stream it; then
-  `fileRec.downloads + 1` and `saveFile`.
+- **Download**: done — XMODEM from the file view, download count
+  bumped on success (`docs/file-transfers.md`).
 - **Path check**: the first deploy with a non-empty folder should
   confirm on Snow that `file.open` accepts an HFS full path
   (`BBS HD:Files:x`); if not, areas stay flat next to the app (empty

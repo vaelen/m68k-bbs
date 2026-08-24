@@ -253,7 +253,12 @@ inputChar (bbs.cla) → processInput`.
   helpers (`intStr`, `upperStr`, `trimStr`, `sendLine` — which sends
   payload and eol separately so a full 255-byte line keeps its line
   ending), and a BEL when a caller types past the 255-byte input
-  buffer.
+  buffer. File transfers are the `"xfer"` screen: `inputChar` hands
+  every raw byte to `xferChar` before any assembly, the 30-tick timer
+  calls `xferTick`, `disconnected()` calls `xferAbort`, and engines
+  send through `xferOut` (→ `telnetSend`, no cursor tracking);
+  `xferStart/xferChar/xferTick/xferAbort` switch on `xferProto`
+  (`'X'` only). `docs/file-transfers.md`.
 - `sysop.cla` — the sysop menu tree (gated on `user.access`): paged
   user/board lists (`listFromId` cursor, `[Enter] More` prompt),
   detail cards, lettered-field edit cards (buffered; `S` saves, `Q`
@@ -279,14 +284,24 @@ inputChar (bbs.cla) → processInput`.
   (Name title bar, From/Date/Size/Downloads meta, long description
   wrapped by `wrapText` and paged). Keys mirror the board reader:
   `+`/Enter next page, `-` previous, `L` redraw, `>`/`.` and `<`/`,`
-  next/previous file, sysop-only `D` delete, `Q` up one level. No
-  download yet (transfers are a later step); read-only browsing.
+  next/previous file, `D` download (offline files refused → protocol
+  menu `xferproto`: `X` XMODEM → `xferStart`; `xferDone` bumps the
+  download count and redraws the view), sysop-only `X` delete, `Q`
+  up one level. No uploads yet.
 - `mail.cla` — private mail UI: main-menu `M` → paged inbox (`*`
   marks unread, newest first) → framed message view (viewing marks
   read; `R` reply, `D` delete with Y/N confirm, `>`/`<` between
   messages) → compose via `editor.cla` with `editTarget = 'M'`:
   `To:` must resolve to a local user (`findUserId`), empty `To:`
   cancels.
+- `xmodem.cla` — XMODEM sender: a pure state machine
+  (`xmodemSendStart(path)`, `xmodemChar`, `xmodemTick`, `xmodemAbort`)
+  over a `filehandle`, 128-byte blocks with CRC-16 (`crcXmodem`,
+  bitwise 0x1021 — `text.crc16` is the Kermit CRC) or checksum,
+  ½-second ticks for the 60 s start / 10 s ACK timeouts, ten-error
+  ceiling, CAN CAN handling; talks only through `xferOut`/`xferDone`.
+  `tests/xmodem-test.cla` unit-tests it; `scripts/xmodem-e2e.sh`
+  receives with `lrz` over `socat` (`docs/file-transfers.md`).
 - `loginlog.cla` — the login log, `Logins.txt` (TEXT/ttxt): one
   65-byte fixed-width, tab-delimited text line per session — new flag
   (`*`/space), name padded to 31, `dateTimeStr` of the login, padded
@@ -343,7 +358,8 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
 - `boards.cla` — caller-facing bulletin board reader: board picker,
   paged post list, framed post view
 - `files.cla` — caller-facing file-area reader: area picker, paged
-  file list, framed file view (browse-only; no transfers yet)
+  file list, framed file view, XMODEM download
+- `xmodem.cla` — XMODEM sender state machine
 - `mail.cla` — private mail: inbox, message view, compose/reply
 - `editor.cla` — line editor for new posts, replies, and mail (/S /A
   /L /D /E /I /R)
@@ -351,7 +367,8 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
 - `scanner.cla`, `telnet.cla`, `user.cla`, `usersdb.cla`, `boardsdb.cla`,
   `postsdb.cla`, `maildb.cla`, `areasdb.cla`, `filesdb.cla`,
   `terminal.cla`, `termio.cla`, `btree.cla`, `vdb.cla` — modules above
-- `tests/` — host-lane test suites; `scripts/` — build/test/deploy
+- `tests/` — host-lane test suites; `scripts/` — build/test/deploy,
+  `xmodem-e2e.sh` (lrz over socat)
 - `bin/`, `vendor/` — pinned compiler + runtime/toolbox snapshot
 - `docs/` — language reference + Snow how-to (symlinks), language-gaps.md,
   telnet-negotiation-reference.md and vt100.codes.txt (protocol notes)
