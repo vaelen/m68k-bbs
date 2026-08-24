@@ -187,15 +187,18 @@ same table senders and paging helpers.
   frame width as the last header line) and the paged long description
   below it. Sysops additionally get
   `X` delete (a `dbDelete` of the header; the physical file and heap
-  bytes stay behind, like post deletion). `D` downloads
+  bytes stay behind, like post deletion) and `A` approve on a pending
+  entry. `D` downloads and `U` (on the list) uploads
   (`docs/file-transfers.md`).
 
 ## Later steps (what this layout already supports)
 
 - **Import** (sysop types a name): `file.open(filePath)` to verify,
   `size()`, then `addFile`.
-- **Upload**: write the received bytes to `filePath`, then `addFile`
-  with `fileFlagPending` for sysop review.
+- **Upload**: done — XMODEM / XMODEM-1K / YMODEM from the file list's
+  `U` key; the file is written under the area folder and added with
+  `fileFlagPending` (sysop uploads go live at once), and a sysop
+  approves it with `A` in the file view (`docs/file-transfers.md`).
 - **Download**: done — XMODEM / XMODEM-1K / YMODEM from the file
   view, download count bumped on success (`docs/file-transfers.md`).
 - **Path check**: the first deploy with a non-empty folder should

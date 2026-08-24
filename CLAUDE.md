@@ -293,23 +293,33 @@ inputChar (bbs.cla) → processInput`.
   next/previous file, `D` download (offline files refused → protocol
   menu `xferproto`: `X` XMODEM, `1` XMODEM-1K, `Y` YMODEM →
   `startDownload` → `xferStart`; `xferDone` bumps the download count
-  and redraws the view), sysop-only `X` delete, `Q` up one level. No
-  uploads yet.
+  and redraws the view), sysop-only `X` delete and `A` approve on a
+  pending entry, `Q` up one level. The list's `U` uploads
+  (`upproto` → `upname` for XMODEM → `updesc` → `xferStartReceive`);
+  `xferReceived` adds the entry with `fileFlagPending` unless the
+  uploader is a sysop.
 - `mail.cla` — private mail UI: main-menu `M` → paged inbox (`*`
   marks unread, newest first) → framed message view (viewing marks
   read; `R` reply, `D` delete with Y/N confirm, `>`/`<` between
   messages) → compose via `editor.cla` with `editTarget = 'M'`:
   `To:` must resolve to a local user (`findUserId`), empty `To:`
   cancels.
-- `xmodem.cla` — XMODEM / XMODEM-1K / YMODEM sender: a pure state
-  machine (`xmodemSendStart(path, name, mode)`, `xmodemChar`,
+- `xmodem.cla` — XMODEM / XMODEM-1K / YMODEM sender **and receiver**:
+  a pure state machine (`xmodemSendStart(path, name, mode)` /
+  `xmodemRecvStart(mode, folder, name)`, `xmodemChar`,
   `xmodemTick`, `xmodemAbort`) over a `filehandle`; mode `'X'`
   128-byte blocks, `'1'` 1K `STX` blocks with a 128-byte tail, `'Y'`
   1K plus block 0 (name NUL size NUL) and the empty end-of-batch
   block; CRC-16 (`crcXmodem`, bitwise 0x1021 — `text.crc16` is the
   Kermit CRC) or checksum on a NAK start (not YMODEM), ½-second
   ticks for the 60 s start / 10 s ACK timeouts, ten-error ceiling,
-  CAN CAN handling; talks only through `xferOut(text)`/`xferDone`.
+  CAN CAN handling; the receive side prods with C/NAK, assembles
+  frames byte by byte, NAKs only after the line goes quiet, and
+  reports each file through `xferReceived(name, bytes)` with wire
+  names vetted by `xferAcceptName`. **Nothing sent to a caller who is
+  about to start their sender may contain a capital C, NAK or CAN
+  byte** — they are the XMODEM handshake bytes (docs/file-transfers.md,
+  "Text around a transfer"; the e2e script enforces it).
   `tests/xmodem-test.cla` unit-tests it; `scripts/xmodem-e2e.sh`
   receives with `lrz` over `socat` (`docs/file-transfers.md`).
 - `loginlog.cla` — the login log, `Logins.txt` (TEXT/ttxt): one

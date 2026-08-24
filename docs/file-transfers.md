@@ -1,12 +1,13 @@
 # File Transfers
 
 How 68kBBS moves files over the modem: the transfer plumbing in
-`bbs.cla`, the XMODEM sender in `xmodem.cla`, what the caller sees,
-how to test it, and where ZMODEM, Kermit and uploads plug in. The
-storage side (areas, file entries, `filePath`) is `docs/files.md`.
+`bbs.cla`, the sender and receiver in `xmodem.cla`, what the caller
+sees, how to test it, and where ZMODEM and Kermit plug in. The storage
+side (areas, file entries, `filePath`) is `docs/files.md`.
 
-**Status:** XMODEM, XMODEM-1K and YMODEM download (BBS → caller), data
-fork only. No uploads, no ZMODEM/Kermit, no MacBinary yet.
+**Status:** XMODEM, XMODEM-1K and YMODEM in both directions — download
+(BBS → caller) and upload (caller → BBS, entered pending sysop
+approval). Data fork only. No ZMODEM/Kermit, no MacBinary yet.
 
 ## The plumbing
 
@@ -32,7 +33,10 @@ session dispatch carries it:
   reset: the engine closes its file and says nothing.
 - **Done.** The engine calls `xferDone(ok)` (files.cla) once it is
   already idle, so the callback may safely redraw screens and never
-  re-enters the engine.
+  re-enters the engine. An upload also calls `xferReceived(name, bytes)`
+  once per file, before `xferDone`, and vets names off the wire through
+  `xferAcceptName(name)` (1-31 characters, no colon, not already in
+  this area).
 
 `xferStart(proto, path, name)` / `xferChar` / `xferTick` / `xferAbort`
 are a `switch` on `xferProto: char` — `'X'`, `'1'` and `'Y'` all go to
@@ -94,6 +98,57 @@ no final XOR; `"123456789"` → `0x31C3`), a bitwise loop. The runtime's
 event loop for ~0.2 s at 57600 bps, during which incoming bytes queue
 in the 8 KB serial buffer — harmless for a half-duplex protocol.
 
+## Receiving (uploads)
+
+`xmodemRecvStart(mode, folder, name)` runs the same three modes
+backwards, in its own `rv*` state machine (the public
+`xmodemChar`/`Tick`/`Abort` dispatch to whichever direction is live):
+
+- **Starting.** Send `C` at once and again every 3 s; for `'X'`/`'1'`,
+  after four unanswered `C`s fall back to `NAK` (checksum) for old
+  senders. Nothing after 60 s → `CAN CAN CAN`, `xferDone(false)`.
+- **A frame** is assembled byte by byte — `SOH`/`STX` picks 128/1024,
+  then block number, complement, payload, CRC or checksum. A good
+  frame with the expected number → `writeAt` at the running offset,
+  `ACK`. A repeat of the previous block means our `ACK` was lost:
+  `ACK` again and store nothing.
+- **A bad frame** (complement or check mismatch) → wait for 1 s of
+  silence, then `NAK`, so the rest of the in-flight block isn't parsed
+  as a new one. Ten errors → `CAN CAN CAN`.
+- **`EOT`** → `ACK`, `flush`, and for YMODEM `setSize` to the size
+  block 0 gave (trimming the `^Z` padding), then `xferReceived`.
+  `'X'`/`'1'` finish there; `'Y'` sends `C` for the next block 0.
+- **YMODEM block 0** carries `name NUL size NUL`; a path is reduced to
+  its last segment, the name is vetted through `xferAcceptName`, and
+  an all-NUL block 0 ends the batch (`xferDone(true)`).
+
+An aborted upload leaves the partial file on disk — there is no
+`file.delete` yet (`docs/language-gaps.md` §3) — but no database entry,
+so the same name can simply be uploaded again (`file.create`
+truncates).
+
+## Text around a transfer
+
+**Nothing sent to a caller who is about to start their sender may
+contain a capital `C`, a `NAK` (0x15) or a `CAN` (0x18).** Those are
+the XMODEM handshake bytes: a sender that sees a `C` takes it as the
+receiver's CRC go-ahead and starts transmitting mid-sentence, then
+reads the rest of the line as ACKs (`lsz` reports
+`Got 6f for sector ACK` / `NAK on sector`); a `CAN` makes it abort
+outright ("Receiver Cancelled"). This is why the announcements read
+`Send your file now. Two ^X abort.` rather than the obvious
+"(Ctrl-X twice to cancel)" — that wording broke every upload from a
+real sender, while the host-lane rig (which happened to print
+different text) passed. `scripts/xmodem-e2e.sh` now sends the same
+wording and fails if a capital C reappears in those lines.
+
+The same hazard bites test rigs: a scripted caller that never *reads*
+the session leaves the connect-time telnet probe (`FF FD 18` — option
+24 is a `CAN` byte) sitting in the socket, and the sender it launches
+swallows that first. A real terminal displayed those bytes long ago; a
+rig must drain everything up to the announcement before handing the
+socket to `lsz`.
+
 ## What the caller sees
 
 In the file view (`docs/files.md`): `D) Download File`. Offline files
@@ -120,6 +175,16 @@ window has the reason: cancelled, too many errors, no receiver, file
 wouldn't open), then the file view is redrawn. Sysop delete from the
 view is `X` (it was `D`); the list-side delete is unchanged.
 
+Uploading: `U) Upload File` on the file list → the same protocol menu →
+`Filename:` (XMODEM and XMODEM-1K only; YMODEM carries the name) →
+`Description:` → `Send your file now. Two ^X abort.` Each file that
+arrives prints `Received <name> (<n> bytes).`, and the session ends
+with `Upload complete.` plus, for ordinary callers,
+`It will be listed once the sysop approves it.` — the entry is stored
+with `fileFlagPending`, hidden from everyone but sysops until a sysop
+opens it and presses `A) Approve File`. A sysop's own uploads are
+listed immediately.
+
 ## Testing
 
 - **Unit:** `tests/xmodem-test.cla` (via `scripts/test.sh`) drives the
@@ -128,12 +193,13 @@ view is `X` (it was `D`); the list-side delete is unchanged.
   padding, block-number wrap, EOT handling, peer cancel, timeouts, the
   error ceiling, empty and missing files, 1K STX blocks with a 128-byte
   tail, and the YMODEM block 0 / `C` / end-of-batch handshake.
-- **Host lane, real receiver:** `scripts/xmodem-e2e.sh` builds a small
+- **Host lane, real sender and receiver:** `scripts/xmodem-e2e.sh` builds a small
   CLI harness — `scanner.cla` + `termio.cla` (telnet) + `xmodem.cla`,
   the same byte path as `bbs.cla` minus the menus — listening on TCP,
   and receives with `lrz -X` (checksum), `lrz -X -c` (CRC), `lrz -X -c`
   against 1K mode, and `lrz --ymodem` (exact 3000-byte file) through
-  `socat`. `bbs.cla` itself cannot run on the host: window/menu/`every`
+  `socat`, then runs the three uploads the other way with `lsz -X`,
+  `lsz -X -k` and `lsz --ymodem` into the harness's receiver. `bbs.cla` itself cannot run on the host: window/menu/`every`
   declarations make it a UI program and the host runtime has no UI
   lane. Needs `socat` and `lrzsz` (Homebrew).
 - **Snow:** reset the image to the baseline (CLAUDE.md), `hcopy -r` a
