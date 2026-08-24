@@ -7,6 +7,7 @@
 // the included modules (sysop.cla, boards.cla, editor.cla).
 
 include "scanner.cla"
+include "telnet.cla"
 include "user.cla"
 include "usersdb.cla"
 include "boardsdb.cla"
@@ -47,6 +48,18 @@ menu Edit { standard edit }
 var modem: connection
 var isConnected: bool = false
 
+// All caller-facing output funnels through here, so telnet IAC
+// escaping has one chokepoint. Modem commands (+++/ATH) and telnet
+// negotiation bytes bypass it via modem.send/telnetOut.
+func sendData(s: string) {
+    telnetSend(modem, s)
+}
+
+// Raw negotiation bytes from telnet.cla -- never escaped.
+func telnetOut(s: string) {
+    modem.send(s)
+}
+
 // Login/signup state between prompts (reset on connect).
 var pendingId: int = 0      // account found at the login prompt
 var pendingHash: int = 0    // first password entered during signup
@@ -56,11 +69,12 @@ var previousSeen: int = 0   // that account's lastSeen before this login (Mac se
 
 
 // Collect connected-caller input, one char at a time. Called by
-// scanner.cla with every byte it releases as ordinary data (result-code
-// bytes are filtered out). Line mode buffers until CR (LF is dropped,
-// so CRLF terminals work); Character mode forwards each char
-// immediately. Data arriving with no caller connected is dropped.
-func dataChar(c: char) {
+// telnet.cla with every byte left after modem result-code filtering
+// (scanner.cla) and telnet command processing. Line mode buffers until
+// CR (LF is dropped, so CRLF terminals work); Character mode forwards
+// each char immediately. Data arriving with no caller connected is
+// dropped.
+func inputChar(c: char) {
     var single: string(1)
     if not isConnected { return }
     if user.mode == Character {
@@ -75,7 +89,7 @@ func dataChar(c: char) {
     }
     if c == LF { return }
     if user.buffer.length >= 255 {
-        modem.send("\x07")      // line full: drop the char, ring the bell
+        sendData("\x07")      // line full: drop the char, ring the bell
         return
     }
     user.buffer = user.buffer + c
@@ -85,8 +99,8 @@ func dataChar(c: char) {
 // 255-byte string cap when s is already full, silently dropping the
 // line ending.
 func sendLine(s: string) {
-    modem.send(s)
-    modem.send(terminal.eol)
+    sendData(s)
+    sendData(terminal.eol)
 }
 
 // --- Table output ------------------------------------------------------
@@ -95,7 +109,7 @@ func sendLine(s: string) {
 
 func sendRule(l: BoxPiece, m: BoxPiece, r: BoxPiece, w: list of int) {
     sendDrawing(modem, ruleLine(l, m, r, w))
-    modem.send(terminal.eol)
+    sendData(terminal.eol)
 }
 
 // Top of a boxed table: rule, centered title bar, joint rule.
@@ -206,54 +220,54 @@ func displayMenu() {
 
 func displayPrompt() {
     switch user.screen {
-    case "login"    { modem.send("Username: ") }
-    case "password" { modem.send("Password: ") }
-    case "newname"  { modem.send("Choose a username: ") }
-    case "newpass"  { modem.send("Choose a password: ") }
-    case "newpass2" { modem.send("Retype password: ") }
-    case "newemail" { modem.send("Email (optional): ") }
-    case "terminal"    { modem.send("Terminal type [4]> ") }
-    case "main"        { modem.send("Main Menu> ") }
-    case "sysop"       { modem.send("Sysop Menu> ") }
-    case "sysopboards" { modem.send("Sysop:Boards> ") }
-    case "sysopareas"  { modem.send("Sysop:Areas> ") }
-    case "sysopusers"  { modem.send("Sysop:Users> ") }
-    case "showuser"    { modem.send("User ID or name: ") }
-    case "showboard"   { modem.send("Board ID: ") }
-    case "showarea"    { modem.send("Area ID: ") }
-    case "edituserid"  { modem.send("User ID or name: ") }
-    case "editboardid" { modem.send("Board ID: ") }
-    case "editareaid"  { modem.send("Area ID: ") }
-    case "edituser", "editboard", "editarea" { modem.send("Field letter, S)ave, Q)uit: ") }
+    case "login"    { sendData("Username: ") }
+    case "password" { sendData("Password: ") }
+    case "newname"  { sendData("Choose a username: ") }
+    case "newpass"  { sendData("Choose a password: ") }
+    case "newpass2" { sendData("Retype password: ") }
+    case "newemail" { sendData("Email (optional): ") }
+    case "terminal"    { sendData("Terminal type [4]> ") }
+    case "main"        { sendData("Main Menu> ") }
+    case "sysop"       { sendData("Sysop Menu> ") }
+    case "sysopboards" { sendData("Sysop:Boards> ") }
+    case "sysopareas"  { sendData("Sysop:Areas> ") }
+    case "sysopusers"  { sendData("Sysop:Users> ") }
+    case "showuser"    { sendData("User ID or name: ") }
+    case "showboard"   { sendData("Board ID: ") }
+    case "showarea"    { sendData("Area ID: ") }
+    case "edituserid"  { sendData("User ID or name: ") }
+    case "editboardid" { sendData("Board ID: ") }
+    case "editareaid"  { sendData("Area ID: ") }
+    case "edituser", "editboard", "editarea" { sendData("Field letter, S)ave, Q)uit: ") }
     case "edituserval"  { editUserValuePrompt() }
     case "editboardval" { editBoardValuePrompt() }
     case "editareaval"  { editAreaValuePrompt() }
-    case "deluserid"    { modem.send("User ID or name: ") }
-    case "delboardid"   { modem.send("Board ID: ") }
-    case "delareaid"    { modem.send("Area ID: ") }
-    case "deluserconfirm"  { modem.send("Delete this user? (Y/N): ") }
-    case "delboardconfirm" { modem.send("Delete this board? (Y/N): ") }
-    case "delareaconfirm"  { modem.send("Delete this area? (Y/N): ") }
-    case "boards" { modem.send("Board ID> ") }
-    case "areas" { modem.send("Area ID> ") }
+    case "deluserid"    { sendData("User ID or name: ") }
+    case "delboardid"   { sendData("Board ID: ") }
+    case "delareaid"    { sendData("Area ID: ") }
+    case "deluserconfirm"  { sendData("Delete this user? (Y/N): ") }
+    case "delboardconfirm" { sendData("Delete this board? (Y/N): ") }
+    case "delareaconfirm"  { sendData("Delete this area? (Y/N): ") }
+    case "boards" { sendData("Board ID> ") }
+    case "areas" { sendData("Area ID> ") }
     case "posts", "postview" { postsPrompt() }
     case "files", "fileview" { filesPrompt() }
     case "mail", "mailview" { mailPrompt() }
-    case "delmailconfirm" { modem.send("Delete this message? (Y/N): ") }
-    case "mailto" { modem.send("To: ") }
+    case "delmailconfirm" { sendData("Delete this message? (Y/N): ") }
+    case "mailto" { sendData("To: ") }
     case "editsubject" { editSubjectPrompt() }
     case "editbody"    { editBodyPrompt() }
-    case "delpostnum"     { modem.send("Delete post #: ") }
-    case "delpostconfirm" { modem.send("Delete this post? (Y/N): ") }
-    case "delfilenum"     { modem.send("Delete file #: ") }
-    case "delfileconfirm" { modem.send("Delete this file? (Y/N): ") }
-    case "newboardname" { modem.send("Board name: ") }
-    case "newboarddesc" { modem.send("Description: ") }
-    case "newboardnet"  { modem.send("Network [local]: ") }
-    case "newareaname"   { modem.send("Area name: ") }
-    case "newareadesc"   { modem.send("Description: ") }
-    case "newareafolder" { modem.send("Folder (Enter = app directory): ") }
-    case "newareaaccess" { modem.send("Access (A=all, S=sysop) [A]: ") }
+    case "delpostnum"     { sendData("Delete post #: ") }
+    case "delpostconfirm" { sendData("Delete this post? (Y/N): ") }
+    case "delfilenum"     { sendData("Delete file #: ") }
+    case "delfileconfirm" { sendData("Delete this file? (Y/N): ") }
+    case "newboardname" { sendData("Board name: ") }
+    case "newboarddesc" { sendData("Description: ") }
+    case "newboardnet"  { sendData("Network [local]: ") }
+    case "newareaname"   { sendData("Area name: ") }
+    case "newareadesc"   { sendData("Description: ") }
+    case "newareafolder" { sendData("Folder (Enter = app directory): ") }
+    case "newareaaccess" { sendData("Access (A=all, S=sysop) [A]: ") }
     }
 }
 
@@ -351,6 +365,7 @@ func processInput(input: string) {
     case "newareafolder" { newAreaFolder(input) }
     case "newareaaccess" { newAreaAccess(input) }
     case "logoff"   { }   // ignore trailing input (e.g. the modem's OK)
+    case "probe"    { }   // discard stray bytes during the telnet probe
     }
 }
 
@@ -479,7 +494,8 @@ func applyTerminal(t: TerminalType, cols: int, colorOn: bool) {
     terminal.columns = cols
     terminal.rows = 24
     terminal.color = colorOn
-    if t == VT100 { modem.send(vt100SetupSeq) }
+    terminal.ansi = (t == ANSI or t == VT100)
+    if t == VT100 { sendData(vt100SetupSeq) }
     msg = "User: " + user.name + ", Terminal: " + termTypeName(t)
     msg = msg + " " + intStr(terminal.columns) + "x" + intStr(terminal.rows)
     log(msg)
@@ -543,6 +559,23 @@ func mainChoice(input: string) {
 // once-a-second timer below.
 
 var hangupPhase: int = 0
+var telnetProbe: int = 0   // countdown to the end of the telnet probe
+
+// The probe window is over: the telnet processor has already consumed
+// any negotiation that came back (setting terminal.telnet), so keep
+// intercepting only for telnet clients, drop whatever stray bytes the
+// probe buffered, and show the login prompt.
+func telnetProbeDone() {
+    if not isConnected { return }
+    telnetIntercept = terminal.telnet
+    user.buffer = ""
+    if terminal.telnet {
+        log("Telnet client detected (type: " + terminal.reportedTerminalType + ").")
+    }
+    sendLine("")
+    user.screen = "login"
+    displayPrompt()
+}
 
 func logoff() {
     sendLine("")
@@ -553,6 +586,10 @@ func logoff() {
 }
 
 every 30 ticks {
+    if telnetProbe > 0 {
+        telnetProbe = telnetProbe - 1
+        if telnetProbe == 0 { telnetProbeDone() }
+    }
     if hangupPhase > 0 {
         hangupPhase = hangupPhase + 1
         if hangupPhase == 3 { modem.send("+++") }       // ~1s of silence first
@@ -568,6 +605,8 @@ func connected() {
     isConnected = true
     user = new User          // fresh session: login screen, Line mode
     terminal = new Terminal  // fresh session: 80x24 ASCII, no color
+    telnetReset()
+    telnetIntercept = true   // watch for negotiation during the probe
     hangupPhase = 0
     pendingId = 0
     pendingHash = 0
@@ -575,13 +614,18 @@ func connected() {
     log("Caller connected.")
     sendLine("Welcome to 68kBBS!")
     sendLine("Type NEW at the login prompt to create an account.")
-    displayPrompt()
+    telnetProbeStart()
+    sendLine("Checking for telnet support...")
+    user.screen = "probe"
+    telnetProbe = 2          // ~1s; telnetProbeDone shows the login prompt
 }
 
 // Called by scanner.cla's feedChar on a full "\r\nNO CARRIER\r\n".
 func disconnected() {
     isConnected = false
     hangupPhase = 0
+    telnetProbe = 0
+    telnetIntercept = false
     postsClose()
     log("Caller disconnected.")
 }

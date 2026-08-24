@@ -135,7 +135,8 @@ code — useful for verifying a session after the fact.
 ## Architecture
 
 The received-byte path is:
-`modem.received → feedChar (scanner.cla) → dataChar (bbs.cla) → processInput`.
+`modem.received → feedChar (scanner.cla) → dataChar (telnet.cla) →
+inputChar (bbs.cla) → processInput`.
 
 - `scanner.cla` — a state machine that watches the raw stream for the
   Hayes result codes `\r\nCONNECT <digits>\r\n` / `\r\nNO CARRIER\r\n`
@@ -146,6 +147,18 @@ The received-byte path is:
   immediately, so the one hang-up artifact is a single empty line just
   before disconnect. The including program defines `connected`,
   `disconnected`, and `dataChar`.
+- `telnet.cla` — telnet option processor between the scanner and the
+  app: consumes/answers IAC sequences (WILL TERMINAL-TYPE/SPEED → SB
+  SEND, unknown WILL → DONT, any DO/DONT → WONT — no ECHO/SGA, so
+  clients stay line-mode with local echo), releases clean bytes to
+  `inputChar`, drops NVT CR NUL's NUL, applies NAWS to
+  `terminal.columns/rows` (clamped 20-132 / 10-60) and records
+  TERMINAL-TYPE/SPEED replies. Interception is on only while
+  `telnetIntercept` is set (the connect-time probe, then only if the
+  client negotiated). `telnetSend(conn, s)` is the outgoing chokepoint:
+  doubles IAC bytes when `terminal.telnet`. The including program
+  defines `inputChar(c)` and `telnetOut(s)` (raw wire bytes, never
+  escaped).
 - `btree.cla` — reusable file-based B-tree (multi-level, lazy
   deletion) over a `filehandle`; `vdb.cla` — journaled page database
   with secondary indexes on top of it (formats: `docs/vdb-clarus.md`;
@@ -175,14 +188,23 @@ The received-byte path is:
   screen, input mode, buffer, id, email, access, created, lastSeen)
   + global `user`; `hashPassword` (djb2,
   non-cryptographic). `terminal.cla` — `Terminal` record (columns,
-  rows, color, type: ASCII/ANSI/VT100) + global `terminal`, `Color`
+  rows, color, type: ASCII/ANSI/VT100, ansi — set for the ANSI and
+  VT100 types, telnet, reportedTerminalType, reportedSpeed) + global
+  `terminal`, `Color`
   enum, and pure ANSI sequence builders (`colorSeq`, `backgroundSeq`,
   clear consts), plus the box-drawing/table builders (`boxChar`,
   `ruleLine`, `rowLine`, `pad`, `center` — see `docs/tables.md`).
   `termio.cla` — connection-facing send wrappers over those (take a
   `connection` parameter, gated on `terminal.color`).
-- `bbs.cla` — app/UI declarations, session flow. `dataChar` assembles
+- `bbs.cla` — app/UI declarations, session flow. `inputChar` assembles
   input (Line mode: buffer until CR; Character mode: each char).
+  Caller-facing output goes through `sendData` (→ `telnetSend`); only
+  modem commands (+++/ATH) and `telnetOut` use `modem.send` raw. On
+  connect, `connected()` sends the telnet probe (DO TERMINAL-TYPE /
+  NAWS / TERMINAL-SPEED) and "Checking for telnet support...", parks
+  the session on the input-swallowing "probe" screen for 2 firings of
+  the 30-tick timer (`telnetProbe`), then `telnetProbeDone` clears the
+  input buffer and shows the login prompt.
   `processInput` dispatches on `user.screen`: login → password →
   terminal-type menu → main menu; typing NEW at the login prompt
   enters the signup flow (newname → newpass → newpass2 → newemail,
@@ -286,7 +308,7 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
 - `mail.cla` — private mail: inbox, message view, compose/reply
 - `editor.cla` — line editor for new posts, replies, and mail (/S /A
   /L /D /E /I /R)
-- `scanner.cla`, `user.cla`, `usersdb.cla`, `boardsdb.cla`,
+- `scanner.cla`, `telnet.cla`, `user.cla`, `usersdb.cla`, `boardsdb.cla`,
   `postsdb.cla`, `maildb.cla`, `areasdb.cla`, `filesdb.cla`,
   `terminal.cla`, `termio.cla`, `btree.cla`, `vdb.cla` — modules above
 - `tests/` — host-lane test suites; `scripts/` — build/test/deploy

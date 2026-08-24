@@ -215,7 +215,7 @@ func drawFilesMenu() {
 }
 
 func filesPrompt() {
-    modem.send(area.name + "> ")
+    sendData(area.name + "> ")
 }
 
 // Enter and + page forward, - pages back; at either end they just

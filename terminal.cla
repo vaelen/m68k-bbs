@@ -12,6 +12,10 @@ record Terminal {
     color:   bool                     // defaults false
     type:    TerminalType             // defaults to ASCII
     eol:     string(2) = "\x0D\x0A"   // line terminator sent to the caller
+    ansi:    bool                     // terminal honors ANSI escape codes
+    telnet:  bool                     // caller is a telnet client
+    reportedTerminalType: string(40)  // client's TERMINAL-TYPE reply
+    reportedSpeed:        string(31)  // client's TERMINAL-SPEED reply
 }
 
 var terminal: Terminal

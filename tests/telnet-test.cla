@@ -1,0 +1,145 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for the telnet option processor. Run on the host:
+//   ~/repos/clarus/scripts/clarus-run.sh tests/telnet-test.cla
+// Exits 0 on pass, 1 on the first failure.
+
+include "../telnet.cla"
+
+var failures: int = 0
+var released: text   // bytes passed through to the app
+var wire: text       // negotiation replies sent to the caller
+
+// Callbacks telnet.cla requires. The app's versions talk to the modem;
+// here we just record what the processor does.
+func inputChar(c: char) { released.append(c) }
+func telnetOut(s: string) { wire.append(s) }
+
+func feedString(s: string) {
+    var i: int = 0
+    while i < s.length {
+        dataChar(s[i])
+        i = i + 1
+    }
+}
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+func expectReleased(want: string, name: string) {
+    expect(released == want, name)
+    released = ""
+}
+
+func expectWire(want: string, name: string) {
+    expect(wire == want, name)
+    wire = ""
+}
+
+on App.startCLI(args: list of string) {
+    // 1. intercept off: everything passes, even IAC
+    telnetIntercept = false
+    feedString("abc\xFF\xFDx")
+    expectReleased("abc\xFF\xFDx", "passthrough when intercept off")
+    expect(not terminal.telnet, "passthrough sets no telnet flag")
+
+    // 2. intercept on: plain data still passes untouched
+    telnetReset()
+    telnetIntercept = true
+    feedString("hello\x0D\x0A")
+    expectReleased("hello\x0D\x0A", "plain data passes when intercepting")
+    expect(not terminal.telnet, "plain data is not a telnet handshake")
+
+    // 3. probe handshake bytes
+    telnetProbeStart()
+    expectWire("\xFF\xFD\x18\xFF\xFD\x1F\xFF\xFD\x20", "probe sends DO TT/NAWS/SPEED")
+
+    // 4. WILL TERMINAL-TYPE: detected + SB SEND request
+    feedString("\xFF\xFB\x18")
+    expect(terminal.telnet, "WILL sets terminal.telnet")
+    expectWire("\xFF\xFA\x18\x01\xFF\xF0", "WILL TERMINAL-TYPE answered with SB SEND")
+    expectReleased("", "negotiation bytes not released as data")
+
+    // 5. WILL NAWS: agreed silently (client follows with SB)
+    feedString("\xFF\xFB\x1F")
+    expectWire("", "WILL NAWS needs no reply")
+
+    // 6. WILL TERMINAL-SPEED: SB SEND request
+    feedString("\xFF\xFB\x20")
+    expectWire("\xFF\xFA\x20\x01\xFF\xF0", "WILL TERMINAL-SPEED answered with SB SEND")
+
+    // 7. unknown WILL refused, DO/DONT answered with WONT
+    feedString("\xFF\xFB\x22")
+    expectWire("\xFF\xFE\x22", "unknown WILL answered with DONT")
+    feedString("\xFF\xFD\x01")
+    expectWire("\xFF\xFC\x01", "DO ECHO answered with WONT")
+    feedString("\xFF\xFE\x03")
+    expectWire("\xFF\xFC\x03", "DONT SGA answered with WONT")
+    feedString("\xFF\xFC\x1F")
+    expectWire("", "WONT answered with silence")
+
+    // 8. IAC IAC is one literal data byte
+    feedString("a\xFF\xFFb")
+    expectReleased("a\xFF" + "b", "IAC IAC released as a literal 0xFF")
+
+    // 9. other commands (NOP, AYT) swallowed
+    feedString("\xFF\xF1\xFF\xF6z")
+    expectReleased("z", "NOP/AYT swallowed")
+    expectWire("", "NOP/AYT need no reply")
+
+    // 10. sequence split across chunks
+    feedString("\xFF")
+    feedString("\xFB")
+    feedString("\x18")
+    expectWire("\xFF\xFA\x18\x01\xFF\xF0", "verb split across chunks")
+
+    // 11. NAWS subnegotiation: 132x50
+    feedString("\xFF\xFA\x1F\x00\x84\x00\x32\xFF\xF0")
+    expect(terminal.columns == 132, "NAWS width applied")
+    expect(terminal.rows == 50, "NAWS height applied")
+
+    // 12. NAWS clamps oversized, ignores zero (width 255 needs IAC IAC)
+    feedString("\xFF\xFA\x1F\x00\xFF\xFF\x00\x00\xFF\xF0")
+    expect(terminal.columns == 132, "oversized NAWS width clamped to 132")
+    expect(terminal.rows == 50, "zero NAWS height ignored")
+
+    // 13. TERMINAL-TYPE IS reply recorded
+    feedString("\xFF\xFA\x18\x00xterm-256color\xFF\xF0")
+    expect(terminal.reportedTerminalType == "xterm-256color", "terminal type recorded")
+
+    // 14. TERMINAL-SPEED IS reply recorded
+    feedString("\xFF\xFA\x20\x0038400,38400\xFF\xF0")
+    expect(terminal.reportedSpeed == "38400,38400", "terminal speed recorded")
+
+    // 15. malformed subnegotiation (IAC then not SE/IAC) dropped
+    feedString("\xFF\xFA\x18\x00junk\xFFQdata")
+    expect(terminal.reportedTerminalType == "xterm-256color", "malformed SB does not apply")
+    feedString("after")
+    expectReleased("dataafter", "parser recovers after malformed SB")
+
+    // 16. NVT CR NUL: the NUL is dropped, a bare NUL is not
+    feedString("A\x0D\x00B")
+    expectReleased("A\x0DB", "NUL after CR dropped")
+    feedString("\x00X")
+    expectReleased("\x00X", "bare NUL passes through")
+
+    // 17. telnetReset drops half-parsed state
+    feedString("\xFF\xFA")
+    telnetReset()
+    feedString("ok")
+    expectReleased("ok", "reset returns to data state")
+
+    if failures > 0 {
+        log("telnet-test: FAILED")
+        quit 1
+    }
+    log("telnet-test: all passed")
+    quit
+}

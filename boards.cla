@@ -158,7 +158,7 @@ func drawPostsMenu() {
 }
 
 func postsPrompt() {
-    modem.send(board.name + "> ")
+    sendData(board.name + "> ")
 }
 
 // Enter and + page forward, - pages back; at either end they just

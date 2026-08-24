@@ -152,7 +152,7 @@ func nextLiveId(db: Database, fromId: int, nextId: int, size: int): int {
 func finishListPage(db: Database, nextId: int, size: int, menuScreen: string, w: list of int) {
     sendRule(BottomLeft, BottomCenter, BottomRight, w)
     if nextLiveId(db, listFromId, nextId, size) < nextId {
-        modem.send("[Enter] More  [Q] Menu > ")
+        sendData("[Enter] More  [Q] Menu > ")
     } else {
         user.screen = menuScreen
         displayPrompt()
@@ -492,10 +492,10 @@ func editUserChoice(input: string) {
 
 func editUserValuePrompt() {
     switch editField {
-    case 'N' { modem.send("Username [" + editName + "]: ") }
-    case 'E' { modem.send("Email [" + editEmail + "]: ") }
-    case 'A' { modem.send("Access (U/S) [" + editAccess + "]: ") }
-    case 'P' { modem.send("New password (Enter keeps): ") }
+    case 'N' { sendData("Username [" + editName + "]: ") }
+    case 'E' { sendData("Email [" + editEmail + "]: ") }
+    case 'A' { sendData("Access (U/S) [" + editAccess + "]: ") }
+    case 'P' { sendData("New password (Enter keeps): ") }
     }
 }
 
@@ -606,9 +606,9 @@ func editBoardChoice(input: string) {
 
 func editBoardValuePrompt() {
     switch editField {
-    case 'N' { modem.send("Name [" + board.name + "]: ") }
-    case 'D' { modem.send("Description [" + board.description + "]: ") }
-    case 'W' { modem.send("Network [" + board.network + "]: ") }
+    case 'N' { sendData("Name [" + board.name + "]: ") }
+    case 'D' { sendData("Description [" + board.description + "]: ") }
+    case 'W' { sendData("Network [" + board.network + "]: ") }
     }
 }
 
@@ -998,10 +998,10 @@ func editAreaChoice(input: string) {
 
 func editAreaValuePrompt() {
     switch editField {
-    case 'N' { modem.send("Name [" + area.name + "]: ") }
-    case 'D' { modem.send("Description [" + area.description + "]: ") }
-    case 'F' { modem.send("Folder (- = app directory) [" + folderName(area.folder) + "]: ") }
-    case 'A' { modem.send("Access (A=all, S=sysop) [" + areaAccessName(area.access) + "]: ") }
+    case 'N' { sendData("Name [" + area.name + "]: ") }
+    case 'D' { sendData("Description [" + area.description + "]: ") }
+    case 'F' { sendData("Folder (- = app directory) [" + folderName(area.folder) + "]: ") }
+    case 'A' { sendData("Access (A=all, S=sysop) [" + areaAccessName(area.access) + "]: ") }
     }
 }
 

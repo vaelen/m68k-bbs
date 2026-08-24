@@ -68,9 +68,9 @@ func startReply() {
 
 func editSubjectPrompt() {
     if editSubject == "" {
-        modem.send("Subject: ")
+        sendData("Subject: ")
     } else {
-        modem.send("Subject [" + editSubject + "]: ")
+        sendData("Subject [" + editSubject + "]: ")
     }
 }
 
@@ -116,15 +116,15 @@ func backToPosts() {
 func editBodyPrompt() {
     var n: int = editLines.count + 1
     if editPending == 'R' {
-        modem.send("Original: ")
+        sendData("Original: ")
         return
     }
     if editPending == 'T' {
-        modem.send("Replacement: ")
+        sendData("Replacement: ")
         return
     }
     if editPending != ' ' { n = editPendingLine }
-    modem.send(padLeft(intStr(n), 3) + ": ")
+    sendData(padLeft(intStr(n), 3) + ": ")
 }
 
 func editorHelp() {
@@ -140,7 +140,7 @@ func editorHelp() {
 func listEditLines() {
     var i: int = 0
     while i < editLines.count {
-        modem.send(padLeft(intStr(i + 1), 3) + ": ")
+        sendData(padLeft(intStr(i + 1), 3) + ": ")
         sendLine(editLines[i])
         i = i + 1
     }
@@ -170,7 +170,7 @@ func editorCommand(input: string) {
     }
     case 'E' {
         if n >= 1 and n <= editLines.count {
-            modem.send(intStr(n) + " was: ")
+            sendData(intStr(n) + " was: ")
             sendLine(editLines[n - 1])
             editPending = 'E'
             editPendingLine = n
@@ -239,7 +239,7 @@ func applyReplace(repl: string) {
         }
         j = j + 1
     }
-    modem.send(padLeft(intStr(editPendingLine), 3) + ": ")
+    sendData(padLeft(intStr(editPendingLine), 3) + ": ")
     sendLine(line)
     displayPrompt()
 }

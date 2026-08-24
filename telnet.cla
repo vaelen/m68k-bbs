@@ -1,0 +1,187 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// Telnet option processor: sits between the modem result-code scanner
+// and the app's input handling. scanner.cla releases bytes to
+// dataChar() here; telnet command sequences are consumed and answered
+// immediately, ordinary data passes on to inputChar(). Outgoing
+// caller-facing data goes through telnetSend(), which doubles IAC
+// (0xFF) bytes once a telnet client is detected. The including
+// program defines inputChar(c: char) and telnetOut(s: string) (raw
+// bytes to the wire, never escaped).
+//
+// We stay a plain NVT line-mode server: the connect-time probe sends
+// DO TERMINAL-TYPE / DO NAWS / DO TERMINAL-SPEED, and any telnet verb
+// coming back sets terminal.telnet. WILL TERMINAL-TYPE and WILL
+// TERMINAL-SPEED are answered with the SB SEND request; NAWS
+// subnegotiation updates terminal.columns/rows. Every other WILL is
+// refused with DONT and every DO/DONT with WONT (we offer no local
+// options -- in particular no ECHO/SGA, which keeps clients in
+// line-at-a-time local-echo mode, matching our Line input mode).
+
+include "terminal.cla"
+
+const tnIAC:  char = '\xFF'
+const tnSE:   char = '\xF0'
+const tnSB:   char = '\xFA'
+const tnWILL: char = '\xFB'
+const tnWONT: char = '\xFC'
+const tnDO:   char = '\xFD'
+const tnDONT: char = '\xFE'
+
+const optTermType: char = '\x18'   // TERMINAL-TYPE (24)
+const optNaws:     char = '\x1F'   // window size (31)
+const optSpeed:    char = '\x20'   // TERMINAL-SPEED (32)
+
+// Parser states.
+const tnData:   int = 0   // ordinary data
+const tnCmd:    int = 1   // seen IAC, want a command byte
+const tnOpt:    int = 2   // seen a verb, want its option byte
+const tnSub:    int = 3   // inside SB, collecting the payload
+const tnSubIac: int = 4   // IAC inside SB: escaped FF or SE
+
+var tnState: int = 0
+var tnVerb: char           // which of WILL/WONT/DO/DONT
+var tnPayload: string(63)  // SB option byte + payload (overflow dropped)
+var telnetIntercept: bool = false   // watch incoming bytes for IAC
+var tnAfterCR: bool = false         // last data byte was CR (for CR NUL)
+
+func telnetReset() {
+    tnState = tnData
+    tnPayload = ""
+    tnAfterCR = false
+}
+
+// Open the negotiation: IAC DO TERMINAL-TYPE / NAWS / TERMINAL-SPEED.
+func telnetProbeStart() {
+    telnetOut("\xFF\xFD\x18\xFF\xFD\x1F\xFF\xFD\x20")
+}
+
+// Answer one negotiation request as soon as it arrives.
+func telnetVerb(verb: char, opt: char) {
+    if verb == tnWILL {
+        if opt == optTermType or opt == optSpeed {
+            telnetOut("\xFF\xFA" + opt + "\x01\xFF\xF0")   // SB <opt> SEND SE
+        } else if opt != optNaws {
+            telnetOut("\xFF\xFE" + opt)   // DONT: option we didn't ask for
+        }
+        // NAWS needs no reply; the client follows with its SB
+    } else if verb == tnDO or verb == tnDONT {
+        telnetOut("\xFF\xFC" + opt)       // WONT: we offer no local options
+    }
+    // WONT: the option stays off; silence (refusal is final)
+}
+
+// A completed IAC SB ... IAC SE. tnPayload[0] is the option byte.
+func telnetSubDone() {
+    var w: int
+    var h: int
+    var opt: char
+    if tnPayload.length < 1 { return }
+    opt = tnPayload[0]
+    if opt == optNaws {
+        if tnPayload.length < 5 { return }
+        w = int(tnPayload[1]) * 256 + int(tnPayload[2])
+        h = int(tnPayload[3]) * 256 + int(tnPayload[4])
+        if w > 132 { w = 132 }   // 255-byte line builders cap the width
+        if h > 60 { h = 60 }
+        if w >= 20 { terminal.columns = w }   // 0 = "unspecified" (RFC 1073)
+        if h >= 10 { terminal.rows = h }
+    } else if opt == optTermType {
+        if tnPayload.length >= 2 and tnPayload[1] == '\x00' {   // IS
+            terminal.reportedTerminalType = tnPayload[2, tnPayload.length - 2]
+        }
+    } else if opt == optSpeed {
+        if tnPayload.length >= 2 and tnPayload[1] == '\x00' {   // IS
+            terminal.reportedSpeed = tnPayload[2, tnPayload.length - 2]
+        }
+    }
+}
+
+// Every byte scanner.cla releases as ordinary data lands here. State
+// lives in globals, so sequences split across received() chunks work.
+func dataChar(c: char) {
+    if not telnetIntercept {
+        inputChar(c)
+        return
+    }
+    switch tnState {
+    case tnData {
+        if c == tnIAC {
+            tnState = tnCmd
+        } else if c == '\x00' and tnAfterCR {
+            tnAfterCR = false     // NVT end-of-line is CR NUL: drop the NUL
+        } else {
+            tnAfterCR = (c == '\x0D')
+            inputChar(c)
+        }
+    }
+    case tnCmd {
+        switch c {
+        case tnIAC {              // IAC IAC: a literal 0xFF data byte
+            inputChar(c)
+            tnState = tnData
+        }
+        case tnWILL, tnWONT, tnDO, tnDONT {
+            terminal.telnet = true
+            tnVerb = c
+            tnState = tnOpt
+        }
+        case tnSB {
+            terminal.telnet = true
+            tnPayload = ""
+            tnState = tnSub
+        }
+        else {                    // NOP/AYT/GA/...: swallow
+            tnState = tnData
+        }
+        }
+    }
+    case tnOpt {
+        telnetVerb(tnVerb, c)
+        tnState = tnData
+    }
+    case tnSub {
+        if c == tnIAC {
+            tnState = tnSubIac
+        } else if tnPayload.length < 63 {
+            tnPayload = tnPayload + c
+        }
+    }
+    case tnSubIac {
+        if c == tnIAC {           // escaped 0xFF inside the payload
+            if tnPayload.length < 63 { tnPayload = tnPayload + c }
+            tnState = tnSub
+        } else if c == tnSE {
+            telnetSubDone()
+            tnState = tnData
+        } else {                  // malformed subnegotiation: drop it
+            tnState = tnData
+        }
+    }
+    }
+}
+
+// Send caller-facing data, doubling IAC bytes for telnet clients.
+// Chunked sends around each IAC keep clear of the 255-byte string cap.
+func telnetSend(conn: connection, s: string) {
+    var i: int = 0
+    var start: int = 0
+    if not terminal.telnet {
+        conn.send(s)
+        return
+    }
+    while i < s.length {
+        if s[i] == tnIAC {
+            conn.send(s[start, i + 1 - start])
+            conn.send("\xFF")
+            start = i + 1
+        }
+        i = i + 1
+    }
+    if start == 0 {
+        conn.send(s)
+    } else if start < s.length {
+        conn.send(s[start, s.length - start])
+    }
+}

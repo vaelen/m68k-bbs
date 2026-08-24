@@ -6,33 +6,33 @@
 // cannot compile connection method calls) can include the pure part
 // alone.
 
-include "terminal.cla"
+include "telnet.cla"   // pulls in terminal.cla; provides telnetSend
 
 // No-ops unless the terminal reports color support.
 
 func setColor(conn: connection, color: Color) {
     if not terminal.color { return }
-    conn.send(colorSeq(color))
+    telnetSend(conn, colorSeq(color))
 }
 
 func clearColor(conn: connection) {
     if not terminal.color { return }
-    conn.send(clearColorSeq)
+    telnetSend(conn, clearColorSeq)
 }
 
 func setBackground(conn: connection, color: Color) {
     if not terminal.color { return }
-    conn.send(backgroundSeq(color))
+    telnetSend(conn, backgroundSeq(color))
 }
 
 func clearBackground(conn: connection) {
     if not terminal.color { return }
-    conn.send(clearBackgroundSeq)
+    telnetSend(conn, clearBackgroundSeq)
 }
 
 // Send a run of box-drawing characters (boxChar/hbar output) as one
 // drawing-mode shift, so a whole rule line costs a single SO/SI pair
 // on VT100.
 func sendDrawing(conn: connection, s: string) {
-    conn.send(startDrawing() + s + stopDrawing())
+    telnetSend(conn, startDrawing() + s + stopDrawing())
 }
