@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 // Post editor: a classic BBS line editor for new posts and replies
-// (WWIV style). Lines are entered one at a time at a numbered prompt;
-// a line starting with '/' is a command (/S save, /A abort, /L list,
-// /D n, /E n, /I n, /?). Lines are stored as typed (up to 255 bytes);
-// the viewer re-wraps them to each reader's width, so no column limit
-// is enforced here.
+// (WWIV style). Text is typed at numbered prompts, one display row
+// each (terminal width minus the prompt): typing past the end of a
+// row starts the next row with no newline in the text, Enter ends a
+// row with one, and backspacing past the start of a row goes back to
+// the end of the previous row (removing its newline if it had one).
+// A line starting with '/' is a command (/S save, /A abort, /L list,
+// /D n, /E n, /I n, /R n, /?). Each stored row carries its own CR
+// when it was ended with Enter, so the body is just the rows joined
+// end to end; the viewer re-wraps it to each reader's width.
 
 var editLines: list of string
 var editSubject: string(63)
@@ -15,6 +19,7 @@ var editPending: char = ' '     // 'E'/'I': next line replaces/inserts;
                                 // 'R': awaiting /R's Original text,
                                 // 'T': awaiting its Replacement
 var editPendingLine: int = 0
+var editPendingHard: bool = false   // /E target row ended with Enter
 var editOriginal: string
 var editTarget: char = 'P'      // 'P' board post, 'M' private mail
 
@@ -125,6 +130,32 @@ func editBodyPrompt() {
     }
     if editPending != ' ' { n = editPendingLine }
     sendData(padLeft(intStr(n), 3) + ": ")
+    lineLimit = terminal.columns - 5   // one display row per numbered line
+}
+
+// Row i's text without its trailing CR, and whether it had one.
+func rowText(i: int): string {
+    var row: string = editLines[i]
+    if rowHard(i) { return row[0, row.length - 1] }
+    return row
+}
+
+func rowHard(i: int): bool {
+    var row: string = editLines[i]
+    return row.length > 0 and row[row.length - 1] == '\n'
+}
+
+// Backspace at the start of a row: pop the previous row back into the
+// input buffer (dropping its newline, if any) and redisplay it, the
+// same way a rubout across a wrapped row redraws. The first row has
+// nothing before it, and /E, /I and /R prompts stay put.
+func editJoinPrevious() {
+    if editPending != ' ' or editLines.count == 0 { return }
+    user.buffer = rowText(editLines.count - 1)
+    editLines.remove(editLines.count - 1)
+    sendData(terminal.eol)
+    displayPrompt()
+    echoBuffer()
 }
 
 func editorHelp() {
@@ -141,7 +172,7 @@ func listEditLines() {
     var i: int = 0
     while i < editLines.count {
         sendData(padLeft(intStr(i + 1), 3) + ": ")
-        sendLine(editLines[i])
+        sendLine(rowText(i))
         i = i + 1
     }
 }
@@ -171,9 +202,10 @@ func editorCommand(input: string) {
     case 'E' {
         if n >= 1 and n <= editLines.count {
             sendData(intStr(n) + " was: ")
-            sendLine(editLines[n - 1])
+            sendLine(rowText(n - 1))
             editPending = 'E'
             editPendingLine = n
+            editPendingHard = rowHard(n - 1)
         } else {
             sendLine("No such line.")
         }
@@ -183,6 +215,7 @@ func editorCommand(input: string) {
         if n >= 1 and n <= editLines.count {
             editPending = 'I'
             editPendingLine = n
+            editPendingHard = true   // an inserted line is a full line
         } else {
             sendLine("No such line.")
         }
@@ -246,6 +279,7 @@ func applyReplace(repl: string) {
 
 func editBodyInput(input: string) {
     var tmp: list of string
+    var row: string
     var i: int = 0
     // /R's sub-prompts take their input literally (a body line may
     // well contain slashes); empty Original cancels.
@@ -264,9 +298,17 @@ func editBodyInput(input: string) {
         applyReplace(input)
         return
     }
-    if input.length >= 1 and input[0] == '/' {
+    if not inputSoft and input.length >= 1 and input[0] == '/' {
         editorCommand(input)
         return
+    }
+    // A row ended with Enter keeps its newline; a row that simply
+    // filled up (inputSoft) continues on the next one.
+    row = input
+    if not inputSoft {
+        // a completed line gets its newline; /E keeps the replaced
+        // row's status (editPendingHard, which /I sets)
+        if editPending == ' ' or editPendingHard { row = row + "\n" }
     }
     if editPending != ' ' {
         // replace ('E') or insert-before ('I') via rebuild -- lists
@@ -275,14 +317,20 @@ func editBodyInput(input: string) {
         editLines.clear()
         while i < tmp.count {
             if i == editPendingLine - 1 {
-                editLines.add(input)
+                editLines.add(row)
                 if editPending == 'I' { editLines.add(tmp[i]) }
             } else {
                 editLines.add(tmp[i])
             }
             i = i + 1
         }
-        editPending = ' '
+        if inputSoft {
+            // the overflow continues as an insert before the next row
+            editPending = 'I'
+            editPendingLine = editPendingLine + 1
+        } else {
+            editPending = ' '
+        }
         displayPrompt()
         return
     }
@@ -291,7 +339,7 @@ func editBodyInput(input: string) {
         displayPrompt()
         return
     }
-    editLines.add(input)
+    editLines.add(row)
     displayPrompt()
 }
 
@@ -299,7 +347,7 @@ func saveEditor() {
     var body: text
     var i: int = 0
     while i < editLines.count {
-        body = body + editLines[i] + "\n"
+        body = body + editLines[i]   // rows carry their own newlines
         i = i + 1
     }
     if editTarget == 'M' {

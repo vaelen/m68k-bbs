@@ -72,6 +72,13 @@ var previousSeen: int = 0   // that account's lastSeen before this login (Mac se
 const BS:  char = '\x08'
 const DEL: char = '\x7F'
 
+// Line-mode hooks for the editor (set per prompt by displayPrompt):
+// a buffer that reaches lineLimit is handed to processInput as a
+// "soft" line (inputSoft) before the next character starts a fresh
+// one; 0 means no limit.
+var lineLimit: int = 0
+var inputSoft: bool = false
+
 // The BBS echoes received characters back (classic remote-echo BBS
 // behavior; telnet clients get local echo turned off by the connect
 // probe). Fully off during the probe and logoff, so stray probe bytes
@@ -144,13 +151,19 @@ func inputChar(c: char) {
         return
     }
     if c == CR {
-        if echoActive() { sendData(terminal.eol) }
+        // no newline echo when a hard wrap already left the cursor at
+        // column 0
+        if echoActive() and termCol > 0 { sendData(terminal.eol) }
         processInput(user.buffer)
         user.buffer = ""
         return
     }
     if c == LF { return }
     if c == BS or c == DEL {
+        if user.buffer.length == 0 and user.screen == "editbody" {
+            editJoinPrevious()
+            return
+        }
         if user.buffer.length > 0 {
             user.buffer = user.buffer[0, user.buffer.length - 1]
             if echoActive() and not echoHidden() {
@@ -166,6 +179,12 @@ func inputChar(c: char) {
             }
         }
         return
+    }
+    if lineLimit > 0 and user.buffer.length >= lineLimit {
+        inputSoft = true       // row full: submit it, start the next
+        processInput(user.buffer)
+        inputSoft = false
+        user.buffer = ""
     }
     if user.buffer.length >= 255 {
         sendData("\x07")      // line full: drop the char, ring the bell
@@ -338,6 +357,7 @@ func lineScreen(s: string): bool {
 
 func displayPrompt() {
     terminal.linemode = lineScreen(user.screen)
+    lineLimit = 0
     switch user.screen {
     case "login"    { sendData("Username: ") }
     case "password" { sendData("Password: ") }

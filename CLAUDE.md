@@ -283,12 +283,19 @@ inputChar (bbs.cla) → processInput`.
   `To:` must resolve to a local user (`findUserId`), empty `To:`
   cancels.
 - `editor.cla` — WWIV-style line editor for new posts, replies, and
-  private mail (`editTarget` picks the save target): numbered line
-  prompts; `/S` save, `/A` abort, `/L` list, `/D n`,
-  `/E n`, `/I n`, `/R n` (Original/Replacement text swap), `/?`.
-  Replies default the subject to `Re: <orig>` and thread to the
-  starter's ID. Lines are stored as typed (≤255 bytes, no column
-  limit) and re-wrapped per reader; bodies join lines with CR.
+  private mail (`editTarget` picks the save target). Each numbered
+  line is one display row (`lineLimit = terminal.columns - 5`, set by
+  `editBodyPrompt`): typing past the end of a row starts the next row
+  with no newline in the text (`inputSoft`), Enter ends a row with a
+  newline, and backspace at the start of a row (`editJoinPrevious`,
+  called from `inputChar`) pops the previous row back into the buffer
+  — dropping its newline — and redisplays it; the first row has no
+  previous. Rows are stored with their own trailing CR when hard
+  (`rowText`/`rowHard`), so the body is the rows joined end to end
+  and readers reflow paragraphs. Commands: `/S` save, `/A` abort, `/L`
+  list, `/D n`, `/E n` (keeps the row's newline status), `/I n`, `/R n`
+  (Original/Replacement text swap), `/?`. Replies default the subject
+  to `Re: <orig>` and thread to the starter's ID.
 
 Tests (`tests/*.cla`, run by `scripts/test.sh`) are host-lane CLI
 programs that include a module and assert on it; pure modules test
