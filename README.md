@@ -13,6 +13,15 @@ Early development. Working today:
 - Log window with timestamped diagnostics; File > Quit
 - Hayes modem handling: detects `CONNECT`/`NO CARRIER` result codes
   in-band (filtered out of the input stream), hangs up with `+++`/`ATH`
+- Telnet-aware sessions: a connect-time negotiation probe detects
+  telnet clients and puts them in character-at-a-time mode with local
+  echo off, tracks window size (NAWS), terminal type and speed, and
+  escapes IAC on the way out; plain modem callers are untouched
+  (`docs/telnet-negotiation-reference.md`)
+- Remote echo with hidden password entry, backspace editing that
+  survives wrapped lines, single-key menus (text prompts and editor
+  lines still buffer until Enter), and a `T` option to change the
+  terminal type mid-session
 - Accounts in a [vDB](https://github.com/vaelen/libvdb)-format user
   database (pure-Clarus engine: `btree.cla`/`vdb.cla`, journaled with
   crash recovery and secondary indexes): signup (`NEW`),
@@ -20,8 +29,11 @@ Early development. Working today:
   created becomes the sysop
 - Bulletin boards: board picker, paged post lists (newest first),
   framed post reader with paged bodies and next/previous-post
-  navigation, and a classic line editor for new posts and replies
-  (`/S /A /L /D /E /I /R` commands); flat threading in the message
+  navigation, and a line editor for new posts and replies that
+  flows like a modern editor -- typing past the end of a row starts
+  the next numbered row without a newline, Enter inserts one, and
+  backspace at the start of a row rejoins the previous one -- plus
+  the classic `/S /A /L /D /E /I /R` commands; flat threading in the message
   base, per-board header databases plus an append-only body heap
   (`docs/boards.md`)
 - Private mail: one recipient-indexed Mail database plus a body heap
@@ -38,6 +50,10 @@ Early development. Working today:
   lettered-field editors, deletion with confirmation, board and file-
   area creation, post deletion; safety rails so the system always
   keeps a sysop
+- Login log: a plain-text `Logins.txt` (fixed-width, tab-delimited
+  lines: new-account flag, name, timestamp, duration) appended when a
+  caller disconnects, with an `L) Recent Logins` main-menu table of
+  the last 20
 - Terminal-aware rendering at 40 or 80 columns for ASCII, ANSI
   (cp437), and VT100 (DEC Special Graphics) callers: box-drawn
   tables, paged views, color helpers (`docs/tables.md`)

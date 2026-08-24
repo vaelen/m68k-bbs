@@ -137,9 +137,10 @@ board, creating the files (with the thread index) on first use.
 - Post headers: one 512-byte page each (160-byte record), so a board
   with 1,000 posts spends ~500 KB on headers, plus exact body bytes.
 - Bodies: no length cap in the format (i32 offset/length); the line
-  editor sets the practical limit at 100 lines of ≤ 255 bytes,
-  CR-joined. Viewers re-wrap bodies to each reader's width, so no
-  column limit is imposed at composition time.
+  editor sets the practical limit at 100 display rows (one terminal
+  row each, ~75 bytes at 80 columns). Only rows ended with Enter
+  carry a CR, so a paragraph typed across several rows is stored as
+  one paragraph; viewers re-wrap bodies to each reader's width.
 - Subjects, senders, board names: ≤ 63 chars (64-byte Pascal fields).
 
 ## Echomail later (why this design accommodates it)

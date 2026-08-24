@@ -119,7 +119,7 @@ Full background: `docs/snow-hdd-howto.md`.
 Before an e2e test run against the emulator, delete all database files
 from the image (while Snow is stopped) so every run starts from the
 same baseline: `hdel` the vDB files — `Users.*`, `Boards.*`, `BRD*`,
-`Mail.*`, `Areas.*`, `ARE*` — then reseed. The vDB format is identical on both lanes (big-endian),
+`Mail.*`, `Areas.*`, `ARE*` — and `Logins.txt`, then reseed. The vDB format is identical on both lanes (big-endian),
 so seed data can be built with a host-lane CLI program and `hcopy -r`'d
 onto the image (file type/creator don't matter; the app opens by name).
 
@@ -353,6 +353,7 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
   `terminal.cla`, `termio.cla`, `btree.cla`, `vdb.cla` — modules above
 - `tests/` — host-lane test suites; `scripts/` — build/test/deploy
 - `bin/`, `vendor/` — pinned compiler + runtime/toolbox snapshot
-- `docs/` — language reference + Snow how-to (symlinks), language-gaps.md
+- `docs/` — language reference + Snow how-to (symlinks), language-gaps.md,
+  telnet-negotiation-reference.md and vt100.codes.txt (protocol notes)
 - `snow/` — emulator, ROM, boot disk, workspace, BBSHD.hda (untracked)
 - `simple-modem-emulator/` — Hayes modem bridge (tracked in this repo)

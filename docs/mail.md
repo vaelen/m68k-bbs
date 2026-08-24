@@ -74,7 +74,8 @@ if real netmail ever trips on it.
 
 Identical to a board's `BRD<nn>.MSG`: an append-only file of raw body
 bytes with no framing; the header's offset/length pair is the only map
-into it. Bodies are CR-joined lines from the line editor, re-wrapped
+into it. Bodies come from the line editor -- CR only where Enter was
+pressed, soft-wrapped rows joined end to end -- and are re-wrapped
 per reader.
 
 **Write ordering:** `sendMail` appends the body and `flush()`es
