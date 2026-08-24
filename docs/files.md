@@ -196,8 +196,8 @@ same table senders and paging helpers.
   `size()`, then `addFile`.
 - **Upload**: write the received bytes to `filePath`, then `addFile`
   with `fileFlagPending` for sysop review.
-- **Download**: done — XMODEM from the file view, download count
-  bumped on success (`docs/file-transfers.md`).
+- **Download**: done — XMODEM / XMODEM-1K / YMODEM from the file
+  view, download count bumped on success (`docs/file-transfers.md`).
 - **Path check**: the first deploy with a non-empty folder should
   confirm on Snow that `file.open` accepts an HFS full path
   (`BBS HD:Files:x`); if not, areas stay flat next to the app (empty

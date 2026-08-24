@@ -45,7 +45,7 @@ Early development. Working today:
   (`docs/files.md`). Sysop area management and a caller-facing
   browser (area picker → paged file list → framed file view, with
   sysop-only areas and pending files hidden from ordinary callers)
-  are in, plus XMODEM download from the file view
+  are in, plus XMODEM / XMODEM-1K / YMODEM download from the file view
   (`docs/file-transfers.md`); uploads and ZMODEM/Kermit come next.
 - Sysop area: paged user/board/file-area lists, detail cards,
   lettered-field editors, deletion with confirmation, board and file-

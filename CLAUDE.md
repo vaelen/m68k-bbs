@@ -256,9 +256,10 @@ inputChar (bbs.cla) → processInput`.
   buffer. File transfers are the `"xfer"` screen: `inputChar` hands
   every raw byte to `xferChar` before any assembly, the 30-tick timer
   calls `xferTick`, `disconnected()` calls `xferAbort`, and engines
-  send through `xferOut` (→ `telnetSend`, no cursor tracking);
-  `xferStart/xferChar/xferTick/xferAbort` switch on `xferProto`
-  (`'X'` only). `docs/file-transfers.md`.
+  send through `xferOut(text)` (→ `telnetSend` in 255-byte slices, no
+  cursor tracking); `xferStart(proto, path, name)`/`xferChar`/
+  `xferTick`/`xferAbort` switch on `xferProto` (`'X'`/`'1'`/`'Y'`,
+  all `xmodem.cla`). `docs/file-transfers.md`.
 - `sysop.cla` — the sysop menu tree (gated on `user.access`): paged
   user/board lists (`listFromId` cursor, `[Enter] More` prompt),
   detail cards, lettered-field edit cards (buffered; `S` saves, `Q`
@@ -285,21 +286,25 @@ inputChar (bbs.cla) → processInput`.
   wrapped by `wrapText` and paged). Keys mirror the board reader:
   `+`/Enter next page, `-` previous, `L` redraw, `>`/`.` and `<`/`,`
   next/previous file, `D` download (offline files refused → protocol
-  menu `xferproto`: `X` XMODEM → `xferStart`; `xferDone` bumps the
-  download count and redraws the view), sysop-only `X` delete, `Q`
-  up one level. No uploads yet.
+  menu `xferproto`: `X` XMODEM, `1` XMODEM-1K, `Y` YMODEM →
+  `startDownload` → `xferStart`; `xferDone` bumps the download count
+  and redraws the view), sysop-only `X` delete, `Q` up one level. No
+  uploads yet.
 - `mail.cla` — private mail UI: main-menu `M` → paged inbox (`*`
   marks unread, newest first) → framed message view (viewing marks
   read; `R` reply, `D` delete with Y/N confirm, `>`/`<` between
   messages) → compose via `editor.cla` with `editTarget = 'M'`:
   `To:` must resolve to a local user (`findUserId`), empty `To:`
   cancels.
-- `xmodem.cla` — XMODEM sender: a pure state machine
-  (`xmodemSendStart(path)`, `xmodemChar`, `xmodemTick`, `xmodemAbort`)
-  over a `filehandle`, 128-byte blocks with CRC-16 (`crcXmodem`,
-  bitwise 0x1021 — `text.crc16` is the Kermit CRC) or checksum,
-  ½-second ticks for the 60 s start / 10 s ACK timeouts, ten-error
-  ceiling, CAN CAN handling; talks only through `xferOut`/`xferDone`.
+- `xmodem.cla` — XMODEM / XMODEM-1K / YMODEM sender: a pure state
+  machine (`xmodemSendStart(path, name, mode)`, `xmodemChar`,
+  `xmodemTick`, `xmodemAbort`) over a `filehandle`; mode `'X'`
+  128-byte blocks, `'1'` 1K `STX` blocks with a 128-byte tail, `'Y'`
+  1K plus block 0 (name NUL size NUL) and the empty end-of-batch
+  block; CRC-16 (`crcXmodem`, bitwise 0x1021 — `text.crc16` is the
+  Kermit CRC) or checksum on a NAK start (not YMODEM), ½-second
+  ticks for the 60 s start / 10 s ACK timeouts, ten-error ceiling,
+  CAN CAN handling; talks only through `xferOut(text)`/`xferDone`.
   `tests/xmodem-test.cla` unit-tests it; `scripts/xmodem-e2e.sh`
   receives with `lrz` over `socat` (`docs/file-transfers.md`).
 - `loginlog.cla` — the login log, `Logins.txt` (TEXT/ttxt): one
@@ -359,7 +364,7 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
   paged post list, framed post view
 - `files.cla` — caller-facing file-area reader: area picker, paged
   file list, framed file view, XMODEM download
-- `xmodem.cla` — XMODEM sender state machine
+- `xmodem.cla` — XMODEM / XMODEM-1K / YMODEM sender state machine
 - `mail.cla` — private mail: inbox, message view, compose/reply
 - `editor.cla` — line editor for new posts, replies, and mail (/S /A
   /L /D /E /I /R)
