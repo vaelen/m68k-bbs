@@ -225,6 +225,7 @@ func drawFilesMenu() {
     sendLine("+) Next Page (or Enter)")
     sendLine("-) Previous Page")
     sendLine("L) List Files")
+    sendLine("U) Upload File")
     if user.access == accessSysop {
         sendLine("D) Delete File")
     }
@@ -265,6 +266,7 @@ func filesChoice(input: string) {
         displayPrompt()
     }
     case "V" { promptNumber("filenum", "") }
+    case "U" { gotoScreen("upproto") }
     case "D" {
         if user.access == accessSysop {
             delFileFromView = false
@@ -417,6 +419,7 @@ func drawFileViewMenu() {
     sendLine("L) Redraw This Page")
     sendLine("D) Download File")
     if user.access == accessSysop {
+        if (fileRec.flags & fileFlagPending) != 0 { sendLine("A) Approve File") }
         sendLine("X) Delete File")
     }
     sendLine("Q) Return to File List")
@@ -474,6 +477,18 @@ func fileViewChoice(input: string) {
         } else {
             gotoScreen("xferproto")
         }
+    }
+    case "A" {
+        if user.access == accessSysop and (fileRec.flags & fileFlagPending) != 0 {
+            fileRec.flags = fileRec.flags & ~fileFlagPending
+            if saveFile() {
+                sendLine("Approved.")
+            } else {
+                sendLine("Save failed: " + lastError.message)
+            }
+            drawFileView()
+        }
+        displayPrompt()
     }
     case "X" {
         if user.access == accessSysop {
@@ -556,9 +571,9 @@ func drawXferProtoMenu() {
 
 func xferProtoChoice(input: string) {
     switch upperStr(input) {
-    case "X" { startDownload('X', "XMODEM") }
-    case "1" { startDownload('1', "XMODEM-1K") }
-    case "Y" { startDownload('Y', "YMODEM") }
+    case "X" { startDownload('X') }
+    case "1" { startDownload('1') }
+    case "Y" { startDownload('Y') }
     case "", "Q" {
         user.screen = "fileview"
         displayPrompt()
@@ -568,15 +583,140 @@ func xferProtoChoice(input: string) {
     }
 }
 
-func startDownload(proto: char, label: string) {
-    sendLine("Start your " + label + " receive now (Ctrl-X twice to cancel)...")
-    log(label + " send: " + filePath(fileRec.id))
+var xferDir: char = 'D'          // 'D' download, 'U' upload
+var upProto: char = 'X'
+var upName: string(31)
+var upDesc: string(63)
+
+func protoLabel(proto: char): string {
+    switch proto {
+    case '1' { return "XMODEM-1K" }
+    case 'Y' { return "YMODEM" }
+    }
+    return "XMODEM"
+}
+
+func startDownload(proto: char) {
+    xferDir = 'D'
+    sendLine("Start your " + protoLabel(proto) + " receive now (Ctrl-X twice to cancel)...")
+    log(protoLabel(proto) + " send: " + filePath(fileRec.id))
     xferStart(proto, filePath(fileRec.id), fileRec.name)
+}
+
+// --- Upload ------------------------------------------------------------
+// U on the file list -> protocol -> (XMODEM: filename) -> description ->
+// the "xfer" screen. Each received file becomes a pending entry
+// (sysops' own uploads go live at once); xferDone returns to the list.
+
+func drawUpProtoMenu() {
+    sendLine("")
+    sendLine("Upload to " + area.name)
+    sendLine("")
+    sendLine("X) XMODEM")
+    sendLine("1) XMODEM-1K")
+    sendLine("Y) YMODEM")
+    sendLine("Q) Cancel")
+    sendLine("")
+}
+
+func upProtoChoice(input: string) {
+    var choice: string = upperStr(input)
+    switch choice {
+    case "X", "1", "Y" {
+        upProto = choice[0]
+        upName = ""
+        if upProto == 'Y' {
+            user.screen = "updesc"       // the name comes with the file
+        } else {
+            user.screen = "upname"
+        }
+        displayPrompt()
+    }
+    case "", "Q" {
+        user.screen = "files"
+        displayPrompt()
+    }
+    case "?" { gotoScreen("upproto") }
+    else { displayPrompt() }
+    }
+}
+
+// The Mac File Manager's rules plus "not already here". Shared with the
+// engine, which vets YMODEM names through it.
+func xferAcceptName(name: string): bool {
+    var i: int = 0
+    if name.length == 0 or name.length > 31 { return false }
+    while i < name.length {
+        if name[i] == ':' { return false }
+        i = i + 1
+    }
+    return findFile(name) < 0
+}
+
+func upNameInput(input: string) {
+    if input == "" {
+        user.screen = "files"
+        sendLine("Cancelled.")
+        displayPrompt()
+        return
+    }
+    if not xferAcceptName(input) {
+        if findFile(input) >= 0 {
+            sendLine("That name is already in use.")
+        } else {
+            sendLine("Names are 1-31 characters with no colon.")
+        }
+        displayPrompt()
+        return
+    }
+    upName = input
+    user.screen = "updesc"
+    displayPrompt()
+}
+
+func upDescInput(input: string) {
+    if input.length > 63 {
+        sendLine("Descriptions are limited to 63 characters.")
+        displayPrompt()
+        return
+    }
+    upDesc = input
+    xferDir = 'U'
+    sendLine("Start your " + protoLabel(upProto) + " send now (Ctrl-X twice to cancel)...")
+    log(protoLabel(upProto) + " receive into " + area.name)
+    xferStartReceive(upProto, area.folder, upName)
+}
+
+// Engine callback: one file landed on disk.
+func xferReceived(name: string, bytes: int) {
+    var none: text
+    var flags: int = fileFlagPending
+    if user.access == accessSysop { flags = 0 }
+    if addFile(name, user.name, upDesc, bytes, flags, none) < 1 {
+        log("Upload: addFile failed for " + name + ": " + lastError.message)
+        return
+    }
+    log("Upload: " + name + " (" + intStr(bytes) + " bytes) from " + user.name)
+    sendLine("Received " + name + " (" + intStr(bytes) + " bytes).")
 }
 
 // Engine callback: the transfer is over and the engine is idle.
 func xferDone(ok: bool) {
     sendLine("")
+    if xferDir == 'U' {
+        if ok {
+            sendLine("Upload complete.")
+            if user.access != accessSysop {
+                sendLine("It will be listed once the sysop approves it.")
+            }
+        } else {
+            sendLine("Upload failed.")
+        }
+        user.screen = "files"
+        drawFileList()
+        displayPrompt()
+        return
+    }
     if ok {
         fileRec.downloads = fileRec.downloads + 1
         if not saveFile() { log("Download count save failed: " + lastError.message) }

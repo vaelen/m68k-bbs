@@ -96,6 +96,15 @@ func xferStart(proto: char, path: string, name: string) {
     }
 }
 
+func xferStartReceive(proto: char, folder: string, name: string) {
+    xferProto = proto
+    xferPath = ""
+    user.screen = "xfer"
+    switch proto {
+    case 'X', '1', 'Y' { xmodemRecvStart(proto, folder, name) }
+    }
+}
+
 func xferChar(c: char) {
     switch xferProto {
     case 'X', '1', 'Y' { xmodemChar(c) }
@@ -373,6 +382,7 @@ func displayMenu() {
     case "files"       { drawFilesMenu() }
     case "fileview"    { drawFileViewMenu() }
     case "xferproto"   { drawXferProtoMenu() }
+    case "upproto"     { drawUpProtoMenu() }
     case "mail"        { drawMailMenu() }
     case "mailview"    { drawMailViewMenu() }
     }
@@ -412,6 +422,7 @@ func lineScreen(s: string): bool {
     case "mailto", "editsubject", "editbody", "delpostnum", "delfilenum" { return true }
     case "newboardname", "newboarddesc", "newboardnet" { return true }
     case "newareaname", "newareadesc", "newareafolder" { return true }
+    case "upname", "updesc" { return true }
     }
     return false
 }
@@ -457,7 +468,9 @@ func displayPrompt() {
     case "mailnum"  { sendData("Message number: ") }
     case "posts", "postview" { postsPrompt() }
     case "files", "fileview" { filesPrompt() }
-    case "xferproto" { sendData("Protocol: ") }
+    case "xferproto", "upproto" { sendData("Protocol: ") }
+    case "upname" { sendData("Filename: ") }
+    case "updesc" { sendData("Description: ") }
     case "mail", "mailview" { mailPrompt() }
     case "delmailconfirm" { sendData("Delete this message? (Y/N): ") }
     case "mailto" { sendData("To: ") }
@@ -604,6 +617,9 @@ func processInput(input: string) {
     case "files" { filesChoice(input) }
     case "fileview" { fileViewChoice(input) }
     case "xferproto" { xferProtoChoice(input) }
+    case "upproto" { upProtoChoice(input) }
+    case "upname" { upNameInput(input) }
+    case "updesc" { upDescInput(input) }
     case "mail" { mailChoice(input) }
     case "mailview" { mailViewChoice(input) }
     case "delmailconfirm" { delMailConfirm(input) }

@@ -210,11 +210,14 @@ func saveFile(): bool {
 // The physical file's path: the loaded `area`'s folder joined to the
 // entry's name with ":", or the bare name when the folder is empty
 // (the app's own directory). Empty if the entry doesn't exist.
-func filePath(id: int): string {
-    var rec: text = dbFind(filesDb, id)
-    var name: string
-    if rec.length != fileRecordSize { return "" }
-    name = dbExtractString(rec, fOffName)
+// The physical path for a name in the loaded area.
+func fileFolderPath(name: string): string {
     if area.folder.length == 0 { return name }
     return area.folder + ":" + name
+}
+
+func filePath(id: int): string {
+    var rec: text = dbFind(filesDb, id)
+    if rec.length != fileRecordSize { return "" }
+    return fileFolderPath(dbExtractString(rec, fOffName))
 }
