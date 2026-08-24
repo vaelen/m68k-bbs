@@ -68,31 +68,72 @@ var previousSeen: int = 0   // that account's lastSeen before this login (Mac se
                             // negative as an int past 2^31, so no sentinel value -- hence the bool)
 
 
+const BS:  char = '\x08'
+const DEL: char = '\x7F'
+
+// The BBS echoes received characters back (classic remote-echo BBS
+// behavior; telnet clients get local echo turned off by the connect
+// probe). Fully off during the probe and logoff, so stray probe bytes
+// and the modem's command chatter never bounce back onto the line.
+func echoActive(): bool {
+    if not terminal.echo { return false }
+    if user.screen == "probe" or user.screen == "logoff" { return false }
+    return true
+}
+
+// Password entry: the Enter still echoes as a newline, the characters
+// don't.
+func echoHidden(): bool {
+    switch user.screen {
+    case "password", "newpass", "newpass2" { return true }
+    case "edituserval" { return editField == 'P' }   // sysop password reset
+    }
+    return false
+}
+
+func echoChar(c: char) {
+    var s: string(1)
+    if not echoActive() or echoHidden() { return }
+    if c < ' ' or c == DEL { return }   // control chars don't echo
+    s = s + c
+    sendData(s)
+}
+
 // Collect connected-caller input, one char at a time. Called by
 // telnet.cla with every byte left after modem result-code filtering
 // (scanner.cla) and telnet command processing. Line mode buffers until
-// CR (LF is dropped, so CRLF terminals work); Character mode forwards
-// each char immediately. Data arriving with no caller connected is
-// dropped.
+// CR (LF is dropped, so CRLF terminals work) and handles BS/DEL;
+// Character mode forwards each char immediately. Data arriving with no
+// caller connected is dropped.
 func inputChar(c: char) {
     var single: string(1)
     if not isConnected { return }
     if user.mode == Character {
+        echoChar(c)
         single = single + c
         processInput(single)
         return
     }
     if c == CR {
+        if echoActive() { sendData(terminal.eol) }
         processInput(user.buffer)
         user.buffer = ""
         return
     }
     if c == LF { return }
+    if c == BS or c == DEL {
+        if user.buffer.length > 0 {
+            user.buffer = user.buffer[0, user.buffer.length - 1]
+            if echoActive() and not echoHidden() { sendData("\x08 \x08") }
+        }
+        return
+    }
     if user.buffer.length >= 255 {
         sendData("\x07")      // line full: drop the char, ring the bell
         return
     }
     user.buffer = user.buffer + c
+    echoChar(c)
 }
 
 // Two sends: `s + terminal.eol` as one expression would clamp at the

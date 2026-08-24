@@ -60,6 +60,7 @@ on App.startCLI(args: list of string) {
 
     // Default eol is CRLF.
     expect(terminal.eol == "\x0D\x0A", "default eol is CRLF")
+    expect(terminal.echo, "echo defaults on")
 
     // ASCII (the default type): corners and crossings are all '+'.
     expect(boxChar(TopLeft)    == '+', "ascii TopLeft")

@@ -29,6 +29,8 @@ const tnWONT: char = '\xFC'
 const tnDO:   char = '\xFD'
 const tnDONT: char = '\xFE'
 
+const optEcho:     char = '\x01'   // ECHO (RFC 857)
+const optSGA:      char = '\x03'   // SUPPRESS-GO-AHEAD (RFC 858)
 const optTermType: char = '\x18'   // TERMINAL-TYPE (24)
 const optNaws:     char = '\x1F'   // window size (31)
 const optSpeed:    char = '\x20'   // TERMINAL-SPEED (32)
@@ -52,9 +54,12 @@ func telnetReset() {
     tnAfterCR = false
 }
 
-// Open the negotiation: IAC DO TERMINAL-TYPE / NAWS / TERMINAL-SPEED.
+// Open the negotiation: DO TERMINAL-TYPE / NAWS / TERMINAL-SPEED,
+// then WILL SGA / DO SGA / WILL ECHO -- the standard server offer that
+// puts a telnet client in character-at-a-time mode with local echo
+// off (the BBS echoes instead; see inputChar).
 func telnetProbeStart() {
-    telnetOut("\xFF\xFD\x18\xFF\xFD\x1F\xFF\xFD\x20")
+    telnetOut("\xFF\xFD\x18\xFF\xFD\x1F\xFF\xFD\x20\xFF\xFB\x03\xFF\xFD\x03\xFF\xFB\x01")
 }
 
 // Answer one negotiation request as soon as it arrives.
@@ -62,12 +67,19 @@ func telnetVerb(verb: char, opt: char) {
     if verb == tnWILL {
         if opt == optTermType or opt == optSpeed {
             telnetOut("\xFF\xFA" + opt + "\x01\xFF\xF0")   // SB <opt> SEND SE
-        } else if opt != optNaws {
+        } else if opt != optNaws and opt != optSGA {
             telnetOut("\xFF\xFE" + opt)   // DONT: option we didn't ask for
         }
-        // NAWS needs no reply; the client follows with its SB
-    } else if verb == tnDO or verb == tnDONT {
-        telnetOut("\xFF\xFC" + opt)       // WONT: we offer no local options
+        // NAWS/SGA need no reply: NAWS's answer is the client's SB,
+        // SGA was agreed by our probe's DO
+    } else if verb == tnDO {
+        if opt != optEcho and opt != optSGA {
+            telnetOut("\xFF\xFC" + opt)   // WONT: not an option we offer
+        }
+        // ECHO/SGA: our probe already said WILL; the DO is the agreement
+    } else if verb == tnDONT {
+        if opt == optEcho { terminal.echo = false }   // client keeps local echo
+        telnetOut("\xFF\xFC" + opt)       // WONT: acknowledge disabled
     }
     // WONT: the option stays off; silence (refusal is final)
 }

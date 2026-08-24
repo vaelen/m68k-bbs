@@ -59,7 +59,8 @@ on App.startCLI(args: list of string) {
 
     // 3. probe handshake bytes
     telnetProbeStart()
-    expectWire("\xFF\xFD\x18\xFF\xFD\x1F\xFF\xFD\x20", "probe sends DO TT/NAWS/SPEED")
+    expectWire("\xFF\xFD\x18\xFF\xFD\x1F\xFF\xFD\x20\xFF\xFB\x03\xFF\xFD\x03\xFF\xFB\x01",
+        "probe sends DO TT/NAWS/SPEED, WILL/DO SGA, WILL ECHO")
 
     // 4. WILL TERMINAL-TYPE: detected + SB SEND request
     feedString("\xFF\xFB\x18")
@@ -75,15 +76,24 @@ on App.startCLI(args: list of string) {
     feedString("\xFF\xFB\x20")
     expectWire("\xFF\xFA\x20\x01\xFF\xF0", "WILL TERMINAL-SPEED answered with SB SEND")
 
-    // 7. unknown WILL refused, DO/DONT answered with WONT
+    // 7. ECHO/SGA agreements are silent; everything else is refused
+    feedString("\xFF\xFB\x03")
+    expectWire("", "WILL SGA (our DO) agreed silently")
+    feedString("\xFF\xFD\x01\xFF\xFD\x03")
+    expectWire("", "DO ECHO / DO SGA (our WILLs) agreed silently")
+    expect(terminal.echo, "accepted ECHO leaves echo on")
     feedString("\xFF\xFB\x22")
     expectWire("\xFF\xFE\x22", "unknown WILL answered with DONT")
-    feedString("\xFF\xFD\x01")
-    expectWire("\xFF\xFC\x01", "DO ECHO answered with WONT")
+    feedString("\xFF\xFD\x22")
+    expectWire("\xFF\xFC\x22", "unknown DO answered with WONT")
     feedString("\xFF\xFE\x03")
     expectWire("\xFF\xFC\x03", "DONT SGA answered with WONT")
     feedString("\xFF\xFC\x1F")
     expectWire("", "WONT answered with silence")
+    feedString("\xFF\xFE\x01")
+    expectWire("\xFF\xFC\x01", "DONT ECHO answered with WONT")
+    expect(not terminal.echo, "DONT ECHO turns server echo off")
+    terminal.echo = true
 
     // 8. IAC IAC is one literal data byte
     feedString("a\xFF\xFFb")

@@ -149,8 +149,10 @@ inputChar (bbs.cla) → processInput`.
   `disconnected`, and `dataChar`.
 - `telnet.cla` — telnet option processor between the scanner and the
   app: consumes/answers IAC sequences (WILL TERMINAL-TYPE/SPEED → SB
-  SEND, unknown WILL → DONT, any DO/DONT → WONT — no ECHO/SGA, so
-  clients stay line-mode with local echo), releases clean bytes to
+  SEND; the probe also offers WILL ECHO and WILL/DO SGA, so telnet
+  clients go character-at-a-time with local echo off — the client's
+  DO ECHO/SGA are agreed silently, DONT ECHO clears terminal.echo;
+  unknown WILL → DONT, other DO/DONT → WONT), releases clean bytes to
   `inputChar`, drops NVT CR NUL's NUL, applies NAWS to
   `terminal.columns/rows` (clamped 20-132 / 10-60) and records
   TERMINAL-TYPE/SPEED replies. Interception is on only while
@@ -188,7 +190,7 @@ inputChar (bbs.cla) → processInput`.
   screen, input mode, buffer, id, email, access, created, lastSeen)
   + global `user`; `hashPassword` (djb2,
   non-cryptographic). `terminal.cla` — `Terminal` record (columns,
-  rows, color, type: ASCII/ANSI/VT100, ansi — set for the ANSI and
+  rows, color, echo — on by default, type: ASCII/ANSI/VT100, ansi — set for the ANSI and
   VT100 types, telnet, reportedTerminalType, reportedSpeed) + global
   `terminal`, `Color`
   enum, and pure ANSI sequence builders (`colorSeq`, `backgroundSeq`,
@@ -197,7 +199,11 @@ inputChar (bbs.cla) → processInput`.
   `termio.cla` — connection-facing send wrappers over those (take a
   `connection` parameter, gated on `terminal.color`).
 - `bbs.cla` — app/UI declarations, session flow. `inputChar` assembles
-  input (Line mode: buffer until CR; Character mode: each char).
+  input (Line mode: buffer until CR, BS/DEL rubs out; Character mode:
+  each char) and echoes it back when `terminal.echo` (classic remote
+  echo; CR echoes as `terminal.eol`, echo fully off on the probe and
+  logoff screens, characters hidden — newline still echoed — on the
+  password screens and the sysop password reset).
   Caller-facing output goes through `sendData` (→ `telnetSend`); only
   modem commands (+++/ATH) and `telnetOut` use `modem.send` raw. On
   connect, `connected()` sends the telnet probe (DO TERMINAL-TYPE /
