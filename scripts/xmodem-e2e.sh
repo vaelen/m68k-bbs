@@ -25,7 +25,14 @@ var recv: bool = false
 
 func connected() {
     log("connected")
-    telnetSend(modem, "Start now...\x0D\x0A")
+    // The same wording files.cla sends, so this rig catches a capital C
+    // (or NAK/CAN) creeping back into the announcement: senders take
+    // those as the handshake and start mid-sentence.
+    if recv {
+        telnetSend(modem, "Send your file now. Two ^X abort.\x0D\x0A")
+    } else {
+        telnetSend(modem, "Start your XMODEM receive now. Two ^X abort.\x0D\x0A")
+    }
     if recv {
         xmodemRecvStart(mode, "", "upload.bin")
     } else {
@@ -78,6 +85,15 @@ on modem.failed(err: error) {
     quit 1
 }
 EOF
+# The announcement a caller sees just before arming their side must not
+# contain an XMODEM handshake byte (capital C = CRC start, 0x15 NAK,
+# 0x18 CAN) -- a sender takes one as the go-ahead and starts mid-line.
+if grep -n 'sendLine("Start your\|sendLine("Send your' files.cla | grep -q 'C[a-z]*'; then
+    echo "FAIL: transfer announcement in files.cla contains a capital C" >&2
+    grep -n 'sendLine("Start your\|sendLine("Send your' files.cla >&2
+    exit 1
+fi
+
 bin/clarusc emit --rtdir vendor/runtime/clarus/ -o "$WORK/harness.c" "$WORK/harness.cla"
 cc -O1 -I vendor/runtime/host -o "$WORK/harness" "$WORK/harness.c" vendor/runtime/host/rt.c
 head -c 3000 /dev/urandom > "$WORK/sample.bin"   # 2 x 1K + a 952-byte tail
