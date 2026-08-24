@@ -22,6 +22,7 @@ include "mail.cla"
 include "files.cla"
 include "editor.cla"
 include "loginlog.cla"
+include "xmodem.cla"
 include "toolbox/osutils.cla"   // DateTimeRec / SecondsToDate (via --rtdir)
 
 app BBS {
@@ -62,6 +63,47 @@ func telnetOut(s: string) {
     modem.send(s)
 }
 
+// --- File transfers ----------------------------------------------------
+// A transfer is the "xfer" screen: inputChar hands every raw byte to
+// xferChar, the 30-tick timer calls xferTick, and disconnected() calls
+// xferAbort. Engines answer through xferOut (below) and xferDone
+// (files.cla). ponytail: one protocol; the switch grows a case per
+// engine (ZMODEM, Kermit) -- see docs/file-transfers.md.
+
+var xferProto: char = 'X'
+var xferPath: string
+
+func xferOut(s: string) {
+    telnetSend(modem, s)     // IAC doubling kept; no cursor tracking for binary
+}
+
+func xferStart(proto: char, path: string) {
+    xferProto = proto
+    xferPath = path
+    user.screen = "xfer"
+    switch proto {
+    case 'X' { xmodemSendStart(path) }
+    }
+}
+
+func xferChar(c: char) {
+    switch xferProto {
+    case 'X' { xmodemChar(c) }
+    }
+}
+
+func xferTick() {
+    switch xferProto {
+    case 'X' { xmodemTick() }
+    }
+}
+
+func xferAbort() {
+    switch xferProto {
+    case 'X' { xmodemAbort() }
+    }
+}
+
 // Login/signup state between prompts (reset on connect).
 var pendingId: int = 0      // account found at the login prompt
 var pendingHash: int = 0    // first password entered during signup
@@ -89,7 +131,7 @@ var inputSoft: bool = false
 // and the modem's command chatter never bounce back onto the line.
 func echoActive(): bool {
     if not terminal.echo { return false }
-    if user.screen == "probe" or user.screen == "logoff" { return false }
+    if user.screen == "probe" or user.screen == "logoff" or user.screen == "xfer" { return false }
     return true
 }
 
@@ -136,6 +178,10 @@ func echoBuffer() {
 func inputChar(c: char) {
     var single: string(1)
     if not isConnected { return }
+    if user.screen == "xfer" {
+        xferChar(c)
+        return
+    }
     if not terminal.linemode {
         if c == LF or c == BS or c == DEL { return }
         if c >= '0' and c <= '9' and numberScreen(user.screen) != "" {
@@ -316,6 +362,7 @@ func displayMenu() {
     case "postview"    { drawPostViewMenu() }
     case "files"       { drawFilesMenu() }
     case "fileview"    { drawFileViewMenu() }
+    case "xferproto"   { drawXferProtoMenu() }
     case "mail"        { drawMailMenu() }
     case "mailview"    { drawMailViewMenu() }
     }
@@ -400,6 +447,7 @@ func displayPrompt() {
     case "mailnum"  { sendData("Message number: ") }
     case "posts", "postview" { postsPrompt() }
     case "files", "fileview" { filesPrompt() }
+    case "xferproto" { sendData("Protocol: ") }
     case "mail", "mailview" { mailPrompt() }
     case "delmailconfirm" { sendData("Delete this message? (Y/N): ") }
     case "mailto" { sendData("To: ") }
@@ -545,6 +593,7 @@ func processInput(input: string) {
     case "postview" { postViewChoice(input) }
     case "files" { filesChoice(input) }
     case "fileview" { fileViewChoice(input) }
+    case "xferproto" { xferProtoChoice(input) }
     case "mail" { mailChoice(input) }
     case "mailview" { mailViewChoice(input) }
     case "delmailconfirm" { delMailConfirm(input) }
@@ -795,6 +844,7 @@ func logoff() {
 }
 
 every 30 ticks {
+    if user.screen == "xfer" { xferTick() }
     if telnetProbe > 0 {
         telnetProbe = telnetProbe - 1
         if telnetProbe == 0 { telnetProbeDone() }
@@ -836,6 +886,7 @@ func disconnected() {
     hangupPhase = 0
     telnetProbe = 0
     telnetIntercept = false
+    if user.screen == "xfer" { xferAbort() }
     postsClose()
     if sessionName != "" {
         if not loginLogAppend(sessionNew, sessionName, sessionStart, now() - sessionStart) {

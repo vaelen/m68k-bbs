@@ -410,8 +410,9 @@ func drawFileViewMenu() {
     sendLine(">) Next File (or .)")
     sendLine("<) Previous File (or ,)")
     sendLine("L) Redraw This Page")
+    sendLine("D) Download File")
     if user.access == accessSysop {
-        sendLine("D) Delete File")
+        sendLine("X) Delete File")
     }
     sendLine("Q) Return to File List")
     sendLine("")
@@ -462,6 +463,14 @@ func fileViewChoice(input: string) {
         displayPrompt()
     }
     case "D" {
+        if (fileRec.flags & fileFlagOffline) != 0 {
+            sendLine("That file is offline.")
+            displayPrompt()
+        } else {
+            gotoScreen("xferproto")
+        }
+    }
+    case "X" {
         if user.access == accessSysop {
             delFileFromView = true
             user.screen = "delfileconfirm"
@@ -520,5 +529,51 @@ func delFileConfirm(input: string) {
         user.screen = "files"
         drawFileList()
     }
+    displayPrompt()
+}
+
+// --- Download ----------------------------------------------------------
+// D in the file view -> protocol menu -> the "xfer" screen (bbs.cla
+// routes bytes to the engine). xferDone brings the caller back to the
+// file view. ponytail: one protocol on the menu; add letters with
+// engines.
+
+func drawXferProtoMenu() {
+    sendLine("")
+    sendLine("Download " + fileRec.name + " (" + intStr(fileRec.size) + " bytes)")
+    sendLine("")
+    sendLine("X) XMODEM")
+    sendLine("Q) Cancel")
+    sendLine("")
+}
+
+func xferProtoChoice(input: string) {
+    switch upperStr(input) {
+    case "X" {
+        sendLine("Start your XMODEM receive now (Ctrl-X twice to cancel)...")
+        log("XMODEM send: " + filePath(fileRec.id))
+        xferStart('X', filePath(fileRec.id))
+    }
+    case "", "Q" {
+        user.screen = "fileview"
+        displayPrompt()
+    }
+    case "?" { gotoScreen("xferproto") }
+    else { displayPrompt() }
+    }
+}
+
+// Engine callback: the transfer is over and the engine is idle.
+func xferDone(ok: bool) {
+    sendLine("")
+    if ok {
+        fileRec.downloads = fileRec.downloads + 1
+        if not saveFile() { log("Download count save failed: " + lastError.message) }
+        sendLine("Transfer complete.")
+    } else {
+        sendLine("Transfer failed.")
+    }
+    user.screen = "fileview"
+    drawFileView()
     displayPrompt()
 }
