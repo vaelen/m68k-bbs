@@ -23,7 +23,10 @@ Worth stating so these aren't re-filed:
   (`file.create`/`writeAt`/`append`), are all in the pinned runtime. A
   plain data-fork transfer is implementable now; XMODEM/ZMODEM framing
   is a *library*, not a language feature, and `every N ticks` timers
-  cover its ACK/NAK timeouts.
+  cover its ACK/NAK timeouts. (Design: `superpowers/specs/2026-08-25-file-transfer-design.md`.)
+- **XMODEM's CRC.** `text.crc16` is CRC-16/KERMIT, not XMODEM's; a
+  ten-line bitwise loop in `xmodem.cla` covers it for now. The
+  optimized builtin is §8 below — a speed-up, not a blocker.
 - **Capturing a data-fork file's size at import.** `file.open` then
   `size()` works today (it just leaves a handle open briefly).
 
@@ -129,6 +132,30 @@ Rename in place, and move between folders. No such call exists.
 - Nice-to-have: uploads can write straight to the final path, so this is
   a convenience rather than a blocker.
 
+### 8. Optimized transfer CRCs: `text.crc16x` and `text.crc32`
+
+`text.crc16(h, pos, n)` implements exactly one algorithm, CRC-16/KERMIT
+(reflected `0x8408`). XMODEM and YMODEM use the *other* common CRC-16 —
+poly `0x1021` forward (non-reflected), init 0, no final XOR, check value
+`0x31C3` over `"123456789"` — and ZMODEM's default framing uses CRC-32
+(reflected `0xEDB88320`, init and final XOR `0xFFFFFFFF`, check value
+`0xCBF43926`).
+
+- **Unlocks:** table-driven CRCs in the runtime's C/68k instead of a
+  Clarus bit loop per byte. XMODEM's 128-byte blocks are cheap either
+  way; ZMODEM streaming at 57600 bps (1 KB subpackets, back to back)
+  is where a per-bit Clarus loop starts eating the time budget between
+  event-loop passes on a 68020.
+- **Shape:** `t.crc16x(h, pos, n): int` and `t.crc32(h, pos, n): int`,
+  same signature, chunking, and strict range rule as `crc16`; `crc32`
+  returns the raw register (the caller applies the `0xFFFFFFFF`
+  init/final XOR, as it does for `crc16`'s seed), so all three compose
+  the same way.
+- **Current workaround:** `crcXmodem` in `xmodem.cla` (bitwise,
+  128×8 iterations per block), to be replaced with `t.crc16x(0, 0, n)`
+  when the builtin lands. ZMODEM has no workaround worth writing —
+  it waits for `crc32`.
+
 ## Summary
 
 | # | Feature | Blocks which file-area feature | Toolbox |
@@ -140,8 +167,10 @@ Rename in place, and move between folders. No such call exists.
 | 5 | Set type/creator/dates | Correct Finder identity after decode | PBSetFInfo |
 | 6 | Create a directory | Wizard-created area folders | PBDirCreate |
 | 7 | Rename / move | Pending→approved holding-area workflow | PBRename |
+| 8 | `text.crc16x` / `text.crc32` | Fast XMODEM CRC (workaround exists); ZMODEM (no workaround) | — (pure runtime) |
 
 Data-fork transfers (1‑to‑1 with the modem) need **none** of these — only
-the HFS-path spike. Items 1–3 make the sysop and import experience real;
+the HFS-path spike; item 8 is a speed-up for XMODEM and a prerequisite
+only for ZMODEM. Items 1–3 make the sysop and import experience real;
 items 4–5 are what make file areas able to carry genuine Macintosh
 software rather than flat files.
