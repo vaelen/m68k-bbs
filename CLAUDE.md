@@ -234,6 +234,8 @@ inputChar (bbs.cla) → processInput`.
   "Welcome back / Last on / You have N new message(s)" banner is
   printed by `applyTerminal` once the terminal type is known, just
   before the main menu (`returning`/`previousSeen` carry it across).
+  Main-menu `T` returns to the terminal-type menu; `applyTerminal`
+  re-sends the VT100 init and comes back to the main menu.
   Menu conventions: `gotoScreen(s)`
   sets the screen and draws menu + prompt; `displayMenu`/`displayPrompt`
   switch on `user.screen`; choices are case-insensitive (`upperStr`);

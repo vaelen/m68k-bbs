@@ -444,6 +444,7 @@ func drawMainMenu() {
     if user.access == accessSysop {
         sendLine("S) Sysop Menu")
     }
+    sendLine("T) Terminal Settings")
     sendLine("Q) Quit (Logoff)")
     sendLine("")
 }
@@ -697,6 +698,7 @@ func mainChoice(input: string) {
             displayPrompt()
         }
     }
+    case "T" { gotoScreen("terminal") }   // applyTerminal re-inits and returns here
     case "Q" { logoff() }
     else     { displayPrompt() }
     }
