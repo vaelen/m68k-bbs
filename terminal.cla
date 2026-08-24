@@ -79,6 +79,43 @@ func backgroundSeq(color: Color): string {
 const clearColorSeq:      string = "\x1B[22;39m"
 const clearBackgroundSeq: string = "\x1B[49m"
 
+// --- Output column tracking -------------------------------------------
+// The caller's cursor column, kept up to date by feeding every
+// caller-facing send through trackOutput (bbs.cla's sendData does).
+// The input echo relies on it: a rubout can't cross a display row.
+// Escape sequences and other control bytes don't move the cursor;
+// CR returns to column 0. Rows are not tracked, so the count is only
+// trustworthy from the last CR on -- which is all the echo needs.
+
+var termCol: int = 0
+var termEsc: int = 0   // 0 = text, 1 = after ESC, 2 = inside CSI
+
+func trackOutput(s: string) {
+    var i: int = 0
+    var c: char
+    while i < s.length {
+        c = s[i]
+        i = i + 1
+        if termEsc == 1 {
+            if c == '[' {
+                termEsc = 2
+            } else if c < ' ' or c > '/' {   // 0x20-0x2F are intermediates
+                termEsc = 0                  // this byte ends the sequence
+            }
+        } else if termEsc == 2 {
+            if c >= '@' { termEsc = 0 }      // CSI final byte
+        } else if c == '\x1B' {
+            termEsc = 1
+        } else if c == '\x0D' {
+            termCol = 0
+        } else if c == '\x08' {
+            if termCol > 0 { termCol = termCol - 1 }
+        } else if c >= ' ' and c != '\x7F' {
+            termCol = termCol + 1
+        }
+    }
+}
+
 // --- Box drawing -------------------------------------------------------
 
 enum BoxPiece {

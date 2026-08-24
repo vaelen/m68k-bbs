@@ -203,7 +203,13 @@ inputChar (bbs.cla) → processInput`.
   each char) and echoes it back when `terminal.echo` (classic remote
   echo; CR echoes as `terminal.eol`, echo fully off on the probe and
   logoff screens, characters hidden — newline still echoed — on the
-  password screens and the sysop password reset).
+  password screens and the sysop password reset). Echo hard-wraps at
+  `terminal.columns` and a rubout that would cross a display row
+  redraws the prompt (`displayPrompt`) plus the remaining buffer on a
+  fresh row — BS can't step back across a soft wrap, and the
+  terminal's last-column "pending wrap" state is unreliable to undo.
+  `sendData` feeds `trackOutput` so `termCol` (terminal.cla) knows
+  the cursor column.
   Caller-facing output goes through `sendData` (→ `telnetSend`); only
   modem commands (+++/ATH) and `telnetOut` use `modem.send` raw. On
   connect, `connected()` sends the telnet probe (DO TERMINAL-TYPE /

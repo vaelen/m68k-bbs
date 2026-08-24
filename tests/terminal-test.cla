@@ -62,6 +62,16 @@ on App.startCLI(args: list of string) {
     expect(terminal.eol == "\x0D\x0A", "default eol is CRLF")
     expect(terminal.echo, "echo defaults on")
 
+    // output column tracking
+    trackOutput("Username: ")
+    expect(termCol == 10, "prompt advances column")
+    trackOutput("ab\x08 \x08")
+    expect(termCol == 11, "rubout nets one column back")
+    trackOutput("\x1B[22;31mX\x1B)0\x07\x0E\x0A")
+    expect(termCol == 12, "escape sequences and control bytes don't move")
+    trackOutput("\x0D\x0Anew")
+    expect(termCol == 3, "CR returns to column 0")
+
     // ASCII (the default type): corners and crossings are all '+'.
     expect(boxChar(TopLeft)    == '+', "ascii TopLeft")
     expect(boxChar(Center)     == '+', "ascii Center")

@@ -52,6 +52,7 @@ var isConnected: bool = false
 // escaping has one chokepoint. Modem commands (+++/ATH) and telnet
 // negotiation bytes bypass it via modem.send/telnetOut.
 func sendData(s: string) {
+    trackOutput(s)
     telnetSend(modem, s)
 }
 
@@ -97,6 +98,20 @@ func echoChar(c: char) {
     if c < ' ' or c == DEL { return }   // control chars don't echo
     s = s + c
     sendData(s)
+    // Hard-wrap at the margin so the terminal never sits in its
+    // ambiguous "pending wrap" state, which no BS/CR sequence can
+    // reliably step back from.
+    // ponytail: assumes deferred wrap (VT100/xterm/modern clients); an
+    // immediate-wrap terminal shows one blank line per margin hit.
+    if termCol >= terminal.columns { sendData(terminal.eol) }
+}
+
+func echoBuffer() {
+    var i: int = 0
+    while i < user.buffer.length {
+        echoChar(user.buffer[i])
+        i = i + 1
+    }
 }
 
 // Collect connected-caller input, one char at a time. Called by
@@ -124,7 +139,17 @@ func inputChar(c: char) {
     if c == BS or c == DEL {
         if user.buffer.length > 0 {
             user.buffer = user.buffer[0, user.buffer.length - 1]
-            if echoActive() and not echoHidden() { sendData("\x08 \x08") }
+            if echoActive() and not echoHidden() {
+                if termCol > 0 {
+                    sendData("\x08 \x08")
+                } else {
+                    // the deleted char sits at the end of the previous
+                    // row, which BS can't reach: redraw the input line
+                    sendData(terminal.eol)
+                    displayPrompt()
+                    echoBuffer()
+                }
+            }
         }
         return
     }
