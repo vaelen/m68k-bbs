@@ -235,7 +235,10 @@ inputChar (bbs.cla) → processInput`.
   printed by `applyTerminal` once the terminal type is known, just
   before the main menu (`returning`/`previousSeen` carry it across).
   Main-menu `T` returns to the terminal-type menu; `applyTerminal`
-  re-sends the VT100 init and comes back to the main menu.
+  re-sends the VT100 init and comes back to the main menu. Main-menu
+  `L` draws the last 20 sessions from the login log
+  (`drawRecentLogins`); `sessionName`/`sessionStart`/`sessionNew`
+  are set at login/signup and `disconnected()` appends the record.
   Menu conventions: `gotoScreen(s)`
   sets the screen and draws menu + prompt; `displayMenu`/`displayPrompt`
   switch on `user.screen`; choices are case-insensitive (`upperStr`);
@@ -284,6 +287,12 @@ inputChar (bbs.cla) → processInput`.
   messages) → compose via `editor.cla` with `editTarget = 'M'`:
   `To:` must resolve to a local user (`findUserId`), empty `To:`
   cancels.
+- `loginlog.cla` — the login log, `Logins.txt` (TEXT/ttxt): one
+  65-byte fixed-width, tab-delimited text line per session — new flag
+  (`*`/space), name padded to 31, `dateTimeStr` of the login, padded
+  `durationStr` — appended on disconnect; `loginLogRecent(n, out)`
+  reads the newest n in one positioned read, newest first; field
+  offsets are the `login*At` consts.
 - `editor.cla` — WWIV-style line editor for new posts, replies, and
   private mail (`editTarget` picks the save target). Each numbered
   line is one display row (`lineLimit = terminal.columns - 5`, set by
@@ -338,6 +347,7 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
 - `mail.cla` — private mail: inbox, message view, compose/reply
 - `editor.cla` — line editor for new posts, replies, and mail (/S /A
   /L /D /E /I /R)
+- `loginlog.cla` — fixed-width text login log + newest-N reader
 - `scanner.cla`, `telnet.cla`, `user.cla`, `usersdb.cla`, `boardsdb.cla`,
   `postsdb.cla`, `maildb.cla`, `areasdb.cla`, `filesdb.cla`,
   `terminal.cla`, `termio.cla`, `btree.cla`, `vdb.cla` — modules above

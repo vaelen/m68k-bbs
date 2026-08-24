@@ -1,0 +1,78 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// Login log: one fixed-width, tab-delimited text line per completed
+// session, appended when the caller disconnects. Every record is
+// exactly loginRecSize bytes, so the newest N are one positioned read
+// from the tail while the file stays readable in any text editor:
+//
+//   new(1) TAB name(31) TAB "mm-dd-yy HH:MM:SS"(17) TAB duration(12) CR
+//
+// `new` is '*' for a session that created its account, else ' '.
+
+include "terminal.cla"   // pad
+
+const loginLogName: string = "Logins.txt"
+const loginRecSize: int = 65
+const loginNameWidth: int = 31
+const loginTimeWidth: int = 17
+const loginDurWidth: int = 12
+
+// Field offsets within a record.
+const loginNewAt:  int = 0
+const loginNameAt: int = 2
+const loginTimeAt: int = 34
+const loginDurAt:  int = 52
+
+func loginRecord(isNew: bool, name: string, at: int, secs: int): string {
+    var rec: string = " "
+    if isNew { rec = "*" }
+    rec = rec + "\x09" + pad(name, loginNameWidth)
+    rec = rec + "\x09" + pad(dateTimeStr(at), loginTimeWidth)
+    rec = rec + "\x09" + pad(durationStr(secs), loginDurWidth) + "\n"
+    return rec
+}
+
+// Append one session. Opens and closes the file each time: writes are
+// rare, and holding no handle keeps the file safe to read from the
+// Finder.
+func loginLogAppend(isNew: bool, name: string, at: int, secs: int): bool {
+    var f: filehandle = file.open(loginLogName)
+    var ok: bool
+    if f == nil {
+        f = file.create(loginLogName, "TEXT", "ttxt")
+        if f == nil { return false }
+    }
+    ok = f.writeAt(f.size(), loginRecord(isNew, name, at, secs))
+    if ok { ok = f.flush() }
+    f.close()
+    return ok
+}
+
+// The newest `max` records, newest first, as raw record strings
+// (field offsets above). A missing file is an empty log.
+func loginLogRecent(max: int, out: list of string) {
+    var f: filehandle = file.open(loginLogName)
+    var count: int
+    var first: int
+    var data: text
+    var i: int
+    out.clear()
+    if f == nil { return }
+    count = f.size() / loginRecSize
+    first = count - max
+    if first < 0 { first = 0 }
+    if count > first and f.readAt(first * loginRecSize, (count - first) * loginRecSize, data) {
+        i = count - first
+        while i > 0 {
+            i = i - 1
+            out.add(data[i * loginRecSize, loginRecSize])
+        }
+    }
+    f.close()
+}
+
+// One padded field of a record (see the offsets above).
+func loginField(rec: string, at: int, width: int): string {
+    return rec[at, width]
+}

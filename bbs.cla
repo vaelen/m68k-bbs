@@ -21,6 +21,7 @@ include "filesdb.cla"
 include "mail.cla"
 include "files.cla"
 include "editor.cla"
+include "loginlog.cla"
 include "toolbox/osutils.cla"   // DateTimeRec / SecondsToDate (via --rtdir)
 
 app BBS {
@@ -65,6 +66,9 @@ func telnetOut(s: string) {
 var pendingId: int = 0      // account found at the login prompt
 var pendingHash: int = 0    // first password entered during signup
 var returning: bool = false // logged into an existing account: show the welcome-back banner
+var sessionName: string(31) // who logged in this call ("" = nobody yet), for the login log
+var sessionStart: int = 0
+var sessionNew: bool = false
 var previousSeen: int = 0   // that account's lastSeen before this login (Mac seconds can be
                             // negative as an int past 2^31, so no sentinel value -- hence the bool)
 
@@ -441,12 +445,56 @@ func drawMainMenu() {
     } else {
         sendLine("M) Mail")
     }
+    sendLine("L) Recent Logins")
     if user.access == accessSysop {
         sendLine("S) Sysop Menu")
     }
     sendLine("T) Terminal Settings")
     sendLine("Q) Quit (Logoff)")
     sendLine("")
+}
+
+// The last 20 sessions from the login log, newest first. Narrow
+// terminals drop the duration column.
+func drawRecentLogins() {
+    var recs: list of string
+    var w: list of int
+    var span: list of int
+    var cells: list of string
+    var i: int = 0
+    w.add(1)
+    cells.add("N")
+    if terminal.columns >= 80 {
+        w.add(20)
+        w.add(loginTimeWidth)
+        w.add(loginDurWidth)
+        cells.add("Login")
+        cells.add("Time")
+        cells.add("Duration")
+    } else {
+        w.add(10)
+        w.add(loginTimeWidth)
+        cells.add("Login")
+        cells.add("Time")
+    }
+    loginLogRecent(20, recs)
+    sendTableHeader("Recent Logins", cells, w)
+    while i < recs.count {
+        cells.clear()
+        cells.add(loginField(recs[i], loginNewAt, 1))
+        cells.add(loginField(recs[i], loginNameAt, w[1]))
+        cells.add(loginField(recs[i], loginTimeAt, loginTimeWidth))
+        if w.count == 4 { cells.add(loginField(recs[i], loginDurAt, loginDurWidth)) }
+        sendLine(rowLine(cells, w))
+        i = i + 1
+    }
+    if recs.count == 0 {
+        span.add(spanWidth(w))
+        cells.clear()
+        cells.add(center("No logins yet.", span[0]))
+        sendLine(rowLine(cells, span))
+    }
+    sendRule(BottomLeft, BottomCenter, BottomRight, w)
 }
 
 // Act on one completed input (a line, or a single key on hotkey
@@ -557,6 +605,9 @@ func loginOk() {
     previousSeen = user.lastSeen
     user.lastSeen = now()
     saveUser()
+    sessionName = user.name
+    sessionStart = now()
+    sessionNew = false
     gotoScreen("terminal")
 }
 
@@ -620,6 +671,9 @@ func newEmail(input: string) {
         return
     }
     log("New user created: " + user.name + " (#" + intStr(user.id) + ")")
+    sessionName = user.name
+    sessionStart = now()
+    sessionNew = true
     sendLine("")
     sendLine("Account created. Welcome, " + user.name + "!")
     if user.access == accessSysop {
@@ -698,6 +752,10 @@ func mainChoice(input: string) {
             displayPrompt()
         }
     }
+    case "L" {
+        drawRecentLogins()
+        displayPrompt()
+    }
     case "T" { gotoScreen("terminal") }   // applyTerminal re-inits and returns here
     case "Q" { logoff() }
     else     { displayPrompt() }
@@ -762,6 +820,7 @@ func connected() {
     pendingId = 0
     pendingHash = 0
     returning = false
+    sessionName = ""
     log("Caller connected.")
     sendLine("Welcome to 68kBBS!")
     sendLine("Type NEW at the login prompt to create an account.")
@@ -778,6 +837,12 @@ func disconnected() {
     telnetProbe = 0
     telnetIntercept = false
     postsClose()
+    if sessionName != "" {
+        if not loginLogAppend(sessionNew, sessionName, sessionStart, now() - sessionStart) {
+            log("Login log write failed: " + lastError.message)
+        }
+        sessionName = ""
+    }
     log("Caller disconnected.")
 }
 

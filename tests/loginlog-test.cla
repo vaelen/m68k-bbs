@@ -1,0 +1,56 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for the login log. Run on the host (from a scratch
+// directory -- it writes Logins.txt):
+//   ~/repos/clarus/scripts/clarus-run.sh tests/loginlog-test.cla
+
+include "../loginlog.cla"
+
+var failures: int = 0
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+on App.startCLI(args: list of string) {
+    var recs: list of string
+    var rec: string
+    var i: int = 1
+    var t: int = now()
+
+    rec = loginRecord(true, "andrew", t, 3725)
+    expect(rec.length == loginRecSize, "record is fixed width")
+    expect(rec[0] == '*' and rec[1] == '\x09' and rec[rec.length - 1] == '\n', "flag, tab, CR framing")
+    expect(loginField(rec, loginNameAt, loginNameWidth) == pad("andrew", loginNameWidth), "name field padded")
+    expect(loginField(rec, loginTimeAt, loginTimeWidth) == dateTimeStr(t), "timestamp field")
+    expect(loginField(rec, loginDurAt, loginDurWidth) == pad("1h 2m 5s", loginDurWidth), "duration field")
+
+    loginLogRecent(20, recs)
+    expect(recs.count == 0, "missing log reads as empty")
+
+    while i <= 25 {
+        expect(loginLogAppend(i == 3, "user" + string(i), t + i, i), "append " + string(i))
+        i = i + 1
+    }
+    loginLogRecent(20, recs)
+    expect(recs.count == 20, "recent caps at 20")
+    expect(loginField(recs[0], loginNameAt, loginNameWidth) == pad("user25", loginNameWidth), "newest first")
+    expect(loginField(recs[19], loginNameAt, loginNameWidth) == pad("user6", loginNameWidth), "oldest of the 20")
+    expect(recs[0][loginNewAt] == ' ', "existing account flag blank")
+    loginLogRecent(30, recs)
+    expect(recs.count == 25, "asking for more than exist returns all")
+    expect(recs[22][loginNewAt] == '*', "new-account flag preserved")
+
+    if failures > 0 {
+        log("loginlog-test: FAILED")
+        quit 1
+    }
+    log("loginlog-test: all passed")
+    quit
+}
