@@ -49,7 +49,12 @@ func drawBoardPicker() {
         id = id + 1
     }
     sendRule(BottomLeft, BottomCenter, BottomRight, w)
-    sendLine("V) Select Board (or enter ID)   Q) Return to Main Menu")
+    if terminal.columns < minimumWideTerminalWidth {
+        sendLine("V) Select Board (or enter ID)")
+        sendLine("Q) Return to Main Menu")
+    } else {
+        sendLine("V) Select Board (or enter ID)   Q) Return to Main Menu")
+    }
 }
 
 // Enter or Q returns to the main menu; V (or a digit, via inputChar)
