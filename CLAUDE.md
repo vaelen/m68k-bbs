@@ -200,10 +200,15 @@ inputChar (bbs.cla) → processInput`.
   `termio.cla` — connection-facing send wrappers over those (take a
   `connection` parameter, gated on `terminal.color`).
 - `bbs.cla` — app/UI declarations, session flow. `inputChar` assembles
-  input (`terminal.linemode` on — text prompts, IDs, item numbers,
-  editor lines: buffer until CR, BS/DEL rubs out; off — menus, Y/N,
-  pagers: each key acts at once, Enter arrives as "", echoed hotkey
-  style with a newline) and echoes it back when `terminal.echo` (classic remote
+  input (`terminal.linemode` on — text prompts, editor lines and the
+  number prompts: buffer until CR, BS/DEL rubs out; off — menus, Y/N,
+  pagers, list screens: each key acts at once, Enter arrives as "",
+  echoed hotkey style with a newline). Numbered lists (boards, areas,
+  posts, files, mail — `numberScreen`) have a `V` key that opens a
+  line-mode number prompt (`boardnum`/`areanum`/`postnum`/`filenum`/
+  `mailnum`, via `promptNumber`); a digit pressed on the list opens
+  the same prompt pre-filled with that digit, empty Enter returns to
+  the list and echoes it back when `terminal.echo` (classic remote
   echo; CR echoes as `terminal.eol`, echo fully off on the probe and
   logoff screens, characters hidden — newline still echoed — on the
   password screens and the sysop password reset). Echo hard-wraps at
@@ -254,8 +259,9 @@ inputChar (bbs.cla) → processInput`.
   `parseIntStr` (all-digits or 0) lets ID-or-name prompts
   disambiguate naturally.
 - `boards.cla` — the caller-facing reader: main-menu `B` → board
-  picker (unpaged table) → paged post list (newest first, numbered
-  from 1 per page, post IDs hidden, `Page X of Y` footer) → framed
+  picker (unpaged table; `V`/digit → `Board ID:` prompt) → paged post
+  list (newest first, numbered from 1 per page, post IDs hidden,
+  `Page X of Y` footer; `V`/digit → `Post number:` prompt) → framed
   post view (subject title bar, From/Date meta, body wrapped by
   `wrapText` and paged). Keys: `+`/Enter next page, `-` previous,
   `L` redraw, `>`/`.` and `<`/`,` next/previous post, `R` reply,

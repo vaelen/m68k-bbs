@@ -49,12 +49,25 @@ func drawBoardPicker() {
         id = id + 1
     }
     sendRule(BottomLeft, BottomCenter, BottomRight, w)
+    sendLine("V) Select Board (or enter ID)   Q) Return to Main Menu")
 }
 
-// Empty input or Q returns to the main menu; a board ID enters it.
+// Enter or Q returns to the main menu; V (or a digit, via inputChar)
+// asks for a board ID.
 func boardPickerInput(input: string) {
-    if input == "" or upperStr(input) == "Q" {
-        gotoScreen("main")
+    switch upperStr(input) {
+    case "", "Q" { gotoScreen("main") }
+    case "V"     { promptNumber("boardnum", "") }
+    case "?"     { gotoScreen("boards") }
+    else         { displayPrompt() }
+    }
+}
+
+// Empty input returns to the picker; a board ID enters the board.
+func boardNumInput(input: string) {
+    user.screen = "boards"
+    if input == "" {
+        displayPrompt()
         return
     }
     if not loadBoard(parseIntStr(input)) {
@@ -145,7 +158,7 @@ func drawPostList() {
 
 func drawPostsMenu() {
     sendLine("")
-    sendLine("#) Show Post Number #")
+    sendLine("V) View Post (or enter number)")
     sendLine("+) Next Page (or Enter)")
     sendLine("-) Previous Page")
     sendLine("L) List Posts")
@@ -164,11 +177,6 @@ func postsPrompt() {
 // Enter and + page forward, - pages back; at either end they just
 // re-prompt.
 func postsChoice(input: string) {
-    var n: int = parseIntStr(input)
-    if n >= 1 and n <= postIds.count {
-        showPost(n)
-        return
-    }
     if input == "" or input == "+" {
         if postPage < postPages {
             postPage = postPage + 1
@@ -194,6 +202,7 @@ func postsChoice(input: string) {
         drawPostList()
         displayPrompt()
     }
+    case "V" { promptNumber("postnum", "") }
     case "N" { startNewPost() }
     case "D" {
         if user.access == accessSysop {
@@ -208,6 +217,19 @@ func postsChoice(input: string) {
     }
     else { displayPrompt() }
     }
+}
+
+// Empty input returns to the list; a number on the current page opens
+// that post.
+func postNumInput(input: string) {
+    var n: int = parseIntStr(input)
+    user.screen = "posts"
+    if n >= 1 and n <= postIds.count {
+        showPost(n)
+        return
+    }
+    if input != "" { sendLine("No such post.") }
+    displayPrompt()
 }
 
 // --- Post view ---------------------------------------------------------

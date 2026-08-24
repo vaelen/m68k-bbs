@@ -127,6 +127,14 @@ func inputChar(c: char) {
     if not isConnected { return }
     if not terminal.linemode {
         if c == LF or c == BS or c == DEL { return }
+        if c >= '0' and c <= '9' and numberScreen(user.screen) != "" {
+            // a digit on a numbered list opens its number prompt with
+            // the digit already typed
+            single = single + c
+            if echoActive() { sendData(terminal.eol) }
+            promptNumber(numberScreen(user.screen), single)
+            return
+        }
         if c != CR {
             single = single + c
             echoChar(c)
@@ -290,6 +298,27 @@ func displayMenu() {
     }
 }
 
+// The number prompt belonging to a numbered-list screen ("" if the
+// screen has none). Its V key opens the prompt empty; a digit opens it
+// pre-filled (see inputChar).
+func numberScreen(list: string): string {
+    switch list {
+    case "boards" { return "boardnum" }
+    case "areas"  { return "areanum" }
+    case "posts"  { return "postnum" }
+    case "files"  { return "filenum" }
+    case "mail"   { return "mailnum" }
+    }
+    return ""
+}
+
+func promptNumber(screen: string, prefill: string) {
+    user.screen = screen
+    displayPrompt()          // line mode from here on
+    user.buffer = prefill
+    echoBuffer()
+}
+
 // Screens that take typed text (names, IDs, numbers, editor lines)
 // buffer until Enter; every other prompt acts on the first key.
 func lineScreen(s: string): bool {
@@ -299,7 +328,7 @@ func lineScreen(s: string): bool {
     case "edituserid", "editboardid", "editareaid" { return true }
     case "edituserval", "editboardval", "editareaval" { return true }
     case "deluserid", "delboardid", "delareaid" { return true }
-    case "boards", "areas", "posts", "files", "mail" { return true }   // IDs / item numbers
+    case "boardnum", "areanum", "postnum", "filenum", "mailnum" { return true }
     case "mailto", "editsubject", "editbody", "delpostnum", "delfilenum" { return true }
     case "newboardname", "newboarddesc", "newboardnet" { return true }
     case "newareaname", "newareadesc", "newareafolder" { return true }
@@ -340,6 +369,11 @@ func displayPrompt() {
     case "delareaconfirm"  { sendData("Delete this area? (Y/N): ") }
     case "boards" { sendData("Board ID> ") }
     case "areas" { sendData("Area ID> ") }
+    case "boardnum" { sendData("Board ID: ") }
+    case "areanum"  { sendData("Area ID: ") }
+    case "postnum"  { sendData("Post number: ") }
+    case "filenum"  { sendData("File number: ") }
+    case "mailnum"  { sendData("Message number: ") }
     case "posts", "postview" { postsPrompt() }
     case "files", "fileview" { filesPrompt() }
     case "mail", "mailview" { mailPrompt() }
@@ -433,6 +467,11 @@ func processInput(input: string) {
     case "delareaconfirm"  { delAreaConfirm(input) }
     case "boards" { boardPickerInput(input) }
     case "areas" { areaPickerInput(input) }
+    case "boardnum" { boardNumInput(input) }
+    case "areanum"  { areaNumInput(input) }
+    case "postnum"  { postNumInput(input) }
+    case "filenum"  { fileNumInput(input) }
+    case "mailnum"  { mailNumInput(input) }
     case "posts"  { postsChoice(input) }
     case "postview" { postViewChoice(input) }
     case "files" { filesChoice(input) }

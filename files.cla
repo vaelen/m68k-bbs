@@ -81,14 +81,27 @@ func drawAreaPicker() {
         id = id + 1
     }
     sendRule(BottomLeft, BottomCenter, BottomRight, w)
+    sendLine("V) Select Area (or enter ID)   Q) Return to Main Menu")
 }
 
-// Empty input or Q returns to the main menu; an area ID enters it.
+// Enter or Q returns to the main menu; V (or a digit, via inputChar)
+// asks for an area ID.
 func areaPickerInput(input: string) {
+    switch upperStr(input) {
+    case "", "Q" { gotoScreen("main") }
+    case "V"     { promptNumber("areanum", "") }
+    case "?"     { gotoScreen("areas") }
+    else         { displayPrompt() }
+    }
+}
+
+// Empty input returns to the picker; an area ID enters the area.
+func areaNumInput(input: string) {
     var rec: text
     var id: int
-    if input == "" or upperStr(input) == "Q" {
-        gotoScreen("main")
+    user.screen = "areas"
+    if input == "" {
+        displayPrompt()
         return
     }
     id = parseIntStr(input)
@@ -203,7 +216,7 @@ func drawFileList() {
 
 func drawFilesMenu() {
     sendLine("")
-    sendLine("#) Show File Number #")
+    sendLine("V) View File (or enter number)")
     sendLine("+) Next Page (or Enter)")
     sendLine("-) Previous Page")
     sendLine("L) List Files")
@@ -221,11 +234,6 @@ func filesPrompt() {
 // Enter and + page forward, - pages back; at either end they just
 // re-prompt.
 func filesChoice(input: string) {
-    var n: int = parseIntStr(input)
-    if n >= 1 and n <= fileNumIds.count {
-        showFile(n)
-        return
-    }
     if input == "" or input == "+" {
         if filePage < filePages {
             filePage = filePage + 1
@@ -251,6 +259,7 @@ func filesChoice(input: string) {
         drawFileList()
         displayPrompt()
     }
+    case "V" { promptNumber("filenum", "") }
     case "D" {
         if user.access == accessSysop {
             delFileFromView = false
@@ -264,6 +273,19 @@ func filesChoice(input: string) {
     }
     else { displayPrompt() }
     }
+}
+
+// Empty input returns to the list; a number on the current page opens
+// that file.
+func fileNumInput(input: string) {
+    var n: int = parseIntStr(input)
+    user.screen = "files"
+    if n >= 1 and n <= fileNumIds.count {
+        showFile(n)
+        return
+    }
+    if input != "" { sendLine("No such file.") }
+    displayPrompt()
 }
 
 // --- File view ---------------------------------------------------------

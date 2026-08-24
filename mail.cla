@@ -97,7 +97,7 @@ func drawInbox() {
 
 func drawMailMenu() {
     sendLine("")
-    sendLine("#) Read Message Number #")
+    sendLine("V) Read Message (or enter number)")
     sendLine("+) Next Page (or Enter)")
     sendLine("-) Previous Page")
     sendLine("L) List Messages")
@@ -117,11 +117,6 @@ func backToInbox() {
 }
 
 func mailChoice(input: string) {
-    var n: int = parseIntStr(input)
-    if n >= 1 and n <= mailIds.count {
-        showMessage(n)
-        return
-    }
     if input == "" or input == "+" {
         if mailPage < mailPages {
             mailPage = mailPage + 1
@@ -147,10 +142,24 @@ func mailChoice(input: string) {
         drawInbox()
         displayPrompt()
     }
+    case "V" { promptNumber("mailnum", "") }
     case "N" { startNewMail() }
     case "Q" { gotoScreen("main") }
     else { displayPrompt() }
     }
+}
+
+// Empty input returns to the inbox; a number on the current page opens
+// that message.
+func mailNumInput(input: string) {
+    var n: int = parseIntStr(input)
+    user.screen = "mail"
+    if n >= 1 and n <= mailIds.count {
+        showMessage(n)
+        return
+    }
+    if input != "" { sendLine("No such message.") }
+    displayPrompt()
 }
 
 // --- Message view ------------------------------------------------------
