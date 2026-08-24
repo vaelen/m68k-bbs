@@ -1,0 +1,212 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for the XMODEM sender. Run on the host via
+// scripts/test.sh. Exits 0 on pass, 1 on the first failure.
+
+include "../xmodem.cla"
+
+var failures: int = 0
+var sent: text          // everything the engine handed to xferOut
+var doneCalls: int = 0
+var doneOk: bool = false
+
+func xferOut(s: string) { sent.append(s) }
+func xferDone(ok: bool) {
+    doneCalls = doneCalls + 1
+    doneOk = ok
+}
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+func reset() {
+    sent = ""
+    doneCalls = 0
+    doneOk = false
+}
+
+// A file of n bytes: byte i = (i * 7) mod 256, so blocks are distinct.
+func makeFile(path: string, n: int) {
+    var f: filehandle = file.create(path, "TEXT", "ttxt")
+    var body: text
+    var i: int = 0
+    while i < n {
+        body.append(char((i * 7) mod 256))
+        i = i + 1
+    }
+    f.writeAt(0, body)
+    f.close()
+}
+
+// Does sent[at ..] hold a well-formed CRC-mode frame for block blk
+// covering file bytes [pos, pos+128) of a makeFile file of n bytes?
+func expectBlock(at: int, blk: int, pos: int, n: int, name: string) {
+    var i: int = 0
+    var ok: bool = true
+    var data: text
+    var crc: int = 0
+    if sent.length < at + 133 {
+        expect(false, name + ": frame too short")
+        return
+    }
+    ok = ok and sent[at] == '\x01'
+    ok = ok and sent[at + 1] == char(blk)
+    ok = ok and sent[at + 2] == char(255 - blk)
+    while i < 128 {
+        if pos + i < n {
+            ok = ok and sent[at + 3 + i] == char(((pos + i) * 7) mod 256)
+        } else {
+            ok = ok and sent[at + 3 + i] == '\x1A'
+        }
+        data.append(sent[at + 3 + i])
+        i = i + 1
+    }
+    crc = crcXmodem(data)
+    ok = ok and sent[at + 131] == char(crc >> 8)
+    ok = ok and sent[at + 132] == char(crc)
+    expect(ok, name)
+}
+
+on App.startCLI(args: list of string) {
+    var check: text
+    var i: int = 0
+    var sum: int = 0
+
+    // 1. CRC-16/XMODEM check value
+    check = "123456789"
+    expect(crcXmodem(check) == 0x31C3, "crcXmodem check value 0x31C3")
+
+    // 2. CRC start: 300-byte file -> blocks 1..3, last padded, EOT
+    makeFile("xm300.bin", 300)
+    reset()
+    xmodemSendStart("xm300.bin")
+    expect(sent.length == 0, "nothing sent before the receiver starts")
+    xmodemChar('C')
+    expect(sent.length == 133, "C: block 1 sent, 133 bytes")
+    expectBlock(0, 1, 0, 300, "block 1 framing and CRC")
+    xmodemChar('\x06')                       // ACK
+    expectBlock(133, 2, 128, 300, "ACK -> block 2")
+    xmodemChar('\x15')                       // NAK
+    expect(sent.length == 399, "NAK -> resend")
+    i = 0
+    while i < 133 {
+        if sent[133 + i] != sent[266 + i] { i = 1000 }
+        i = i + 1
+    }
+    expect(i == 133, "resend is byte-identical")
+    xmodemChar('\x06')
+    expectBlock(399, 3, 256, 300, "block 3 padded with SUB")
+    xmodemChar('\x06')
+    expect(sent.length == 533 and sent[532] == '\x04', "last ACK -> EOT")
+    expect(doneCalls == 0, "not done until EOT is ACKed")
+    xmodemChar('\x15')
+    expect(sent.length == 534 and sent[533] == '\x04', "NAK after EOT -> EOT again")
+    xmodemChar('\x06')
+    expect(doneCalls == 1 and doneOk, "ACK after EOT -> xferDone(true)")
+    expect(xmState == xmIdle, "idle after completion")
+
+    // 3. Checksum start (NAK): 132-byte frame with 8-bit sum
+    reset()
+    xmodemSendStart("xm300.bin")
+    xmodemChar('\x15')
+    expect(sent.length == 132, "NAK start: checksum frame is 132 bytes")
+    sum = 0
+    i = 0
+    while i < 128 {
+        sum = sum + int(sent[3 + i])
+        i = i + 1
+    }
+    expect(sent[131] == char(sum), "checksum byte")
+    xmodemAbort()
+    expect(doneCalls == 0 and xmState == xmIdle, "abort: silent, idle")
+
+    // 4. Block number wraps 255 -> 0 (256 blocks = 32768 bytes + 1)
+    makeFile("xmwrap.bin", 32769)
+    reset()
+    xmodemSendStart("xmwrap.bin")
+    xmodemChar('C')
+    i = 0
+    while i < 255 {
+        xmodemChar('\x06')
+        i = i + 1
+    }
+    // block 256 (number 0) starts at 255 * 133
+    expect(sent[255 * 133 + 1] == '\x00' and sent[255 * 133 + 2] == '\xFF', "block number wraps to 0")
+    xmodemChar('\x06')
+    expect(sent[256 * 133 + 1] == '\x01', "then 1 again")
+    xmodemAbort()
+
+    // 5. Peer cancel: CAN CAN -> done(false), nothing sent back
+    reset()
+    xmodemSendStart("xm300.bin")
+    xmodemChar('C')
+    xmodemChar('\x18')
+    expect(doneCalls == 0, "single CAN ignored")
+    xmodemChar('\x06')                       // any other byte resets the count
+    xmodemChar('\x18')
+    expect(doneCalls == 0, "CAN after a non-CAN ignored")
+    xmodemChar('\x18')
+    expect(doneCalls == 1 and not doneOk, "CAN CAN -> xferDone(false)")
+    expect(sent.length == 266, "nothing sent after peer cancel")
+
+    // 6. Timeouts: 20 ticks -> resend; 10 errors -> CAN CAN CAN + done(false)
+    reset()
+    xmodemSendStart("xm300.bin")
+    xmodemChar('C')
+    i = 0
+    while i < 19 {
+        xmodemTick()
+        i = i + 1
+    }
+    expect(sent.length == 133, "19 ticks: no resend yet")
+    xmodemTick()
+    expect(sent.length == 266, "20 ticks: resend")
+    i = 0
+    while i < 9 * 20 {
+        xmodemTick()
+        i = i + 1
+    }
+    expect(doneCalls == 1 and not doneOk, "10 errors -> xferDone(false)")
+    expect(sent.length == 133 * 10 + 3, "CAN CAN CAN sent after the last error")
+    expect(sent[sent.length - 1] == '\x18', "last byte is CAN")
+
+    // 7. No receiver: 120 ticks at start -> done(false)
+    reset()
+    xmodemSendStart("xm300.bin")
+    i = 0
+    while i < 119 {
+        xmodemTick()
+        i = i + 1
+    }
+    expect(doneCalls == 0, "119 ticks waiting: still waiting")
+    xmodemTick()
+    expect(doneCalls == 1 and not doneOk, "120 ticks waiting: xferDone(false)")
+
+    // 8. Zero-length file: EOT on C
+    makeFile("xm0.bin", 0)
+    reset()
+    xmodemSendStart("xm0.bin")
+    xmodemChar('C')
+    expect(sent == "\x04", "empty file: EOT immediately")
+    xmodemChar('\x06')
+    expect(doneCalls == 1 and doneOk, "empty file completes")
+
+    // 9. Missing file: done(false) at start
+    reset()
+    xmodemSendStart("no-such-file.bin")
+    expect(doneCalls == 1 and not doneOk, "missing file -> xferDone(false)")
+
+    if failures > 0 {
+        log(string(failures) + " failure(s)")
+        quit 1
+    }
+    log("all xmodem tests passed")
+    quit
+}

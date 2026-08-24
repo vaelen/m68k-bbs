@@ -1,0 +1,215 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// XMODEM sender (128-byte blocks, CRC-16 or checksum), driven one
+// byte / one tick at a time so the runtime's receive pump is never
+// starved. Pure: talks to the world only through readAt on its own
+// handle and two callbacks the including program defines:
+//   xferOut(s: string)   -- bytes for the caller (bbs.cla: telnetSend)
+//   xferDone(ok: bool)   -- transfer over; the engine is idle already
+// bbs.cla feeds xmodemChar from inputChar on the "xfer" screen and
+// xmodemTick from the 30-tick timer (one tick = half a second).
+// Design: docs/file-transfers.md.
+
+const xmSOH: char = '\x01'
+const xmEOT: char = '\x04'
+const xmACK: char = '\x06'
+const xmNAK: char = '\x15'
+const xmCAN: char = '\x18'
+const xmSUB: char = '\x1A'
+
+const xmStartTicks: int = 120   // 60 s for the receiver's first C/NAK
+const xmAckTicks: int = 20      // 10 s per ACK
+const xmMaxErrors: int = 10
+
+enum XmState { xmIdle, xmWaitStart, xmWaitAck, xmWaitEotAck }
+
+var xmFile: filehandle
+var xmSize: int = 0
+var xmPos: int = 0             // next file byte to send
+var xmBlock: int = 1           // next block number, wraps mod 256
+var xmCrc: bool = false
+var xmState: XmState = xmIdle
+var xmTimer: int = 0           // ticks in the current state
+var xmErrors: int = 0
+var xmCanCount: int = 0
+var xmLast: string(133)        // last frame, resent verbatim
+
+// CRC-16/XMODEM: poly 0x1021, init 0, no reflection, no final XOR.
+// ponytail: bitwise loop (128x8 per block); swap for text.crc16x
+// when the runtime grows it (docs/language-gaps.md #8).
+func crcXmodem(t: text): int {
+    var crc: int = 0
+    var i: int = 0
+    var b: int = 0
+    while i < t.length {
+        crc = crc ^ (int(t[i]) << 8)
+        b = 0
+        while b < 8 {
+            if (crc & 0x8000) != 0 {
+                crc = ((crc << 1) ^ 0x1021) & 0xFFFF
+            } else {
+                crc = (crc << 1) & 0xFFFF
+            }
+            b = b + 1
+        }
+        i = i + 1
+    }
+    return crc
+}
+
+func xmodemSendStart(path: string) {
+    xmFile = file.open(path)
+    if xmFile == nil {
+        log("XMODEM: cannot open " + path + ": " + lastError.message)
+        xferDone(false)
+        return
+    }
+    xmSize = xmFile.size()
+    xmPos = 0
+    xmBlock = 1
+    xmCrc = false
+    xmTimer = 0
+    xmErrors = 0
+    xmCanCount = 0
+    xmState = xmWaitStart
+}
+
+func xmodemChar(c: char) {
+    if xmState == xmIdle { return }
+    if c == xmCAN {
+        xmCanCount = xmCanCount + 1
+        if xmCanCount >= 2 {
+            log("XMODEM: cancelled by the caller.")
+            xmFinish(false)
+        }
+        return
+    }
+    xmCanCount = 0
+    switch xmState {
+    case xmWaitStart {
+        if c == 'C' {
+            xmCrc = true
+        } else if c == xmNAK {
+            xmCrc = false
+        } else {
+            return
+        }
+        xmNext()
+    }
+    case xmWaitAck {
+        if c == xmACK {
+            xmPos = xmPos + 128
+            xmBlock = (xmBlock + 1) mod 256
+            xmNext()
+        } else if c == xmNAK {
+            xmRetry()
+        }
+    }
+    case xmWaitEotAck {
+        if c == xmACK {
+            xmFinish(true)
+        } else if c == xmNAK {
+            xmRetry()
+        }
+    }
+    }
+}
+
+func xmodemTick() {
+    if xmState == xmIdle { return }
+    xmTimer = xmTimer + 1
+    if xmState == xmWaitStart {
+        if xmTimer >= xmStartTicks {
+            log("XMODEM: no receiver started.")
+            xmCancel()
+        }
+        return
+    }
+    if xmTimer >= xmAckTicks { xmRetry() }
+}
+
+// The line is gone: release the file, tell nobody.
+func xmodemAbort() {
+    if xmState == xmIdle { return }
+    xmFile.close()
+    xmFile = nil
+    xmState = xmIdle
+}
+
+// --- internals ---------------------------------------------------------
+
+func xmNext() {
+    if xmPos >= xmSize {
+        xmSendEot()
+    } else {
+        xmSendBlock()
+    }
+}
+
+func xmSendBlock() {
+    var buf: text
+    var i: int = 0
+    var sum: int = 0
+    var crc: int = 0
+    if not xmFile.readAt(xmPos, 128, buf) {
+        log("XMODEM: read failed: " + lastError.message)
+        xmCancel()
+        return
+    }
+    while buf.length < 128 { buf.append(xmSUB) }
+    xmLast = ""
+    xmLast = xmLast + xmSOH
+    xmLast = xmLast + char(xmBlock)
+    xmLast = xmLast + char(255 - xmBlock)
+    while i < 128 {
+        xmLast = xmLast + buf[i]
+        sum = sum + int(buf[i])
+        i = i + 1
+    }
+    if xmCrc {
+        crc = crcXmodem(buf)
+        xmLast = xmLast + char(crc >> 8)
+        xmLast = xmLast + char(crc)
+    } else {
+        xmLast = xmLast + char(sum)
+    }
+    xferOut(xmLast)
+    xmState = xmWaitAck
+    xmTimer = 0
+}
+
+func xmSendEot() {
+    xferOut("\x04")
+    xmState = xmWaitEotAck
+    xmTimer = 0
+}
+
+// NAK or timeout: resend the current frame, up to the error ceiling.
+func xmRetry() {
+    xmErrors = xmErrors + 1
+    if xmErrors >= xmMaxErrors {
+        log("XMODEM: too many errors.")
+        xmCancel()
+        return
+    }
+    xmTimer = 0
+    if xmState == xmWaitEotAck {
+        xferOut("\x04")
+    } else {
+        xferOut(xmLast)
+    }
+}
+
+// Our side gives up: tell the receiver, then finish.
+func xmCancel() {
+    xferOut("\x18\x18\x18")
+    xmFinish(false)
+}
+
+func xmFinish(ok: bool) {
+    xmFile.close()
+    xmFile = nil
+    xmState = xmIdle
+    xferDone(ok)
+}
