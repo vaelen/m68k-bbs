@@ -1,12 +1,14 @@
 // Copyright 2026, Andrew C. Young <andrew@vaelen.org>
 // SPDX-License-Identifier: MIT
 
-// XMODEM / XMODEM-1K / YMODEM sender, driven one byte / one tick at a
-// time so the runtime's receive pump is never starved. Pure: talks to
-// the world only through readAt on its own handle and two callbacks
-// the including program defines:
-//   xferOut(t: text)     -- bytes for the caller (bbs.cla: telnetSend)
-//   xferDone(ok: bool)   -- transfer over; the engine is idle already
+// XMODEM / XMODEM-1K / YMODEM sender and receiver, driven one byte /
+// one tick at a time so the runtime's receive pump is never starved.
+// Pure: talks to the world only through its own filehandle and the
+// callbacks the including program defines:
+//   xferOut(t: text)                 -- bytes for the caller (telnetSend)
+//   xferDone(ok: bool)               -- transfer over; the engine is idle
+//   xferReceived(name, bytes)        -- an uploaded file is on disk
+//   xferAcceptName(name): bool       -- may a YMODEM-supplied name be used?
 // bbs.cla feeds xmodemChar from inputChar on the "xfer" screen and
 // xmodemTick from the 30-tick timer (one tick = half a second).
 //
@@ -98,6 +100,10 @@ func xmodemSendStart(path: string, name: string, mode: char) {
 }
 
 func xmodemChar(c: char) {
+    if rvState != rvIdle {
+        xmodemRecvChar(c)
+        return
+    }
     if xmState == xmIdle { return }
     if c == xmCAN {
         xmCanCount = xmCanCount + 1
@@ -175,6 +181,10 @@ func xmodemChar(c: char) {
 }
 
 func xmodemTick() {
+    if rvState != rvIdle {
+        xmodemRecvTick()
+        return
+    }
     if xmState == xmIdle { return }
     xmTimer = xmTimer + 1
     if xmState == xmWaitStart {
@@ -189,6 +199,10 @@ func xmodemTick() {
 
 // The line is gone: release the file, tell nobody.
 func xmodemAbort() {
+    if rvState != rvIdle {
+        xmodemRecvAbort()
+        return
+    }
     if xmState == xmIdle { return }
     xmFile.close()
     xmFile = nil
@@ -306,5 +320,328 @@ func xmFinish(ok: bool) {
     xmFile.close()
     xmFile = nil
     xmState = xmIdle
+    xferDone(ok)
+}
+
+// --- Receive side --------------------------------------------------------
+// The same three modes, receiving: prod the sender with C (CRC) -- or,
+// for XMODEM/1K after four unanswered Cs, NAK (checksum) -- assemble
+// each frame byte by byte, write good blocks with writeAt, ACK them,
+// NAK bad ones after the line goes quiet, ACK the EOT. YMODEM: block 0
+// names the file (and may give its size, used to trim the padding);
+// an empty block 0 ends the batch. Each finished file is reported via
+// xferReceived(name, bytes); names off the wire are vetted through
+// xferAcceptName(name) first.
+
+enum RvState {
+    rvIdle
+    rvWaitFrame    // between frames: SOH/STX/EOT/CAN
+    rvNum          // block number
+    rvInv          // its complement
+    rvData         // payload bytes
+    rvCheck        // CRC (2) or checksum (1)
+    rvPurge        // bad frame: discard until the line is quiet, then NAK
+}
+
+const rvProdTicks: int = 6        // a C/NAK every 3 s while waiting to start
+const rvCrcTries: int = 4         // Cs before falling back to checksum (X/1)
+
+var rvState: RvState = rvIdle
+var rvMode: char = 'X'
+var rvFolder: string
+var rvName: string(63)
+var rvFile: filehandle
+var rvHaveFile: bool = false
+var rvWritten: int = 0
+var rvExpectSize: int = 0        // YMODEM block 0 size; 0 = unknown
+var rvBlock: int = 1             // next expected block number
+var rvExpectHeader: bool = false // YMODEM: the next frame is a block 0
+var rvProd: bool = false         // send C/NAK on the tick until a frame arrives
+var rvProds: int = 0
+var rvCrc: bool = true
+var rvNeed: int = 0
+var rvNumByte: int = 0
+var rvInvByte: int = 0
+var rvBuf: text
+var rvCheckVal: int = 0
+var rvCheckGot: int = 0
+var rvTimer: int = 0
+var rvErrors: int = 0
+var rvCanCount: int = 0
+
+func xmodemRecvStart(mode: char, folder: string, name: string) {
+    rvMode = mode
+    rvFolder = folder
+    rvName = name
+    rvHaveFile = false
+    rvWritten = 0
+    rvExpectSize = 0
+    rvBlock = 1
+    rvExpectHeader = (mode == 'Y')
+    rvCrc = true
+    rvErrors = 0
+    rvCanCount = 0
+    rvState = rvWaitFrame
+    if mode != 'Y' {
+        if not rvOpen(name) { return }
+    }
+    rvStartProd()
+}
+
+// Start prodding the sender: one C now, more on the tick.
+func rvStartProd() {
+    rvProd = true
+    rvProds = 1
+    rvTimer = 0
+    xmOutStr("C")
+}
+
+func rvPath(name: string): string {
+    if rvFolder.length == 0 { return name }
+    return rvFolder + ":" + name
+}
+
+func rvOpen(name: string): bool {
+    rvFile = file.create(rvPath(name), "BINA", "68BB")
+    if rvFile == nil {
+        log("Upload: cannot create " + rvPath(name) + ": " + lastError.message)
+        rvFinish(false)
+        return false
+    }
+    rvName = name
+    rvHaveFile = true
+    rvWritten = 0
+    rvBlock = 1
+    return true
+}
+
+func xmodemRecvChar(c: char) {
+    switch rvState {
+    case rvWaitFrame {
+        if c == xmCAN {
+            rvCanCount = rvCanCount + 1
+            if rvCanCount >= 2 {
+                log("Upload: cancelled by the caller.")
+                rvFinish(false)
+            }
+            return
+        }
+        rvCanCount = 0
+        if c == xmSOH or c == xmSTX {
+            if c == xmSOH { rvNeed = 128 } else { rvNeed = 1024 }
+            rvBuf = ""
+            rvProd = false
+            rvState = rvNum
+            rvTimer = 0
+        } else if c == xmEOT {
+            xmOutStr("\x06")
+            if rvHaveFile { rvFileDone() }
+            if rvMode == 'Y' {
+                rvExpectHeader = true
+                rvStartProd()
+            } else {
+                rvFinish(true)
+            }
+        }
+    }
+    case rvNum {
+        rvNumByte = int(c)
+        rvState = rvInv
+        rvTimer = 0
+    }
+    case rvInv {
+        rvInvByte = int(c)
+        rvState = rvData
+        rvTimer = 0
+    }
+    case rvData {
+        rvBuf.append(c)
+        rvTimer = 0
+        if rvBuf.length == rvNeed {
+            rvCheckVal = 0
+            rvCheckGot = 0
+            rvState = rvCheck
+        }
+    }
+    case rvCheck {
+        rvCheckVal = rvCheckVal * 256 + int(c)
+        rvCheckGot = rvCheckGot + 1
+        rvTimer = 0
+        if (rvCrc and rvCheckGot == 2) or (not rvCrc and rvCheckGot == 1) {
+            rvFrameDone()
+        }
+    }
+    case rvPurge {
+        rvTimer = 0     // still noisy; keep waiting for quiet
+    }
+    }
+}
+
+func xmodemRecvTick() {
+    if rvState == rvIdle { return }
+    rvTimer = rvTimer + 1
+    switch rvState {
+    case rvWaitFrame {
+        if rvProd {
+            if rvTimer >= xmStartTicks {
+                log("Upload: no sender started.")
+                rvCancel()
+            } else if rvTimer mod rvProdTicks == 0 {
+                rvProds = rvProds + 1
+                if rvMode != 'Y' and rvProds > rvCrcTries {
+                    rvCrc = false           // ponytail: a late CRC frame
+                    xmOutStr("\x15")        // then fails its check; the
+                } else {                    // error ceiling ends that loop
+                    xmOutStr("C")
+                }
+            }
+        } else if rvTimer >= xmAckTicks {
+            rvError()                       // sender stalled between frames
+        }
+    }
+    case rvPurge {
+        if rvTimer >= 2 {                   // 1 s of quiet
+            xmOutStr("\x15")
+            rvState = rvWaitFrame
+            rvTimer = 0
+        }
+    }
+    else {
+        if rvTimer >= 2 { rvError() }       // stalled inside a frame
+    }
+    }
+}
+
+func xmodemRecvAbort() {
+    if rvState == rvIdle { return }
+    if rvHaveFile { rvFile.close() }
+    rvFile = nil
+    rvHaveFile = false
+    rvState = rvIdle
+}
+
+// A complete frame is in rvNumByte/rvInvByte/rvBuf/rvCheckVal.
+func rvFrameDone() {
+    var i: int = 0
+    var sum: int = 0
+    var want: int = 0
+    if rvNumByte + rvInvByte != 255 {
+        rvError()
+        return
+    }
+    if rvCrc {
+        want = crcXmodem(rvBuf)
+    } else {
+        while i < rvBuf.length {
+            sum = sum + int(rvBuf[i])
+            i = i + 1
+        }
+        want = sum & 0xFF
+    }
+    if want != rvCheckVal {
+        rvError()
+        return
+    }
+    if rvExpectHeader {
+        if rvNumByte != 0 {
+            rvError()
+            return
+        }
+        rvHeaderDone()
+        return
+    }
+    if rvNumByte == rvBlock {
+        if not rvFile.writeAt(rvWritten, rvBuf) {
+            log("Upload: write failed: " + lastError.message)
+            rvCancel()
+            return
+        }
+        rvWritten = rvWritten + rvBuf.length
+        rvBlock = (rvBlock + 1) mod 256
+        rvErrors = 0
+    } else if rvNumByte != (rvBlock + 255) mod 256 {
+        log("Upload: block " + string(rvNumByte) + " out of sequence.")
+        rvCancel()
+        return
+    }
+    // a repeat of the previous block (our ACK was lost): just ACK again
+    xmOutStr("\x06")
+    rvState = rvWaitFrame
+    rvTimer = 0
+}
+
+// YMODEM block 0: "name NUL size [mtime mode ...] NUL". A path is
+// reduced to its last segment. Empty name = end of batch.
+func rvHeaderDone() {
+    var i: int = 0
+    var name: string(63)
+    var size: int = 0
+    var c: char
+    while i < rvBuf.length and rvBuf[i] != xmNUL {
+        c = rvBuf[i]
+        if c == '/' or c == '\\' {
+            name = ""
+        } else if name.length < 63 {
+            name = name + c
+        }
+        i = i + 1
+    }
+    if name == "" {
+        xmOutStr("\x06")
+        rvFinish(true)
+        return
+    }
+    i = i + 1
+    while i < rvBuf.length and rvBuf[i] >= '0' and rvBuf[i] <= '9' {
+        size = size * 10 + (int(rvBuf[i]) - 48)
+        i = i + 1
+    }
+    if not xferAcceptName(name) {
+        log("Upload: name refused: " + name)
+        rvCancel()
+        return
+    }
+    if not rvOpen(name) { return }
+    rvExpectSize = size
+    rvExpectHeader = false
+    xmOutStr("\x06")
+    rvState = rvWaitFrame
+    rvStartProd()             // C: send the data
+}
+
+// EOT for the current file: trim YMODEM padding, report it.
+func rvFileDone() {
+    rvFile.flush()
+    if rvExpectSize > 0 and rvExpectSize < rvWritten {
+        rvFile.setSize(rvExpectSize)
+        rvWritten = rvExpectSize
+    }
+    rvFile.close()
+    rvFile = nil
+    rvHaveFile = false
+    xferReceived(rvName, rvWritten)
+}
+
+func rvError() {
+    rvErrors = rvErrors + 1
+    if rvErrors >= xmMaxErrors {
+        log("Upload: too many errors.")
+        rvCancel()
+        return
+    }
+    rvState = rvPurge
+    rvTimer = 0
+}
+
+func rvCancel() {
+    xmOutStr("\x18\x18\x18")
+    rvFinish(false)
+}
+
+func rvFinish(ok: bool) {
+    if rvHaveFile { rvFile.close() }
+    rvFile = nil
+    rvHaveFile = false
+    rvState = rvIdle
     xferDone(ok)
 }

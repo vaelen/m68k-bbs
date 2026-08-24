@@ -30,7 +30,55 @@ func reset() {
     sent = ""
     doneCalls = 0
     doneOk = false
+    recvCalls = 0
 }
+
+var recvName: string
+var recvBytes: int = 0
+var recvCalls: int = 0
+var acceptNames: bool = true
+
+func xferReceived(name: string, bytes: int) {
+    recvCalls = recvCalls + 1
+    recvName = name
+    recvBytes = bytes
+}
+func xferAcceptName(name: string): bool { return acceptNames }
+
+// Feed a CRC frame for block blk carrying data (128 or 1024 bytes).
+func feedFrame(blk: int, data: text) {
+    var i: int = 0
+    var crc: int = crcXmodem(data)
+    if data.length == 1024 { xmodemChar('\x02') } else { xmodemChar('\x01') }
+    xmodemChar(char(blk))
+    xmodemChar(char(255 - blk))
+    while i < data.length {
+        xmodemChar(data[i])
+        i = i + 1
+    }
+    xmodemChar(char(crc >> 8))
+    xmodemChar(char(crc))
+}
+
+func fillText(n: int, seed: int): text {
+    var t: text
+    var i: int = 0
+    while i < n {
+        t.append(char((i * 7 + seed) mod 256))
+        i = i + 1
+    }
+    return t
+}
+
+func readAll(path: string): text {
+    var f: filehandle = file.open(path)
+    var t: text
+    if f == nil { return t }
+    f.readAt(0, f.size(), t)
+    f.close()
+    return t
+}
+
 
 // A file of n bytes: byte i = (i * 7) mod 256, so blocks are distinct.
 func makeFile(path: string, n: int) {
@@ -109,6 +157,7 @@ func expectBig(at: int, blk: int, pos: int, n: int, size: int, name: string) {
 
 on App.startCLI(args: list of string) {
     var check: text
+    var got: text
     var i: int = 0
     var sum: int = 0
 
@@ -289,6 +338,119 @@ on App.startCLI(args: list of string) {
     reset()
     xmodemSendStart("no-such-file.bin", "x", 'X')
     expect(doneCalls == 1 and not doneOk, "missing file -> xferDone(false)")
+
+    // 12. XMODEM receive: C first, two blocks, duplicate, bad CRC -> quiet -> NAK, EOT
+    reset()
+    xmodemRecvStart('X', "", "up.bin")
+    expect(sent == "C", "recv: C sent at start")
+    check = fillText(128, 1)
+    feedFrame(1, check)
+    expect(sent == "C\x06", "recv: good block 1 ACKed")
+    feedFrame(1, check)
+    expect(sent == "C\x06\x06", "recv: repeated block ACKed, not stored")
+    check = fillText(128, 2)
+    xmodemChar('\x01')
+    xmodemChar('\x02')
+    xmodemChar('\xFD')
+    i = 0
+    while i < 128 {
+        xmodemChar(check[i])
+        i = i + 1
+    }
+    xmodemChar('\x00')
+    xmodemChar('\x00')                        // wrong CRC
+    expect(sent.length == 3, "recv: bad frame: nothing sent yet")
+    xmodemChar('z')                           // line still noisy
+    xmodemTick()
+    expect(sent.length == 3, "recv: purge waits for quiet")
+    xmodemTick()
+    expect(sent == "C\x06\x06\x15", "recv: NAK after 1 s of quiet")
+    feedFrame(2, check)
+    expect(sent == "C\x06\x06\x15\x06", "recv: block 2 ACKed")
+    xmodemChar('\x04')
+    expect(sent == "C\x06\x06\x15\x06\x06", "recv: EOT ACKed")
+    expect(doneCalls == 1 and doneOk, "recv: done ok")
+    expect(recvCalls == 1 and recvName == "up.bin" and recvBytes == 256, "recv: xferReceived(up.bin, 256)")
+    check = fillText(128, 1)
+    expect(readAll("up.bin")[0, 128] == check[0, 128], "recv: block 1 on disk")
+    check = fillText(128, 2)
+    expect(readAll("up.bin")[128, 128] == check[0, 128], "recv: block 2 on disk")
+
+    // 13. Prodding: C every 6 ticks, NAK after 4 Cs (checksum), give up at 120
+    reset()
+    xmodemRecvStart('1', "", "up2.bin")
+    i = 0
+    while i < 23 {
+        xmodemTick()
+        i = i + 1
+    }
+    expect(sent == "CCCC", "recv: four Cs by tick 23")
+    xmodemTick()
+    expect(sent == "CCCC\x15", "recv: NAK fallback at tick 24")
+    check = fillText(1024, 3)
+    xmodemChar('\x02')
+    xmodemChar('\x01')
+    xmodemChar('\xFE')
+    i = 0
+    sum = 0
+    while i < 1024 {
+        xmodemChar(check[i])
+        sum = sum + int(check[i])
+        i = i + 1
+    }
+    xmodemChar(char(sum))
+    expect(sent == "CCCC\x15\x06", "recv: 1K checksum block ACKed")
+    xmodemChar('\x04')
+    expect(recvBytes == 1024 and doneOk, "recv: 1K file complete")
+    reset()
+    xmodemRecvStart('X', "", "up3.bin")
+    i = 0
+    while i < 120 {
+        xmodemTick()
+        i = i + 1
+    }
+    expect(doneCalls == 1 and not doneOk, "recv: gives up after 120 ticks")
+    expect(sent[sent.length - 1] == '\x18', "recv: cancels the sender")
+
+    // 14. YMODEM receive: block 0 names the file, size trims padding, batch end
+    reset()
+    xmodemRecvStart('Y', "", "")
+    expect(sent == "C", "yrecv: C at start")
+    check = "dir/photo.bin\x00300 12345 100644\x00"
+    while check.length < 128 { check.append('\x00') }
+    feedFrame(0, check)
+    expect(sent == "C\x06C", "yrecv: block 0 ACKed then C for data")
+    check = fillText(128, 4)
+    feedFrame(1, check)
+    feedFrame(2, check)
+    feedFrame(3, check)
+    xmodemChar('\x04')
+    expect(recvCalls == 1 and recvName == "photo.bin" and recvBytes == 300, "yrecv: basename, size trimmed to 300")
+    got = readAll("photo.bin")
+    expect(got.length == 300, "yrecv: file is 300 bytes")
+    expect(doneCalls == 0, "yrecv: batch continues after EOT")
+    expect(sent[sent.length - 1] == 'C', "yrecv: C for the next block 0")
+    check = ""
+    while check.length < 128 { check.append('\x00') }
+    feedFrame(0, check)
+    expect(doneCalls == 1 and doneOk, "yrecv: empty block 0 ends the batch")
+
+    // 15. YMODEM: refused name -> CAN CAN CAN, done(false)
+    reset()
+    acceptNames = false
+    xmodemRecvStart('Y', "", "")
+    check = "bad:name\x00"
+    while check.length < 128 { check.append('\x00') }
+    feedFrame(0, check)
+    expect(doneCalls == 1 and not doneOk and sent[sent.length - 1] == '\x18', "yrecv: refused name cancels")
+    acceptNames = true
+
+    // 16. Peer cancel while waiting between frames
+    reset()
+    xmodemRecvStart('X', "", "up4.bin")
+    xmodemChar('\x18')
+    xmodemChar('\x18')
+    expect(doneCalls == 1 and not doneOk, "recv: CAN CAN -> done(false)")
 
     if failures > 0 {
         log(string(failures) + " failure(s)")
