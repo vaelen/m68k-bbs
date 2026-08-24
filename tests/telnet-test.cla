@@ -112,12 +112,12 @@ on App.startCLI(args: list of string) {
 
     // 11. NAWS subnegotiation: 132x50
     feedString("\xFF\xFA\x1F\x00\x84\x00\x32\xFF\xF0")
-    expect(terminal.columns == 132, "NAWS width applied")
+    expect(terminal.columns == 131, "NAWS width applied (stored as physical - 1)")
     expect(terminal.rows == 50, "NAWS height applied")
 
     // 12. NAWS clamps oversized, ignores zero (width 255 needs IAC IAC)
     feedString("\xFF\xFA\x1F\x00\xFF\xFF\x00\x00\xFF\xF0")
-    expect(terminal.columns == 132, "oversized NAWS width clamped to 132")
+    expect(terminal.columns == 131, "oversized NAWS width clamped to 132 (stored 131)")
     expect(terminal.rows == 50, "zero NAWS height ignored")
 
     // 13. TERMINAL-TYPE IS reply recorded

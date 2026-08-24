@@ -154,7 +154,8 @@ inputChar (bbs.cla) → processInput`.
   DO ECHO/SGA are agreed silently, DONT ECHO clears terminal.echo;
   unknown WILL → DONT, other DO/DONT → WONT), releases clean bytes to
   `inputChar`, drops NVT CR NUL's NUL, applies NAWS to
-  `terminal.columns/rows` (clamped 20-132 / 10-60) and records
+  `terminal.columns/rows` via `setColumns`/`setRows` (clamped 20-132 /
+  10-60 physical) and records
   TERMINAL-TYPE/SPEED replies. Interception is on only while
   `telnetIntercept` is set (the connect-time probe, then only if the
   client negotiated). `telnetSend(conn, s)` is the outgoing chokepoint:
@@ -189,8 +190,12 @@ inputChar (bbs.cla) → processInput`.
 - `user.cla` — `User` record (name, authenticated, passwordHash,
   screen, buffer, id, email, access, created, lastSeen)
   + global `user`; `hashPassword` (djb2,
-  non-cryptographic). `terminal.cla` — `Terminal` record (columns,
-  rows, color, echo — on by default, linemode — off by default, set per screen by
+  non-cryptographic). `terminal.cla` — `Terminal` record (columns —
+  stored as the physical width **minus one** via `setColumns`, so
+  the last column is never written: SyncTERM/ANSI.SYS auto-wrap
+  there while Unix terminals need the newline; layouts compare
+  against `minimumWideTerminalWidth` (79) and tables total 79/39 —
+  rows via `setRows`, color, echo — on by default, linemode — off by default, set per screen by
   `displayPrompt` via `lineScreen`, type: ASCII/ANSI/VT100, ansi — set for the ANSI and
   VT100 types, telnet, reportedTerminalType, reportedSpeed) + global
   `terminal`, `Color`

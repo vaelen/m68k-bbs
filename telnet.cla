@@ -97,8 +97,8 @@ func telnetSubDone() {
         h = int(tnPayload[3]) * 256 + int(tnPayload[4])
         if w > 132 { w = 132 }   // 255-byte line builders cap the width
         if h > 60 { h = 60 }
-        if w >= 20 { terminal.columns = w }   // 0 = "unspecified" (RFC 1073)
-        if h >= 10 { terminal.rows = h }
+        if w >= 20 { setColumns(w) }   // 0 = "unspecified" (RFC 1073)
+        if h >= 10 { setRows(h) }
     } else if opt == optTermType {
         if tnPayload.length >= 2 and tnPayload[1] == '\x00' {   // IS
             terminal.reportedTerminalType = tnPayload[2, tnPayload.length - 2]

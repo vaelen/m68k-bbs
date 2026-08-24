@@ -522,7 +522,7 @@ func drawRecentLogins() {
     var i: int = 0
     w.add(1)
     cells.add("N")
-    if terminal.columns >= 80 {
+    if terminal.columns >= minimumWideTerminalWidth {
         w.add(20)
         w.add(loginTimeWidth)
         w.add(loginDurWidth)
@@ -754,13 +754,13 @@ func termTypeName(t: TerminalType): string {
 func applyTerminal(t: TerminalType, cols: int, colorOn: bool) {
     var msg: string
     terminal.type = t
-    terminal.columns = cols
-    terminal.rows = 24
+    setColumns(cols)
+    setRows(24)
     terminal.color = colorOn
     terminal.ansi = (t == ANSI or t == VT100)
     if t == VT100 { sendData(vt100SetupSeq) }
     msg = "User: " + user.name + ", Terminal: " + termTypeName(t)
-    msg = msg + " " + intStr(terminal.columns) + "x" + intStr(terminal.rows)
+    msg = msg + " " + intStr(cols) + "x" + intStr(terminal.rows)
     log(msg)
     if returning {
         // welcome-back banner, shown once, after the terminal is known

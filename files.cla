@@ -38,17 +38,17 @@ func sizeStr(n: int): string {
 
 // --- Area picker -------------------------------------------------------
 
-// Content widths: narrow (<80 columns) is ID/Name (total 40), wide is
-// ID/Name/Description (total 80).
+// Content widths: narrow is ID/Name (total 39), wide is
+// ID/Name/Description (total 79).
 func areaPickerWidths(w: list of int) {
     w.clear()
     w.add(4)
-    if terminal.columns < 80 {
-        w.add(29)
+    if terminal.columns < minimumWideTerminalWidth {
+        w.add(28)
         return
     }
     w.add(30)
-    w.add(36)
+    w.add(35)
 }
 
 // ponytail: the picker shows every visible area unpaged; page it if a
@@ -63,7 +63,7 @@ func drawAreaPicker() {
     areaPickerWidths(w)
     cells.add("ID")
     cells.add("Name")
-    if terminal.columns >= 80 {
+    if terminal.columns >= minimumWideTerminalWidth {
         cells.add("Description")
     }
     sendTableHeader("File Areas", cells, w)
@@ -73,7 +73,7 @@ func drawAreaPicker() {
             cells.clear()
             cells.add(intStr(id))
             cells.add(dbExtractString(rec, aOffName))
-            if terminal.columns >= 80 {
+            if terminal.columns >= minimumWideTerminalWidth {
                 cells.add(dbExtractString(rec, aOffDescription))
             }
             sendLine(rowLine(cells, w))
@@ -149,18 +149,18 @@ func visibleFileCount(): int {
     return n
 }
 
-// Content widths: narrow (<80 columns) is #/Name (total 40), wide adds
-// Size and Description (total 80).
+// Content widths: narrow is #/Name (total 39), wide adds
+// Size and Description (total 79).
 func fileListWidths(w: list of int) {
     w.clear()
     w.add(3)
-    if terminal.columns < 80 {
-        w.add(30)
+    if terminal.columns < minimumWideTerminalWidth {
+        w.add(29)
         return
     }
     w.add(28)
     w.add(8)
-    w.add(28)
+    w.add(27)
 }
 
 // One page of files, newest (highest file ID) first, numbered from 1
@@ -184,7 +184,7 @@ func drawFileList() {
     fileListWidths(w)
     cells.add("#")
     cells.add("Name")
-    if terminal.columns >= 80 {
+    if terminal.columns >= minimumWideTerminalWidth {
         cells.add("Size")
         cells.add("Description")
     }
@@ -199,7 +199,7 @@ func drawFileList() {
                 cells.clear()
                 cells.add(intStr(fileNumIds.count))
                 cells.add(dbExtractString(rec, fOffName))
-                if terminal.columns >= 80 {
+                if terminal.columns >= minimumWideTerminalWidth {
                     cells.add(sizeStr(rec.intAt(fOffSize)))
                     cells.add(dbExtractString(rec, fOffDescription))
                 }
@@ -301,11 +301,11 @@ var descPages: int = 1
 // Single-span content width for the file frame.
 func fileViewWidths(w: list of int) {
     w.clear()
-    if terminal.columns < 80 {
-        w.add(36)
+    if terminal.columns < minimumWideTerminalWidth {
+        w.add(35)
         return
     }
-    w.add(76)
+    w.add(75)
 }
 
 func showFile(n: int) {
@@ -354,7 +354,7 @@ func drawFileView() {
     // title, joint, mid rule, footer joint, footer, bottom, prompt)
     // plus one per meta row: From, Date (or the two combined when wide),
     // Size/Downloads, and each wrapped description line.
-    if terminal.columns < 80 {
+    if terminal.columns < minimumWideTerminalWidth {
         metaRows = 3
     } else {
         metaRows = 2
@@ -368,7 +368,7 @@ func drawFileView() {
 
     sendTableTitle(fileRec.name, w)
     cells.clear()
-    if terminal.columns < 80 {
+    if terminal.columns < minimumWideTerminalWidth {
         cells.add("From: " + fileRec.uploader)
         sendLine(rowLine(cells, w))
         cells.clear()

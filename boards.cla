@@ -17,7 +17,7 @@ func boardRowCells(id: int, rec: text, cells: list of string) {
     cells.clear()
     cells.add(intStr(id))
     cells.add(dbExtractString(rec, bOffName))
-    if terminal.columns >= 80 {
+    if terminal.columns >= minimumWideTerminalWidth {
         cells.add(dbExtractString(rec, bOffDescription))
         cells.add(dbExtractString(rec, bOffNetwork))
     }
@@ -35,7 +35,7 @@ func drawBoardPicker() {
     boardListWidths(w)
     cells.add("ID")
     cells.add("Name")
-    if terminal.columns >= 80 {
+    if terminal.columns >= minimumWideTerminalWidth {
         cells.add("Description")
         cells.add("Network")
     }
@@ -90,16 +90,16 @@ func enterBoard() {
     displayPrompt()
 }
 
-// Content widths: narrow (<80 columns) is #/Subject (total 40), wide
-// adds From and Date (total 80).
+// Content widths: narrow is #/Subject (total 39), wide
+// adds From and Date (total 79).
 func postListWidths(w: list of int) {
     w.clear()
     w.add(3)
-    if terminal.columns < 80 {
-        w.add(30)
+    if terminal.columns < minimumWideTerminalWidth {
+        w.add(29)
         return
     }
-    w.add(31)
+    w.add(30)
     w.add(16)
     w.add(17)
 }
@@ -126,7 +126,7 @@ func drawPostList() {
     postListWidths(w)
     cells.add("#")
     cells.add("Subject")
-    if terminal.columns >= 80 {
+    if terminal.columns >= minimumWideTerminalWidth {
         cells.add("From")
         cells.add("Date")
     }
@@ -141,7 +141,7 @@ func drawPostList() {
                 cells.clear()
                 cells.add(intStr(postIds.count))
                 cells.add(dbExtractString(rec, pOffSubject))
-                if terminal.columns >= 80 {
+                if terminal.columns >= minimumWideTerminalWidth {
                     cells.add(dbExtractString(rec, pOffSender))
                     cells.add(dateTimeStr(rec.intAt(pOffCreated)))
                 }
@@ -244,11 +244,11 @@ var bodyPages: int = 1
 // Single-span content width for the post frame.
 func postViewWidths(w: list of int) {
     w.clear()
-    if terminal.columns < 80 {
-        w.add(36)
+    if terminal.columns < minimumWideTerminalWidth {
+        w.add(35)
         return
     }
-    w.add(76)
+    w.add(75)
 }
 
 func showPost(n: int) {
@@ -285,7 +285,7 @@ func drawPostView() {
     postViewWidths(w)
     // Frame from the top rule down: 8 lines plus one per meta row
     // (top, title, joint, meta, joint, joint, footer, bottom, prompt).
-    if terminal.columns < 80 {
+    if terminal.columns < minimumWideTerminalWidth {
         pageRows = terminal.rows - 10
     } else {
         pageRows = terminal.rows - 9
@@ -297,7 +297,7 @@ func drawPostView() {
 
     sendTableTitle(post.subject, w)
     cells.clear()
-    if terminal.columns < 80 {
+    if terminal.columns < minimumWideTerminalWidth {
         cells.add("From: " + post.sender)
         sendLine(rowLine(cells, w))
         cells.clear()

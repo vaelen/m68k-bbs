@@ -6,8 +6,18 @@
 
 enum TerminalType { ASCII, ANSI, VT100 }
 
+// Columns are stored as one LESS than the physical width, and layouts
+// are chosen against minimumWideTerminalWidth (79 for an 80-column
+// screen). SyncTERM and DOS ANSI.SYS wrap by themselves when the last
+// column is written, so a newline after a full 80-column line becomes
+// a blank line there; Unix terminals (and anything wider than 80) need
+// the newline. Never writing the last column sidesteps both: every
+// line ends before it and carries its own newline. Set the width only
+// through setColumns so the -1 lives in one place.
+const minimumWideTerminalWidth: int = 79
+
 record Terminal {
-    columns: int = 80
+    columns: int = 79                 // physical width - 1; see above
     rows:    int = 24
     color:   bool                     // defaults false
     type:    TerminalType             // defaults to ASCII
@@ -22,6 +32,15 @@ record Terminal {
 }
 
 var terminal: Terminal
+
+// The physical screen size, as the caller or NAWS reports it.
+func setColumns(actual: int) {
+    terminal.columns = actual - 1
+}
+
+func setRows(actual: int) {
+    terminal.rows = actual
+}
 
 // The 16 primary terminal colors, in ANSI order (value mod 8 = the
 // ANSI color code offset; 8 and up are the bright variants).

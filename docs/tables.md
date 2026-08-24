@@ -107,11 +107,20 @@ see `drawUserDetails` and `drawPostView`.
 
 ## Widths, 40 vs 80 columns
 
-Pick the layout with `if terminal.columns < 80` (never `==` — wider
-terminals may be added later). Current convention: a narrow variant
-that fits 40 columns and a wide one that fits 80. The user list
-(`userListWidths`) uses content widths 4/21/5 (= 40 total) narrow,
-plus 17/17 (= 80 total) wide.
+`terminal.columns` holds the physical width **minus one** (set only
+through `setColumns`; 79 for an 80-column screen). SyncTERM and DOS
+ANSI.SYS wrap on their own when the last column is written, so a
+newline after a full-width line shows as a blank line there, while
+Unix terminals and anything wider than 80 need that newline. Never
+writing the last column keeps every line short of it, and every line
+carries its own newline. A table's total width is
+`sum(content widths) + 3 × columns + 1`, so the layouts fit **79**
+wide and **39** narrow.
+
+Pick the layout with `if terminal.columns < minimumWideTerminalWidth`
+(never `==` — wider terminals may be added later). The user list
+(`userListWidths`) uses content widths 4/20/5 (= 39 total) narrow,
+plus 17/17 (= 79 total) wide.
 
 ## Paging
 

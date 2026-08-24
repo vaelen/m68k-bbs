@@ -161,14 +161,14 @@ func finishListPage(db: Database, nextId: int, size: int, menuScreen: string, w:
 
 // --- User list ---------------------------------------------------------
 
-// Content widths: narrow (<80 columns) is ID/Username/Access (total 40
-// with borders), wide adds Last On and Email (total 80).
+// Content widths: narrow is ID/Username/Access (total 39
+// with borders), wide adds Last On and Email (total 79).
 func userListWidths(w: list of int) {
     w.clear()
     w.add(4)
-    w.add(21)
+    w.add(20)
     w.add(5)
-    if terminal.columns < 80 { return }
+    if terminal.columns < minimumWideTerminalWidth { return }
     w.add(17)
     w.add(17)
 }
@@ -201,7 +201,7 @@ func drawUserListPage() {
     cells.add("ID")
     cells.add("Username")
     cells.add("Acc")
-    if terminal.columns >= 80 {
+    if terminal.columns >= minimumWideTerminalWidth {
         cells.add("Last On")
         cells.add("Email")
     }
@@ -215,7 +215,7 @@ func drawUserListPage() {
             cells.add(intStr(id))
             cells.add(dbExtractString(rec, uOffName))
             cells.add(accessName(rec[uOffAccess]))
-            if terminal.columns >= 80 {
+            if terminal.columns >= minimumWideTerminalWidth {
                 if rec.intAt(uOffLastSeen) != 0 {
                     cells.add(dateTimeStr(rec.intAt(uOffLastSeen)))
                 } else {
@@ -234,17 +234,17 @@ func drawUserListPage() {
 
 // --- Board list --------------------------------------------------------
 
-// Content widths: narrow (<80 columns) is ID/Name (total 40), wide is
-// ID/Name/Description/Network (total 80).
+// Content widths: narrow is ID/Name (total 39), wide is
+// ID/Name/Description/Network (total 79).
 func boardListWidths(w: list of int) {
     w.clear()
     w.add(4)
-    if terminal.columns < 80 {
-        w.add(29)
+    if terminal.columns < minimumWideTerminalWidth {
+        w.add(28)
         return
     }
     w.add(20)
-    w.add(34)
+    w.add(33)
     w.add(9)
 }
 
@@ -274,7 +274,7 @@ func drawBoardListPage() {
     boardListWidths(w)
     cells.add("ID")
     cells.add("Name")
-    if terminal.columns >= 80 {
+    if terminal.columns >= minimumWideTerminalWidth {
         cells.add("Description")
         cells.add("Network")
     }
@@ -301,11 +301,11 @@ func drawBoardListPage() {
 func detailWidths(w: list of int) {
     w.clear()
     w.add(11)
-    if terminal.columns < 80 {
-        w.add(22)
+    if terminal.columns < minimumWideTerminalWidth {
+        w.add(21)
         return
     }
-    w.add(62)
+    w.add(61)
 }
 
 func sendDetailRow(label: string, value: string, w: list of int) {
@@ -399,11 +399,11 @@ func drawBoardDetails() {
 func editWidths(w: list of int) {
     w.clear()
     w.add(14)
-    if terminal.columns < 80 {
-        w.add(19)
+    if terminal.columns < minimumWideTerminalWidth {
+        w.add(18)
         return
     }
-    w.add(59)
+    w.add(58)
 }
 
 func startEditUser() {
@@ -833,17 +833,17 @@ func areaAccessName(a: char): string {
     return "All"
 }
 
-// Content widths: narrow (<80 columns) is ID/Name (total 40), wide is
-// ID/Name/Description/Access (total 80).
+// Content widths: narrow is ID/Name (total 39), wide is
+// ID/Name/Description/Access (total 79).
 func areaListWidths(w: list of int) {
     w.clear()
     w.add(4)
-    if terminal.columns < 80 {
-        w.add(29)
+    if terminal.columns < minimumWideTerminalWidth {
+        w.add(28)
         return
     }
     w.add(20)
-    w.add(36)
+    w.add(35)
     w.add(7)
 }
 
@@ -873,7 +873,7 @@ func drawAreaListPage() {
     areaListWidths(w)
     cells.add("ID")
     cells.add("Name")
-    if terminal.columns >= 80 {
+    if terminal.columns >= minimumWideTerminalWidth {
         cells.add("Description")
         cells.add("Access")
     }
@@ -886,7 +886,7 @@ func drawAreaListPage() {
             cells.clear()
             cells.add(intStr(id))
             cells.add(dbExtractString(rec, aOffName))
-            if terminal.columns >= 80 {
+            if terminal.columns >= minimumWideTerminalWidth {
                 cells.add(dbExtractString(rec, aOffDescription))
                 cells.add(areaAccessName(rec[aOffAccess]))
             }

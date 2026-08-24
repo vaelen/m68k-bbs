@@ -55,7 +55,8 @@ Early development. Working today:
   lines: new-account flag, name, timestamp, duration) appended when a
   caller disconnects, with an `L) Recent Logins` main-menu table of
   the last 20
-- Terminal-aware rendering at 40 or 80 columns for ASCII, ANSI
+- Terminal-aware rendering at 40 or 80 columns (never writing the
+  last column, so SyncTERM/DOS auto-wrap and Unix terminals agree) for ASCII, ANSI
   (cp437), and VT100 (DEC Special Graphics) callers: box-drawn
   tables, paged views, color helpers (`docs/tables.md`)
 

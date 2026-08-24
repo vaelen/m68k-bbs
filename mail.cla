@@ -27,17 +27,17 @@ func loadInbox() {
     }
 }
 
-// Content widths: narrow (<80) is #/new/Subject (total 30, 40 cols
-// with borders and padding), wide adds From and Date (total 64 = 80).
+// Content widths: narrow is #/new/Subject (total 29, 39 cols
+// with borders and padding), wide adds From and Date (total 63 = 79).
 func inboxWidths(w: list of int) {
     w.clear()
     w.add(3)
     w.add(1)
-    if terminal.columns < 80 {
-        w.add(26)
+    if terminal.columns < minimumWideTerminalWidth {
+        w.add(25)
         return
     }
-    w.add(27)
+    w.add(26)
     w.add(16)
     w.add(17)
 }
@@ -62,7 +62,7 @@ func drawInbox() {
     cells.add("#")
     cells.add("")
     cells.add("Subject")
-    if terminal.columns >= 80 {
+    if terminal.columns >= minimumWideTerminalWidth {
         cells.add("From")
         cells.add("Date")
     }
@@ -81,7 +81,7 @@ func drawInbox() {
                 cells.add(" ")
             }
             cells.add(dbExtractString(rec, mOffSubject))
-            if terminal.columns >= 80 {
+            if terminal.columns >= minimumWideTerminalWidth {
                 cells.add(dbExtractString(rec, mOffFrom))
                 cells.add(dateTimeStr(rec.intAt(mOffCreated)))
             }
@@ -200,7 +200,7 @@ func drawMessageView() {
     var d: string = dateTimeStr(message.created)
 
     postViewWidths(w)
-    if terminal.columns < 80 {
+    if terminal.columns < minimumWideTerminalWidth {
         pageRows = terminal.rows - 10
     } else {
         pageRows = terminal.rows - 9
@@ -212,7 +212,7 @@ func drawMessageView() {
 
     sendTableTitle(message.subject, w)
     cells.clear()
-    if terminal.columns < 80 {
+    if terminal.columns < minimumWideTerminalWidth {
         cells.add("From: " + message.fromName)
         sendLine(rowLine(cells, w))
         cells.clear()
