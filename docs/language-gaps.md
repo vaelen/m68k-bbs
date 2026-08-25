@@ -2,10 +2,11 @@
 
 Language/runtime features the **file-area** feature set still needs from
 Clarus. The storage layer (`areasdb.cla`/`filesdb.cla`), the sysop area
-menu (`sysop.cla`), and the caller-facing browser (`files.cla`) are all
-built and working on today's toolchain; what follows is what the
-*remaining* file-area work — upload, download, sysop import, area-folder
-management, deletion cleanup, and faithful Mac-file preservation — needs
+menu (`sysop.cla`), the caller-facing browser (`files.cla`), and
+XMODEM/XMODEM-1K/YMODEM transfers in both directions (`xmodem.cla`)
+are all built and working on today's toolchain; what follows is what
+the *remaining* file-area work — sysop import, area-folder management,
+deletion cleanup, ZMODEM, and faithful Mac-file preservation — needs
 that the language does not yet provide.
 
 Normative API details, once shipped, live in
@@ -29,8 +30,11 @@ Worth stating so these aren't re-filed:
   `size()` works today (it just leaves a handle open briefly).
 
 One open question here is not a language gap but a **spike**: confirm on
-Snow that `file.open` accepts an HFS full path (`BBS HD:Files:x`). If it
-does not, areas stay flat next to the app with no format change.
+Snow that `file.open` accepts an HFS full path (`BBS HD:Files:x`). The
+partial-path form (a leading colon: an area folder of `:files`) is in
+live use and works; the full-path form is still unconfirmed. If it
+does not work, such areas stay flat next to the app with no format
+change.
 
 ## Needed features, roughly by value
 
