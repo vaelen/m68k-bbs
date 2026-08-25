@@ -343,7 +343,13 @@ inputChar (bbs.cla) → processInput`.
   offset, ZEOF → `xferReceived` → ZRINIT for the next file, ZFIN
   answered and the sender's `OO` swallowed before `xferDone`; five
   CANs = peer cancel, 8 CAN + 8 BS = ours; 10 s waits, ten-error
-  ceiling. `tests/zmodem-test.cla`; the e2e script's `Z`/`RZ` legs.
+  ceiling. Resume via a `ZCRC`/`text.crc32` prefix check: the sender
+  answers `ZCRC` (download resume rides the existing `ZRPOS`), and on
+  upload a partial with no DB entry is ZCRC-verified and resumed from
+  its end or truncated+restarted on a mismatch (`zmFileCrc`,
+  `zrWaitCrc`). Multi-file uploads loop the receiver over each `ZFILE`.
+  `tests/zmodem-test.cla`; the e2e script's `Z`/`RZ`, multi-upload and
+  resume legs. Deferred: tag-and-download multi-file (`TODO.md`).
 - `loginlog.cla` — the login log, `Logins.txt` (TEXT/ttxt): one
   65-byte fixed-width, tab-delimited text line per session — new flag
   (`*`/space), name padded to 31, `dateTimeStr` of the login, padded

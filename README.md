@@ -46,8 +46,9 @@ Early development. Working today:
   browser (area picker → paged file list → framed file view, with
   sysop-only areas and pending files hidden from ordinary callers)
   are in, plus XMODEM / XMODEM-1K / YMODEM / ZMODEM downloads and uploads
-  (uploads land pending sysop approval — `docs/file-transfers.md`);
-  Kermit comes next.
+  (uploads land pending sysop approval; ZMODEM resumes an interrupted
+  transfer either way and takes multi-file batches —
+  `docs/file-transfers.md`); Kermit comes next.
 - Sysop area: paged user/board/file-area lists, detail cards,
   lettered-field editors, deletion with confirmation, board and file-
   area creation, post deletion; safety rails so the system always

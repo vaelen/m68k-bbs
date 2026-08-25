@@ -75,6 +75,16 @@ func readAll(path: string): text {
     return t
 }
 
+// CRC-32 (init/final 0xFFFFFFFF) of the first n bytes of a file on
+// disk; n == 0 or past the end means the whole file. Matches the
+// engine's zmFileCrc / the ZCRC handshake convention.
+func crc32OfFile(path: string, n: int): int {
+    var t: text = readAll(path)
+    var len: int = n
+    if len == 0 or len > t.length { len = t.length }
+    return t.crc32(0xFFFFFFFF, 0, len) ^ 0xFFFFFFFF
+}
+
 // Build a peer frame with the engine's own builders and feed it in.
 // (The builders touch zmWire and zmLastSent only; the receiver never
 // reads zmUseCrc32, so the test may set it to pick the peer's width.)
@@ -467,6 +477,68 @@ on App.startCLI(args: list of string) {
     peerData(zmZFILE, 0, t, zmZCRCW, true)
     zmodemAbort()
     expect(zmDir == ' ' and not zrHave and doneCalls == 0, "recv: abort mid-file: closed, silent")
+
+    // 6. Download resume: the sender answers a ZCRC request
+    reset()
+    zmodemSendStart("zm3000.bin", "zm3000.bin")
+    peerHex(zmZRINIT, (zmCANFDX | zmCANFC32) << 24)      // -> ZFILE, zsWaitRpos
+    mark = sent.length
+    peerHex(zmZCRC, 1024)
+    parseAt(mark)
+    expect(zmHdrType == zmZCRC and zmHdrPos == crc32OfFile("zm3000.bin", 1024), "send: ZCRC(1024) -> ZCRC reply, crc of the first 1024 bytes")
+    mark = sent.length
+    peerHex(zmZCRC, 0)                                    // 0 = whole file
+    parseAt(mark)
+    expect(zmHdrType == zmZCRC and zmHdrPos == crc32OfFile("zm3000.bin", 3000), "send: ZCRC(0) -> crc of the whole file")
+    mark = sent.length
+    peerHex(zmZRPOS, 1024)                                // then the receiver resumes
+    parseAt(mark)
+    expect(zmHdrType == zmZDATA and zmHdrPos == 1024 and zmBuf == sample(1024, 1024), "send: after ZCRC, ZRPOS(1024) resumes at 1024")
+
+    // 7. Upload resume: an existing partial is CRC-verified, then resumed
+    makeFile("zresume.bin", 1024)                        // bytes (i*7)%256 == sample(0,1024)
+    reset()
+    zmodemRecvStart("")
+    mark = sent.length
+    t = "zresume.bin\x005000\x00"
+    peerData(zmZFILE, zmZCBIN << 24, t, zmZCRCW, true)
+    expect(isHex(mark, zmZCRC, 1024) and zrState == zrWaitCrc and zrResumeLen == 1024, "recv: ZFILE names a 1024-byte partial -> ZCRC(1024)")
+    mark = sent.length
+    peerHex(zmZCRC, crc32OfFile("zresume.bin", 1024))    // matching CRC
+    expect(isHex(mark, zmZRPOS, 1024) and zrWritten == 1024 and zrState == zrWaitData, "recv: matching CRC -> resume at 1024")
+    mark = sent.length
+    peerData(zmZDATA, 1024, sample(1024, 1024), zmZCRCW, true)
+    expect(isHex(mark, zmZACK, 2048) and zrWritten == 2048, "recv: resumed data appends at the partial's end")
+    mark = sent.length
+    peerBin(zmZEOF, 2048, true)
+    expect(recvCalls == 1 and recvName == "zresume.bin" and recvBytes == 2048, "recv: resumed upload completes")
+    expect(readAll("zresume.bin") == sample(0, 2048), "recv: file = partial + appended bytes")
+
+    // 8. Upload resume: a stale partial (wrong CRC) is truncated and restarted
+    makeFile("zstale.bin", 1024)
+    reset()
+    zmodemRecvStart("")
+    mark = sent.length
+    t = "zstale.bin\x003000\x00"
+    peerData(zmZFILE, zmZCBIN << 24, t, zmZCRCW, true)
+    expect(isHex(mark, zmZCRC, 1024), "recv: stale case also asks ZCRC(1024)")
+    mark = sent.length
+    peerHex(zmZCRC, 0x12345678)                          // deliberately not the partial's CRC
+    expect(isHex(mark, zmZRPOS, 0) and zrWritten == 0, "recv: CRC mismatch -> restart at 0")
+    mark = sent.length
+    peerData(zmZDATA, 0, sample(0, 700), zmZCRCW, true)
+    expect(isHex(mark, zmZACK, 700) and zrWritten == 700, "recv: restart writes from 0")
+    peerBin(zmZEOF, 700, true)
+    expect(recvBytes == 700 and readAll("zstale.bin") == sample(0, 700), "recv: restarted file is the fresh bytes only")
+
+    // 9. Upload resume: a 0-byte leftover is just recreated (no ZCRC)
+    makeFile("zempty.bin", 0)
+    reset()
+    zmodemRecvStart("")
+    mark = sent.length
+    t = "zempty.bin\x00100\x00"
+    peerData(zmZFILE, zmZCBIN << 24, t, zmZCRCW, true)
+    expect(isHex(mark, zmZRPOS, 0) and zrState == zrWaitData and zrResumeLen == 0, "recv: 0-byte leftover -> fresh ZRPOS(0), no ZCRC")
 
     if failures == 0 {
         log("zmodem: all passed")

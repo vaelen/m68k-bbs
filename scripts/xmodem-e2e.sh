@@ -103,6 +103,9 @@ fi
 bin/clarusc emit --rtdir vendor/runtime/clarus/ -o "$WORK/harness.c" "$WORK/harness.cla"
 cc -O1 -I vendor/runtime/host -o "$WORK/harness" "$WORK/harness.c" vendor/runtime/host/rt.c
 head -c 3000 /dev/urandom > "$WORK/sample.bin"   # 2 x 1K + a 952-byte tail
+head -c 1000 /dev/urandom > "$WORK/m1.bin"
+head -c 2000 /dev/urandom > "$WORK/m2.bin"
+head -c 1500 /dev/urandom > "$WORK/m3.bin"
 
 # socat EXEC: wires the driver's stdin AND stdout to the socket, so the
 # CONNECT line reaches the scanner and lrz then owns both directions.
@@ -160,6 +163,87 @@ EOF
     fi
 }
 
+
+# Multi-file upload: lsz sends three files in one session; the receiver
+# loops ZFILE..ZEOF..ZRINIT (YMODEM: block 0 per file). All three land.
+run_up_multi() {   # $1 = mode (RZ/RY), $2 = lsz flags
+    (cd "$WORK/recv" && CLARUS_SERIAL_MODEM=listen:$PORT ../harness $1 > "../harness-multi-$1.log" 2>&1) &
+    HARNESS=$!
+    sleep 1
+    cat > "$WORK/drive.sh" <<EOF
+#!/bin/sh
+printf '\r\nCONNECT 57600\r\n'; sleep 1
+cd "$WORK" && exec lsz $2 m1.bin m2.bin m3.bin
+EOF
+    chmod +x "$WORK/drive.sh"
+    rm -f "$WORK/recv/m1.bin" "$WORK/recv/m2.bin" "$WORK/recv/m3.bin"
+    socat TCP:localhost:$PORT EXEC:"$WORK/drive.sh" 2>"$WORK/lsz-multi-$1.log" || true
+    sleep 1
+    kill $HARNESS 2>/dev/null || true
+    wait $HARNESS 2>/dev/null || true
+    if cmp -s "$WORK/recv/m1.bin" "$WORK/m1.bin" \
+        && cmp -s "$WORK/recv/m2.bin" "$WORK/m2.bin" \
+        && cmp -s "$WORK/recv/m3.bin" "$WORK/m3.bin" \
+        && [ "$(grep -c 'received ' "$WORK/harness-multi-$1.log")" -eq 3 ] \
+        && grep -q "transfer ok" "$WORK/harness-multi-$1.log"; then
+        echo "ok: multi-upload $1 (3 files)"
+    else
+        echo "FAIL: multi-upload $1"; cat "$WORK/lsz-multi-$1.log" "$WORK/harness-multi-$1.log"; exit 1
+    fi
+}
+
+# Upload resume: a partial of sample.bin already sits in recv/; lsz -r
+# ZCRC-verifies it and resumes rather than restarting (the receiver's
+# zrWaitCrc path against a real sender).
+run_up_resume() {
+    head -c 1500 "$WORK/sample.bin" > "$WORK/recv/sample.bin"
+    (cd "$WORK/recv" && CLARUS_SERIAL_MODEM=listen:$PORT ../harness RZ > "../harness-upres.log" 2>&1) &
+    HARNESS=$!
+    sleep 1
+    cat > "$WORK/drive.sh" <<EOF
+#!/bin/sh
+printf '\r\nCONNECT 57600\r\n'; sleep 1
+cd "$WORK" && exec lsz --zmodem -r -b sample.bin
+EOF
+    chmod +x "$WORK/drive.sh"
+    socat TCP:localhost:$PORT EXEC:"$WORK/drive.sh" 2>"$WORK/lsz-upres.log" || true
+    sleep 1
+    kill $HARNESS 2>/dev/null || true
+    wait $HARNESS 2>/dev/null || true
+    if cmp -s "$WORK/recv/sample.bin" "$WORK/sample.bin" \
+        && grep -q "resuming sample.bin" "$WORK/harness-upres.log" \
+        && grep -q "transfer ok" "$WORK/harness-upres.log"; then
+        echo "ok: upload resume (ZMODEM -r)"
+    else
+        echo "FAIL: upload resume"; cat "$WORK/lsz-upres.log" "$WORK/harness-upres.log"; exit 1
+    fi
+}
+
+# Download resume: a partial already sits in the receiver's dir; lrz -r
+# resumes from it (the sender obeying ZRPOS>0 and answering ZCRC).
+run_dl_resume() {
+    head -c 1500 "$WORK/sample.bin" > "$WORK/recv/zsample.bin"
+    (cd "$WORK" && CLARUS_SERIAL_MODEM=listen:$PORT ./harness Z > "harness-dlres.log" 2>&1) &
+    HARNESS=$!
+    sleep 1
+    cat > "$WORK/drive.sh" <<EOF
+#!/bin/sh
+printf '\r\nCONNECT 57600\r\n'; sleep 1
+cd "$WORK/recv" && exec lrz --zmodem -r -b
+EOF
+    chmod +x "$WORK/drive.sh"
+    socat TCP:localhost:$PORT EXEC:"$WORK/drive.sh" 2>"$WORK/lrz-dlres.log" || true
+    sleep 1
+    kill $HARNESS 2>/dev/null || true
+    wait $HARNESS 2>/dev/null || true
+    if cmp -s "$WORK/recv/zsample.bin" "$WORK/sample.bin" \
+        && grep -q "transfer ok" "$WORK/harness-dlres.log"; then
+        echo "ok: download resume (ZMODEM -r)"
+    else
+        echo "FAIL: download resume"; cat "$WORK/lrz-dlres.log" "$WORK/harness-dlres.log"; exit 1
+    fi
+}
+
 run_one X "-X -b" checksum.bin 3072 checksum.bin
 run_one X "-X -b -c" crc.bin 3072 crc.bin
 run_one 1 "-X -b -c" xmodem1k.bin 3072 xmodem1k.bin
@@ -169,4 +253,8 @@ run_up R1 "-X -b -k" upload.bin 3072
 run_up RY "--ymodem -b" sample.bin 3000
 run_one Z "--zmodem -b" zsample.bin 3000 ""    # ZMODEM names the file too
 run_up RZ "--zmodem -b" sample.bin 3000
+run_up_multi RZ "--zmodem -b"
+run_up_multi RY "--ymodem -b"
+run_up_resume
+run_dl_resume
 echo "xmodem e2e passed"

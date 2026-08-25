@@ -7,7 +7,9 @@ side (areas, file entries, `filePath`) is `docs/files.md`.
 
 **Status:** XMODEM, XMODEM-1K, YMODEM and ZMODEM in both directions —
 download (BBS → caller) and upload (caller → BBS, entered pending sysop
-approval). Data fork only. No Kermit, no MacBinary yet.
+approval). ZMODEM resumes an interrupted transfer either way, and a
+ZMODEM or YMODEM upload takes several files in one batch. Data fork
+only. No Kermit, no MacBinary yet.
 
 ## The plumbing
 
@@ -151,7 +153,8 @@ eight CANs and eight backspaces.
 |---|---|---|
 | waitRinit | start | `rz` CR + ZRQINIT (hex); repeat every 10 s, give up at 60 s |
 | waitRinit | ZRINIT | note CANFC32/ESCCTL; ZFILE (binary) + `name NUL size NUL` subpacket (ZCRCW) → waitRpos |
-| waitRpos | ZRPOS(p) | ZDATA(p) + 1 KB subpacket (ZCRCW) → waitAck |
+| waitRpos/waitAck | ZCRC(n) | reply ZCRC with the CRC-32 of our first n bytes (0 = all) so the receiver can verify a partial |
+| waitRpos | ZRPOS(p) | resume at p: ZDATA(p) + 1 KB subpacket (ZCRCW) → waitAck |
 | waitRpos | ZSKIP | receiver has it: ZFIN → waitFin, ends `xferDone(false)` |
 | waitAck | ZACK(p) | continue from p: next ZDATA + subpacket, or ZEOF(size) → waitEofAck |
 | waitAck | ZRPOS(p) | error + 1; rewind to p |
@@ -166,12 +169,21 @@ nothing is in flight while the event loop runs. ponytail: ZCRCG
 streaming off a fast timer if a real modem link ever needs the
 throughput.
 
+**Download resume** needs nothing special from the sender beyond
+obeying `ZRPOS(p)`, which it already does — a receiver resuming an
+interrupted download (`lrz -r`, or a terminal's resume option) keeps
+its partial and replies `ZRPOS(partial length)` to our ZFILE. A
+receiver that verifies first sends `ZCRC(n)`; we answer with the
+CRC-32 of our file's first n bytes (`zmFileCrc`, chunked through
+`text.crc32`).
+
 **Upload** (`zmodemRecvStart(folder)`):
 
 | State | Event | Action |
 |---|---|---|
 | waitFile | start, ZRQINIT, 5 s silence | ZRINIT (hex; 1 KB buffer, CANFDX + CANFC32); ten unanswered → cancel |
-| waitFile | ZFILE + subpacket | name (last path segment) through `xferAcceptName`; refused → ZSKIP; else create `<folder>:<name>`, ZRPOS(0) → waitData |
+| waitFile | ZFILE + subpacket | name (last path segment) through `xferAcceptName`; refused → ZSKIP; an existing partial (no DB entry) → ask ZCRC(size) → waitCrc; else create `<folder>:<name>`, ZRPOS(0) → waitData |
+| waitCrc | ZCRC(crc) | crc matches our partial → resume: ZRPOS(size) → waitData; mismatch → truncate, ZRPOS(0) → waitData |
 | waitFile | ZSINIT + subpacket | ZACK (the attention string is ignored) |
 | waitData | ZDATA(p) | p must be the running offset, else ZRPOS(offset) and the frame is junk |
 | waitData | good subpacket | `writeAt(offset)`; ZCRCW/ZCRCQ → ZACK(offset) |
@@ -181,7 +193,21 @@ throughput.
 | waitOO | `OO` or 1 s | `xferDone(true)` — the `OO` must not reach the menus |
 | any | ZABORT/ZFERR | ZFIN, `xferDone(false)` |
 
-A ZMODEM batch describes each received file in turn, like YMODEM's.
+A ZMODEM batch describes each received file in turn, like YMODEM's —
+`lsz file1 file2 file3` (and `lsz --ymodem …`) sends them back to back
+and the receiver loops ZFILE→ZEOF→ZRINIT per file.
+
+**Upload resume:** an interrupted upload leaves a partial in the area
+folder with no database entry (`xferAcceptName` only refuses names that
+have an entry, so a partial passes). When a later ZFILE names it, the
+receiver opens the partial and asks the sender for the CRC-32 of its
+own first *size* bytes (`ZCRC`); if it matches our partial we reply
+`ZRPOS(size)` and the sender streams from there, otherwise the on-disk
+file is a different file of the same name — we truncate it and restart
+at 0. `lsz -r` and plain `lsz` both answer the ZCRC and honor the
+`ZRPOS`. The completed file becomes a normal pending entry. (There is
+still no `file.delete`, so an *abandoned* partial lingers until its
+name is uploaded again — now that just resumes or overwrites it.)
 The 1 KB buffer we advertise is the protocol's way of asking a sender
 to wait for ZACK after each 1 KB, and `lsz` **ignores it**: it streams
 the whole file as back-to-back ZCRCG subpackets at the line rate. The
@@ -333,6 +359,9 @@ Each of these reuses the four hooks and two callbacks unchanged.
   firing keeps the line busy while the receive pump drains between
   passes) instead of waiting for a ZACK per subpacket; the ZRPOS
   rewind already works. Only worth it on a link with real latency.
+- **Multi-file downloads** (tag-and-download): the engines can already
+  loop a queue, but the caller has no way to tag several files on the
+  list. The UI and engine sketch is in the repo-root `TODO.md`.
 - **Kermit** (`kermit.cla`): packet engine shaped like XMODEM's;
   `text.crc16` (CRC-16/KERMIT) fits as-is; adds control-character
   prefixing and the S/F/D/Z/B negotiation.

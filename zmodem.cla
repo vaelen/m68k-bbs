@@ -15,6 +15,10 @@
 // ponytail: ZCRCW per subpacket on the way out; ZCRCG streaming off a
 // fast timer if a real modem link ever needs the throughput. One file
 // per download; an upload batch takes every file the sender offers.
+// Resume: a ZCRC exchange (text.crc32 over a file prefix) verifies a
+// partial before continuing -- the sender answers ZCRC for a download,
+// the receiver asks ZCRC of an interrupted upload's partial and either
+// resumes from its end or, on a mismatch, truncates and restarts.
 // Design: docs/file-transfers.md.
 
 const zmZPAD: char = '*'
@@ -38,6 +42,7 @@ const zmZRPOS: int = 9
 const zmZDATA: int = 10
 const zmZEOF: int = 11
 const zmZFERR: int = 12
+const zmZCRC: int = 13
 
 // subpacket frame ends and the two rubout escapes
 const zmZCRCE: char = 'h'
@@ -263,6 +268,31 @@ func zmSubpacket(data: text, fe: char) {
         zmPut(char(crc >> 8))
         zmPut(char(crc))
     }
+}
+
+// CRC-32 of the first n bytes of an open file (n == 0 means the whole
+// file), read in zmMaxData chunks and folded with text.crc32's
+// chunking so no single buffer holds the file. Used by the ZCRC
+// resume handshake in both directions.
+// ponytail: this blocks the event loop for the whole pass -- a few
+// seconds for a several-hundred-KB partial on the 68k. Resumes are
+// rare and the areas here are small; spread it across ticks only if a
+// real link makes the receiver's ZCRC timeout bite.
+func zmFileCrc(fh: filehandle, n: int): int {
+    var crc: int = 0xFFFFFFFF
+    var pos: int = 0
+    var want: int = 0
+    var buf: text
+    while pos < n {
+        want = n - pos
+        if want > zmMaxData { want = zmMaxData }
+        if not fh.readAt(pos, want, buf) { break }
+        if buf.length == 0 { break }
+        crc = buf.crc32(crc, 0, buf.length)
+        pos = pos + buf.length
+        if buf.length < want { break }
+    }
+    return crc ^ 0xFFFFFFFF
 }
 
 // --- Parsing frames (both directions) -----------------------------------
@@ -590,6 +620,9 @@ func zsHeader() {
             zmFinish(zsOk)
         }
     }
+    case zmZCRC {
+        zsSendCrc(zmHdrPos)             // the receiver is verifying a partial
+    }
     case zmZNAK { zsRetry() }
     case zmZABORT, zmZFERR {
         log("ZMODEM: receiver aborted.")
@@ -643,6 +676,17 @@ func zsSendFin() {
     zsState = zsWaitFin
 }
 
+// The receiver asked for the CRC-32 of our first n bytes (0 = the whole
+// file) to check a partial it holds before resuming: answer with a ZCRC
+// header carrying it. We stay put; the receiver follows with ZRPOS.
+func zsSendCrc(n: int) {
+    var len: int = n
+    if len == 0 or len > zsSize { len = zsSize }
+    zmWire = ""
+    zmHexHeader(zmZCRC, zmFileCrc(zsFile, len))
+    zmSend()
+}
+
 // ZNAK, a bad header, or a timeout: resend, up to the error ceiling.
 func zsRetry() {
     zmErrors = zmErrors + 1
@@ -680,6 +724,7 @@ func zsTick() {
 enum ZrState {
     zrIdle
     zrWaitFile       // ZRINIT sent
+    zrWaitCrc        // ZFILE named an existing partial; asked the sender for its CRC
     zrWaitData       // ZRPOS sent, a file is open
     zrWaitOO         // ZFIN answered
 }
@@ -690,6 +735,7 @@ var zrName: string(63)
 var zrFile: filehandle
 var zrHave: bool = false
 var zrWritten: int = 0
+var zrResumeLen: int = 0    // an interrupted upload's partial size, awaiting ZCRC
 var zrOO: int = 0
 
 func zmodemRecvStart(folder: string) {
@@ -753,6 +799,9 @@ func zrHeader() {
         zmSend()
         zrState = zrWaitOO
         zrOO = 0
+    }
+    case zmZCRC {
+        if zrState == zrWaitCrc { zrCrcReply(zmHdrPos) }
     }
     case zmZNAK { zmResend() }
     case zmZABORT, zmZFERR {
@@ -825,15 +874,50 @@ func zrFileInfo() {
     } else {
         path = zrFolder + ":" + name
     }
+    zrName = name
+    // A file already here with no database entry (xferAcceptName just
+    // confirmed no entry) is a partial from an interrupted upload:
+    // open it and ask the sender for the CRC of its first size bytes
+    // before we decide to resume or start over. Otherwise create fresh.
+    zrFile = file.open(path)
+    if zrFile != nil {
+        zrResumeLen = zrFile.size()
+        if zrResumeLen > 0 {
+            zrHave = true
+            zrState = zrWaitCrc
+            zmWire = ""
+            zmHexHeader(zmZCRC, zrResumeLen)
+            zmSend()
+            zmTimer = 0
+            return
+        }
+        zrFile.close()
+        zrFile = nil
+    }
     zrFile = file.create(path, "BINA", "68BB")
     if zrFile == nil {
         log("Upload: cannot create " + name + ": " + lastError.message)
         zmCancel()
         return
     }
-    zrName = name
     zrHave = true
     zrWritten = 0
+    zrState = zrWaitData
+    zrSendRpos()
+}
+
+// The sender answered our ZCRC: if the CRC of its first zrResumeLen
+// bytes matches our partial's, resume from there; otherwise the on-disk
+// partial is a different file of the same name -- truncate and restart.
+func zrCrcReply(theirCrc: int) {
+    if zmFileCrc(zrFile, zrResumeLen) == theirCrc {
+        zrWritten = zrResumeLen
+        log("Upload: resuming " + zrName + " at " + string(zrWritten))
+    } else {
+        zrFile.setSize(0)
+        zrWritten = 0
+        log("Upload: partial " + zrName + " differs; restarting")
+    }
     zrState = zrWaitData
     zrSendRpos()
 }
@@ -849,6 +933,8 @@ func zrBad() {
     }
     if zrState == zrWaitData {
         zrSendRpos()
+    } else if zrState == zrWaitCrc {
+        zmResend()
     } else if zrState == zrWaitFile {
         zrSendRinit()
     }
@@ -876,6 +962,18 @@ func zrTick() {
                 zmCancel()
             } else {
                 zrSendRinit()
+            }
+        }
+    }
+    case zrWaitCrc {
+        if zmTimer >= zmWaitTicks {
+            zmErrors = zmErrors + 1
+            if zmErrors >= zmMaxErrors {
+                log("Upload: no CRC answer.")
+                zmCancel()
+            } else {
+                zmResend()
+                zmTimer = 0
             }
         }
     }
