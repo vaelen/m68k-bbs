@@ -771,6 +771,7 @@ func termTypeName(t: TerminalType): string {
 
 func applyTerminal(t: TerminalType, cols: int, colorOn: bool) {
     var msg: string
+    var pf: int = 0
     terminal.type = t
     setColumns(cols)
     setRows(24)
@@ -789,6 +790,12 @@ func applyTerminal(t: TerminalType, cols: int, colorOn: bool) {
         }
         if unreadCount(user.id) > 0 {
             sendLine("You have " + intStr(unreadCount(user.id)) + " new message(s).")
+        }
+        if user.access == accessSysop {
+            pf = pendingFileCount()
+            if pf > 0 {
+                sendLine(intStr(pf) + " file(s) are awaiting approval.")
+            }
         }
         returning = false
     }

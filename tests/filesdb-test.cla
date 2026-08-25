@@ -27,6 +27,7 @@ func heapSize(): int {
 
 on App.startCLI(args: list of string) {
     var desc3: text
+    var n1: int = 0
     var id1: int
     var id2: int
     var id3: int
@@ -120,6 +121,20 @@ on App.startCLI(args: list of string) {
     expect(fileLongDesc(id1).length == 0, "cleared long description is empty")
     expect(not setFileLongDesc(99, desc3), "missing entry rejected")
     filesClose()
+
+    // pending-approval count across areas. The suites share test.sh's
+    // scratch dir, so assert relative to whatever Areas/ARE state the
+    // earlier suites (and this one) left behind.
+    expect(pendingFileCount() == 0, "pendingFileCount is 0 with no Areas database")
+    expect(areasOpen(), "areas db opens")
+    expect(createArea("PendOne", "", "", '\x00') >= 1, "area for pending test created")
+    expect(createArea("PendTwo", "", "", '\x00') >= 2, "second area created")
+    n1 = pendingFileCount()
+    expect(filesOpen(2), "area 2 reopens")
+    expect(addFile("PEND.BIN", "dave", "awaiting", 5, fileFlagPending, none) >= 1, "pending file added")
+    filesClose()   // the counter's contract: no area database open
+    expect(pendingFileCount() == n1 + 1, "pending count went up by one")
+    areasClose()
 
     if failures > 0 {
         log("filesdb-test: FAILED")

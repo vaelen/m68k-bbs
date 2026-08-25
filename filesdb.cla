@@ -210,6 +210,35 @@ func saveFile(): bool {
 // The physical file's path: the loaded `area`'s folder joined to the
 // entry's name with ":", or the bare name when the folder is empty
 // (the app's own directory). Empty if the entry doesn't exist.
+// Files pending sysop approval across every area, for the sysop login
+// banner. Opens each ARE<nn> database on its own handle (never
+// creating one, never touching the filesDb global). Call it with no
+// area's file database open -- a second handle on an area that is open
+// for writing can read stale pages -- which login time satisfies.
+func pendingFileCount(): int {
+    var n: int = 0
+    var aid: int = 1
+    var id: int = 0
+    var db: Database
+    var rec: text
+    while aid < areasNextId() {
+        db = dbOpen(filesName(aid), "68BB")
+        if dbIsOpen(db) {
+            id = 1
+            while id < dbNextRecordId(db) {
+                rec = dbFind(db, id)
+                if rec.length == fileRecordSize and (rec.intAt(fOffFlags) & fileFlagPending) != 0 {
+                    n = n + 1
+                }
+                id = id + 1
+            }
+            dbClose(db)
+        }
+        aid = aid + 1
+    }
+    return n
+}
+
 // Replace entry `id`'s long description: append the new text to the
 // heap and flush BEFORE the journaled header update (the addFile
 // ordering), so a crash never leaves a header pointing at missing
