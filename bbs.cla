@@ -28,7 +28,7 @@ include "toolbox/osutils.cla"   // DateTimeRec / SecondsToDate (via --rtdir)
 
 app BBS {
     name: "68kBBS"
-    version: "0.1"
+    version: "0.2"
     author: "Andrew C. Young"
     about: "A simple BBS for classic Macs."
     id: "68BB"
