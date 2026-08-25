@@ -298,7 +298,7 @@ inputChar (bbs.cla) → processInput`.
   `startDownload` → `xferStart`; `xferDone` bumps the download count
   and redraws the view), sysop-only `X` delete and `A` approve on a
   pending entry, `E` edit descriptions (short prompt, then the line
-  editor with `editTarget 'F'`; `/S` replaces the long description
+  editor pre-loaded via `seedEditorBody` with `editTarget 'F'`; `/S` replaces the long description
   via `setFileLongDesc`, `/A` keeps it), `Q` up one level. The list's
   `U` uploads (`upproto` → `upname` for XMODEM → `xferStartReceive`);
   `xferReceived` queues each received file and the describe loop then
@@ -337,7 +337,8 @@ inputChar (bbs.cla) → processInput`.
 - `editor.cla` — WWIV-style line editor for new posts, replies,
   private mail, and file long descriptions (`editTarget` picks the
   save target; `'F'` routes /S and /A to files.cla's
-  `fileDescSave`/`fileDescAbort`). Each numbered
+  `fileDescSave`/`fileDescAbort`, and `seedEditorBody(body)` pre-loads
+  the rows from an existing body for edits). Each numbered
   line is one display row (`lineLimit = terminal.columns - 5`, set by
   `editBodyPrompt`): typing past the end of a row starts the next row
   with no newline in the text (`inputSoft`), Enter ends a row with a

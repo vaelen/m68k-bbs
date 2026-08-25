@@ -190,10 +190,14 @@ everyone but sysops until one opens the file and presses
 failed transfer still describes whatever fully arrived.
 
 Sysops also get `E) Edit Descriptions` in the file view:
-`Description [<current>]:` (empty keeps it), then the same editor for
-the long description — `/S` replaces it (`setFileLongDesc`: the old
-heap bytes are orphaned, like deleted posts), `/A` keeps it; the
-short description saves either way.
+`Description [<current>]:` (empty keeps it), then the same editor
+**pre-loaded with the existing long description** (`seedEditorBody`
+splits it back into the editor's hard/soft rows and lists it) — `/S`
+replaces it (`setFileLongDesc`: the old heap bytes are orphaned, like
+deleted posts), `/A` keeps it; the short description saves either
+way. The view re-reads and re-wraps the description after the save,
+and a sysop's login banner counts pending files across all areas
+(`pendingFileCount`).
 
 ## Testing
 

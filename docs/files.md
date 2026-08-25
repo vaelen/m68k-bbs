@@ -7,10 +7,11 @@ for the message-board databases this mirrors). Pre-v1: no backward
 compatibility is promised — data structures may change freely, always
 starting from a clean database.
 
-The sysop area management (`sysop.cla`) and the caller-facing browser
-(`files.cla`) are built on top of the API below; upload/download
-transfers are a later step. This document covers the storage layer;
-the two UIs are summarized under "The UIs" at the end.
+The sysop area management (`sysop.cla`), the caller-facing browser
+(`files.cla`), and the XMODEM/XMODEM-1K/YMODEM transfers
+(`docs/file-transfers.md`) are built on top of the API below. This
+document covers the storage layer; the two UIs are summarized under
+"The UIs" at the end.
 
 ## Shape
 
@@ -201,7 +202,7 @@ same table senders and paging helpers.
   and `U` (on the list) uploads, with descriptions prompted after the
   transfer (`docs/file-transfers.md`).
 
-## Later steps (what this layout already supports)
+## Feature status (what this layout supports)
 
 - **Import** (sysop types a name): `file.open(filePath)` to verify,
   `size()`, then `addFile`.

@@ -17,13 +17,11 @@ git history; every one of those landed and is in the pinned toolchain.
 
 Worth stating so these aren't re-filed:
 
-- **Data-fork upload and download over the modem.** Reading a stored
-  file (`file.open` + `readAt`) and streaming it (`conn.send`), and
-  receiving bytes (`on conn.received`) and writing them
-  (`file.create`/`writeAt`/`append`), are all in the pinned runtime. A
-  plain data-fork transfer is implementable now; XMODEM/ZMODEM framing
-  is a *library*, not a language feature, and `every N ticks` timers
-  cover its ACK/NAK timeouts. (Design: `superpowers/specs/2026-08-25-file-transfer-design.md`.)
+- **Data-fork upload and download over the modem.** Shipped: XMODEM,
+  XMODEM-1K and YMODEM run in both directions on today's toolchain
+  (`xmodem.cla`, `docs/file-transfers.md`) — protocol framing is a
+  *library*, not a language feature, and `every N ticks` timers cover
+  the ACK/NAK timeouts. ZMODEM waits only on `crc32` (§8 below).
 - **XMODEM's CRC.** `text.crc16` is CRC-16/KERMIT, not XMODEM's; a
   ten-line bitwise loop in `xmodem.cla` covers it for now. The
   optimized builtin is §8 below — a speed-up, not a blocker.
