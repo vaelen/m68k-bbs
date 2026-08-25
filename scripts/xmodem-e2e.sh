@@ -1,11 +1,11 @@
 #!/bin/sh
-# XMODEM / XMODEM-1K / YMODEM download end to end on the host lane
-# against a real receiver: a small CLI harness (scanner + telnet +
-# xmodem, the same byte path bbs.cla uses, minus the menus -- the host
-# runtime has no UI lane, so bbs.cla itself only runs on the Mac)
-# listens on TCP and on CONNECT either sends sample.bin (arg X/1/Y;
-# lrz receives it) or receives into recv/ (arg RX/R1/RY; lsz sends
-# sample.bin). Needs socat and lrzsz.
+# XMODEM / XMODEM-1K / YMODEM / ZMODEM transfers end to end on the host
+# lane against a real peer: a small CLI harness (scanner + telnet +
+# xmodem + zmodem, the same byte path bbs.cla uses, minus the menus --
+# the host runtime has no UI lane, so bbs.cla itself only runs on the
+# Mac) listens on TCP and on CONNECT either sends sample.bin (arg
+# X/1/Y/Z; lrz receives it) or receives into recv/ (arg RX/R1/RY/RZ;
+# lsz sends sample.bin). Needs socat and lrzsz.
 # Usage: scripts/xmodem-e2e.sh [port]
 set -e
 cd "$(dirname "$0")/.."
@@ -18,6 +18,7 @@ cat > "$WORK/harness.cla" <<EOF
 include "$REPO/scanner.cla"
 include "$REPO/termio.cla"
 include "$REPO/xmodem.cla"
+include "$REPO/zmodem.cla"
 
 var modem: connection
 var mode: char = 'X'
@@ -33,7 +34,10 @@ func connected() {
     } else {
         telnetSend(modem, "Start your XMODEM receive now. Two ^X abort.\x0D\x0A")
     }
-    if recv {
+    if mode == 'Z' {
+        // a different wire name: lrz won't overwrite the YMODEM leg's file
+        if recv { zmodemRecvStart("") } else { zmodemSendStart("sample.bin", "zsample.bin") }
+    } else if recv {
         xmodemRecvStart(mode, "", "upload.bin")
     } else {
         xmodemSendStart("sample.bin", "sample.bin", mode)
@@ -42,7 +46,9 @@ func connected() {
 func xferReceived(name: string, bytes: int) { log("received " + name + " " + string(bytes)) }
 func xferAcceptName(name: string): bool { return true }
 func disconnected() { log("disconnected") }
-func inputChar(c: char) { xmodemChar(c) }
+func inputChar(c: char) {
+    if mode == 'Z' { zmodemChar(c) } else { xmodemChar(c) }
+}
 func telnetOut(s: string) { modem.send(s) }
 func xferOut(t: text) {
     var i: int = 0
@@ -161,4 +167,6 @@ run_one Y "--ymodem -b" sample.bin 3000 ""      # YMODEM names the file itself
 run_up RX "-X -b" upload.bin 3072
 run_up R1 "-X -b -k" upload.bin 3072
 run_up RY "--ymodem -b" sample.bin 3000
+run_one Z "--zmodem -b" zsample.bin 3000 ""    # ZMODEM names the file too
+run_up RZ "--zmodem -b" sample.bin 3000
 echo "xmodem e2e passed"

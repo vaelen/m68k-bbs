@@ -1,13 +1,13 @@
 # File Transfers
 
 How 68kBBS moves files over the modem: the transfer plumbing in
-`bbs.cla`, the sender and receiver in `xmodem.cla`, what the caller
-sees, how to test it, and where ZMODEM and Kermit plug in. The storage
+`bbs.cla`, the senders and receivers in `xmodem.cla` and `zmodem.cla`,
+what the caller sees, how to test it, and where Kermit plugs in. The storage
 side (areas, file entries, `filePath`) is `docs/files.md`.
 
-**Status:** XMODEM, XMODEM-1K and YMODEM in both directions — download
-(BBS → caller) and upload (caller → BBS, entered pending sysop
-approval). Data fork only. No ZMODEM/Kermit, no MacBinary yet.
+**Status:** XMODEM, XMODEM-1K, YMODEM and ZMODEM in both directions —
+download (BBS → caller) and upload (caller → BBS, entered pending sysop
+approval). Data fork only. No Kermit, no MacBinary yet.
 
 ## The plumbing
 
@@ -22,8 +22,8 @@ session dispatch carries it:
   already folds back to one byte, and the scanner still notices a
   `NO CARRIER` if the line drops mid-transfer.
 - **Bytes out.** `xferOut(t: text)` sends the frame through
-  `telnetSend(modem, …)` in 255-byte slices (frames are up to 1029
-  bytes; strings cap at 255): IAC doubling for telnet callers, no
+  `telnetSend(modem, …)` in 255-byte slices (frames are 1 KB and
+  more; strings cap at 255): IAC doubling for telnet callers, no
   `trackOutput` (binary doesn't move the cursor).
 - **Time.** The `every 30 ticks` timer calls `xferTick()` on the `"xfer"`
   screen. One tick = ½ s, the unit for every engine timeout.
@@ -39,9 +39,9 @@ session dispatch carries it:
   this area).
 
 `xferStart(proto, path, name)` / `xferChar` / `xferTick` / `xferAbort`
-are a `switch` on `xferProto: char` — `'X'`, `'1'` and `'Y'` all go to
-`xmodem.cla` today. A new protocol is a new module plus one case in
-each.
+are a `switch` on `xferProto: char` — `'X'`, `'1'` and `'Y'` go to
+`xmodem.cla`, `'Z'` to `zmodem.cla`. A new protocol is a new module
+plus one case in each.
 
 ## The XMODEM/YMODEM sender (`xmodem.cla`)
 
@@ -125,6 +125,80 @@ An aborted upload leaves the partial file on disk — there is no
 so the same name can simply be uploaded again (`file.create`
 truncates).
 
+## ZMODEM (`zmodem.cla`)
+
+One module, both directions, the same four hooks and callbacks.
+Frames: **hex headers** (`** ZDLE B` + type and four little-endian
+position/flag bytes as hex + CRC-16 as hex + CR LF, XON after all but
+ZFIN/ZACK) for everything a receiver says and for ZRQINIT/ZFIN;
+**binary headers** (`* ZDLE C` + escaped bytes + CRC-32 low byte
+first, or `* ZDLE A` + CRC-16 high byte first) for ZFILE/ZDATA/ZEOF;
+**data subpackets** (escaped bytes, `ZDLE` + frame end `h`/`i`/`j`/`k`
+= ZCRCE/ZCRCG/ZCRCQ/ZCRCW, CRC over data and frame end). CRC-32 is
+`text.crc32` (seed and final XOR applied by the engine; `"123456789"`
+→ `0xCBF43926`); CRC-16 is `text.crc16x`. We send CRC-32 frames when
+the receiver's ZRINIT has CANFC32 (lrz always does), CRC-16 otherwise;
+a frame's CRC width follows its header format on the way in. ZDLE
+escaping covers ZDLE, DLE/XON/XOFF (with and without bit 7), CR after
+`@`, and — when the receiver asks (ESCCTL) — every control byte plus
+`ZRUB0`/`ZRUB1` for 0x7F/0xFF. Five consecutive CANs from the peer end
+the transfer (`xferDone(false)`, nothing sent); our own give-up is
+eight CANs and eight backspaces.
+
+**Download** (`zmodemSendStart(path, name)`):
+
+| State | Event | Action |
+|---|---|---|
+| waitRinit | start | `rz` CR + ZRQINIT (hex); repeat every 10 s, give up at 60 s |
+| waitRinit | ZRINIT | note CANFC32/ESCCTL; ZFILE (binary) + `name NUL size NUL` subpacket (ZCRCW) → waitRpos |
+| waitRpos | ZRPOS(p) | ZDATA(p) + 1 KB subpacket (ZCRCW) → waitAck |
+| waitRpos | ZSKIP | receiver has it: ZFIN → waitFin, ends `xferDone(false)` |
+| waitAck | ZACK(p) | continue from p: next ZDATA + subpacket, or ZEOF(size) → waitEofAck |
+| waitAck | ZRPOS(p) | error + 1; rewind to p |
+| waitEofAck | ZRINIT | ZFIN (hex) → waitFin |
+| waitFin | ZFIN | `OO`, `xferDone(true)` |
+| any | ZNAK, bad CRC, 10 s silence | error + 1; resend the last frame |
+| any | 10th error | cancel, `xferDone(false)` |
+
+Every data subpacket is ZCRCW — the receiver ACKs each 1 KB before
+the next goes out — so a download is ACK-clocked like XMODEM-1K and
+nothing is in flight while the event loop runs. ponytail: ZCRCG
+streaming off a fast timer if a real modem link ever needs the
+throughput.
+
+**Upload** (`zmodemRecvStart(folder)`):
+
+| State | Event | Action |
+|---|---|---|
+| waitFile | start, ZRQINIT, 5 s silence | ZRINIT (hex; 1 KB buffer, CANFDX + CANFC32); ten unanswered → cancel |
+| waitFile | ZFILE + subpacket | name (last path segment) through `xferAcceptName`; refused → ZSKIP; else create `<folder>:<name>`, ZRPOS(0) → waitData |
+| waitFile | ZSINIT + subpacket | ZACK (the attention string is ignored) |
+| waitData | ZDATA(p) | p must be the running offset, else ZRPOS(offset) and the frame is junk |
+| waitData | good subpacket | `writeAt(offset)`; ZCRCW/ZCRCQ → ZACK(offset) |
+| waitData | bad CRC, 10 s silence | error + 1; ZRPOS(offset) |
+| waitData | ZEOF(p) | p == offset: flush, close, `xferReceived`, ZRINIT → waitFile; else ZRPOS |
+| waitFile | ZFIN | (an open file is dropped, no entry) ZFIN → waitOO |
+| waitOO | `OO` or 1 s | `xferDone(true)` — the `OO` must not reach the menus |
+| any | ZABORT/ZFERR | ZFIN, `xferDone(false)` |
+
+A ZMODEM batch describes each received file in turn, like YMODEM's.
+The 1 KB buffer we advertise is the protocol's way of asking a sender
+to wait for ZACK after each 1 KB, and `lsz` **ignores it**: it streams
+the whole file as back-to-back ZCRCG subpackets at the line rate. The
+receiver copes because the parser does one byte per call and never
+waits (the 8 KB serial buffer is the only slack); on the Mac II in
+Snow that receive path runs at roughly 0.5 KB/s (a YMODEM upload of
+the same file, half-duplex, does ~1 KB/s; a ZMODEM download ~1.5 KB/s
+— 800 KB in nine minutes, byte-exact), and a CRC failure from an
+overrun costs a ZRPOS and a rewind rather than the transfer.
+
+ZMODEM has no handshake-byte hazard like XMODEM's `C`: a receiver
+starts on our ZRQINIT and a sender on our ZRINIT, and both skip junk
+until a `*` ZDLE. The one byte to keep out of nearby text is CAN
+(0x18), five in a row being a cancel; the announcements are
+`Start your ZMODEM receive now.` and `Send your file now.` (no
+"two ^X" — ZMODEM's cancel is five).
+
 ## Text around a transfer
 
 **Nothing sent to a caller who is about to start their sender may
@@ -158,26 +232,29 @@ Download sample.bin (3000 bytes)
 X) XMODEM
 1) XMODEM-1K
 Y) YMODEM
+Z) ZMODEM
 Q) Cancel
 
 Protocol:
 ```
 
-The letter prints `Start your <protocol> receive now (Ctrl-X twice to
-cancel)...` and the session is in the transfer. Pick what the caller's
-terminal offers: YMODEM when it has it (exact size, 1K blocks),
-XMODEM-1K for XMODEM receivers that take 1K frames, plain XMODEM for
-the rest. Afterwards `Transfer complete.`
+The letter prints `Start your <protocol> receive now. Two ^X abort.`
+(`Start your ZMODEM receive now.` — most terminals start a ZMODEM
+receive by themselves) and the session is in the transfer. Pick what
+the caller's terminal offers: ZMODEM when it has it (exact size, CRC-32,
+auto-start), YMODEM next (exact size, 1K blocks), XMODEM-1K for XMODEM
+receivers that take 1K frames, plain XMODEM for the rest. Afterwards `Transfer complete.`
 (download count incremented and saved) or `Transfer failed.` (the log
 window has the reason: cancelled, too many errors, no receiver, file
 wouldn't open), then the file view is redrawn. Sysop delete from the
 view is `X` (it was `D`); the list-side delete is unchanged.
 
 Uploading: `U) Upload File` on the file list → the same protocol menu →
-`Filename:` (XMODEM and XMODEM-1K only; YMODEM carries the name) →
-`Send your file now. Two ^X abort.` — the transfer starts at once.
-Descriptions come **after** it: for each file that arrived (a YMODEM
-batch describes each in turn), `Describe <name> (<n> bytes)` prompts
+`Filename:` (XMODEM and XMODEM-1K only; YMODEM and ZMODEM carry the
+name) → `Send your file now. Two ^X abort.` (ZMODEM: `Send your file
+now.`) — the transfer starts at once. Descriptions come **after** it:
+for each file that arrived (a YMODEM or ZMODEM batch describes each in
+turn), `Describe <name> (<n> bytes)` prompts
 for a one-line description and then opens the line editor
 (`docs/boards.md`'s editor, `editTarget 'F'`) for the long
 description — `/S` saves the entry with it, `/A` saves the entry
@@ -205,13 +282,20 @@ and a sysop's login banner counts pending files across all areas
   padding, block-number wrap, EOT handling, peer cancel, timeouts, the
   error ceiling, empty and missing files, 1K STX blocks with a 128-byte
   tail, and the YMODEM block 0 / `C` / end-of-batch handshake.
+  `tests/zmodem-test.cla` covers the ZMODEM engine: the CRC-32 check
+  value, hex/binary header and subpacket round trips through the
+  engine's own parser (every byte value, ESCCTL, a corrupted byte),
+  the full download and upload handshakes against scripted peers,
+  rewinds, ZSKIP, refused names, wrong offsets, bad CRCs, timeouts,
+  the error ceiling, peer cancel, and the `OO` swallow.
 - **Host lane, real sender and receiver:** `scripts/xmodem-e2e.sh` builds a small
   CLI harness — `scanner.cla` + `termio.cla` (telnet) + `xmodem.cla`,
   the same byte path as `bbs.cla` minus the menus — listening on TCP,
   and receives with `lrz -X` (checksum), `lrz -X -c` (CRC), `lrz -X -c`
-  against 1K mode, and `lrz --ymodem` (exact 3000-byte file) through
-  `socat`, then runs the three uploads the other way with `lsz -X`,
-  `lsz -X -k` and `lsz --ymodem` into the harness's receiver. `bbs.cla` itself cannot run on the host: window/menu/`every`
+  against 1K mode, `lrz --ymodem` and `lrz --zmodem` (exact 3000-byte
+  files) through `socat`, then runs the uploads the other way with
+  `lsz -X`, `lsz -X -k`, `lsz --ymodem` and `lsz --zmodem` into the
+  harness's receiver. `bbs.cla` itself cannot run on the host: window/menu/`every`
   declarations make it a UI program and the host runtime has no UI
   lane. Needs `socat` and `lrzsz` (Homebrew).
 - **Snow:** reset the image to the baseline (CLAUDE.md), `hcopy -r` a
@@ -228,6 +312,7 @@ and a sysop's login banner counts pending files across all areas
   printf 'F'; sleep 1; printf '1\r'; sleep 1; printf '1\r'; sleep 1
   printf 'D'; sleep 1; printf 'X'; sleep 1
   exec lrz -X -b -c out.bin          # or: printf 'Y' ... exec lrz --ymodem -b
+                                     # or: printf 'Z' ... exec lrz --zmodem -b
   EOF
   chmod +x drive.sh && socat TCP:localhost:2323 EXEC:./drive.sh
   head -c 3000 out.bin | cmp - sample.bin
@@ -243,22 +328,14 @@ Each of these reuses the four hooks and two callbacks unchanged.
 - **YMODEM batch:** several files per session is the block-0 loop
   again with a file list; nothing in the engine assumes one, except
   that `xferDone` fires after the end block.
-- **ZMODEM** (`zmodem.cla`): the sender streams `ZDATA` subpackets but
-  must return to the event loop after each — `PBWriteSync` blocks
-  ~0.2 s per KB at 57600, and the receive pump only drains between
-  passes. One subpacket per pass keeps `ZRPOS`/`ZACK` flowing. Needs
-  CRC-32: `text.crc32`, filed with `crc16x` in
-  `docs/language-gaps.md` §8; not worth a Clarus bit loop at
-  streaming rates.
+- **ZMODEM streaming:** the sender could send ZCRCG subpackets back
+  to back off a fast `every N ticks` timer (one 1 KB subpacket per
+  firing keeps the line busy while the receive pump drains between
+  passes) instead of waiting for a ZACK per subpacket; the ZRPOS
+  rewind already works. Only worth it on a link with real latency.
 - **Kermit** (`kermit.cla`): packet engine shaped like XMODEM's;
   `text.crc16` (CRC-16/KERMIT) fits as-is; adds control-character
   prefixing and the S/F/D/Z/B negotiation.
-- **Upload** (any protocol): a receiving engine writes with `writeAt`
-  to `filePath`, then `addFile(..., fileFlagPending, ...)` for sysop
-  review. Wire filenames sanitized to Mac rules (≤ 31 chars, no `:`);
-  XMODEM carries no name, so its upload prompts for one first. An
-  aborted upload leaves a partial file until `file.delete` exists
-  (`docs/language-gaps.md` §3).
 - **MacBinary:** encode on download / decode on upload once
   resource-fork access and `setInfo` exist (`docs/language-gaps.md`
   §4–5); the file entry's reserved flag bits mark wrapped files.

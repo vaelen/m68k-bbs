@@ -23,6 +23,7 @@ include "files.cla"
 include "editor.cla"
 include "loginlog.cla"
 include "xmodem.cla"
+include "zmodem.cla"
 include "toolbox/osutils.cla"   // DateTimeRec / SecondsToDate (via --rtdir)
 
 app BBS {
@@ -67,8 +68,8 @@ func telnetOut(s: string) {
 // A transfer is the "xfer" screen: inputChar hands every raw byte to
 // xferChar, the 30-tick timer calls xferTick, and disconnected() calls
 // xferAbort. Engines answer through xferOut (below) and xferDone
-// (files.cla). ponytail: one protocol; the switch grows a case per
-// engine (ZMODEM, Kermit) -- see docs/file-transfers.md.
+// (files.cla). ponytail: the switch grows a case per engine (Kermit
+// next) -- see docs/file-transfers.md.
 
 var xferProto: char = 'X'
 var xferPath: string
@@ -86,13 +87,15 @@ func xferOut(t: text) {
     }
 }
 
-// proto: 'X' XMODEM, '1' XMODEM-1K, 'Y' YMODEM (all xmodem.cla).
+// proto: 'X' XMODEM, '1' XMODEM-1K, 'Y' YMODEM (all xmodem.cla),
+// 'Z' ZMODEM (zmodem.cla).
 func xferStart(proto: char, path: string, name: string) {
     xferProto = proto
     xferPath = path
     user.screen = "xfer"
     switch proto {
     case 'X', '1', 'Y' { xmodemSendStart(path, name, proto) }
+    case 'Z' { zmodemSendStart(path, name) }
     }
 }
 
@@ -102,24 +105,28 @@ func xferStartReceive(proto: char, folder: string, name: string) {
     user.screen = "xfer"
     switch proto {
     case 'X', '1', 'Y' { xmodemRecvStart(proto, folder, name) }
+    case 'Z' { zmodemRecvStart(folder) }
     }
 }
 
 func xferChar(c: char) {
     switch xferProto {
     case 'X', '1', 'Y' { xmodemChar(c) }
+    case 'Z' { zmodemChar(c) }
     }
 }
 
 func xferTick() {
     switch xferProto {
     case 'X', '1', 'Y' { xmodemTick() }
+    case 'Z' { zmodemTick() }
     }
 }
 
 func xferAbort() {
     switch xferProto {
     case 'X', '1', 'Y' { xmodemAbort() }
+    case 'Z' { zmodemAbort() }
     }
 }
 

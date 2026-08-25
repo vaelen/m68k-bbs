@@ -265,8 +265,8 @@ inputChar (bbs.cla) → processInput`.
   calls `xferTick`, `disconnected()` calls `xferAbort`, and engines
   send through `xferOut(text)` (→ `telnetSend` in 255-byte slices, no
   cursor tracking); `xferStart(proto, path, name)`/`xferChar`/
-  `xferTick`/`xferAbort` switch on `xferProto` (`'X'`/`'1'`/`'Y'`,
-  all `xmodem.cla`). `docs/file-transfers.md`.
+  `xferTick`/`xferAbort` switch on `xferProto` (`'X'`/`'1'`/`'Y'`
+  `xmodem.cla`, `'Z'` `zmodem.cla`). `docs/file-transfers.md`.
 - `sysop.cla` — the sysop menu tree (gated on `user.access`): paged
   user/board lists (`listFromId` cursor, `[Enter] More` prompt),
   detail cards, lettered-field edit cards (buffered; `S` saves, `Q`
@@ -294,13 +294,14 @@ inputChar (bbs.cla) → processInput`.
   wrapped by `wrapText` and paged). Keys mirror the board reader:
   `+`/Enter next page, `-` previous, `L` redraw, `>`/`.` and `<`/`,`
   next/previous file, `D` download (offline files refused → protocol
-  menu `xferproto`: `X` XMODEM, `1` XMODEM-1K, `Y` YMODEM →
-  `startDownload` → `xferStart`; `xferDone` bumps the download count
+  menu `xferproto`: `X` XMODEM, `1` XMODEM-1K, `Y` YMODEM, `Z`
+  ZMODEM → `startDownload` → `xferStart`; `xferDone` bumps the download count
   and redraws the view), sysop-only `X` delete and `A` approve on a
   pending entry, `E` edit descriptions (short prompt, then the line
   editor pre-loaded via `seedEditorBody` with `editTarget 'F'`; `/S` replaces the long description
   via `setFileLongDesc`, `/A` keeps it), `Q` up one level. The list's
-  `U` uploads (`upproto` → `upname` for XMODEM → `xferStartReceive`);
+  `U` uploads (`upproto` → `upname` for XMODEM/1K, YMODEM and ZMODEM
+  carry the name → `xferStartReceive`);
   `xferReceived` queues each received file and the describe loop then
   prompts short description + long-description editor per file before
   `addFile` (`fileFlagPending` unless the uploader is a sysop).
@@ -328,6 +329,21 @@ inputChar (bbs.cla) → processInput`.
   "Text around a transfer"; the e2e script enforces it).
   `tests/xmodem-test.cla` unit-tests it; `scripts/xmodem-e2e.sh`
   receives with `lrz` over `socat` (`docs/file-transfers.md`).
+- `zmodem.cla` — ZMODEM sender **and** receiver
+  (`zmodemSendStart(path, name)` / `zmodemRecvStart(folder)`,
+  `zmodemChar`, `zmodemTick`, `zmodemAbort`): one parser for hex,
+  CRC-16 and CRC-32 binary headers and ZDLE-escaped subpackets
+  (`text.crc16x` / `text.crc32`), builders that write into `zmWire`
+  and resend `zmLast`; sender: `rz` + ZRQINIT → ZFILE (name NUL
+  size NUL) → per 1 KB ZDATA + ZCRCW subpacket, ACK-clocked, ZRPOS
+  rewinds, ZEOF → ZFIN → `OO`; receiver: ZRINIT (1 KB buffer,
+  CANFC32 — `lsz` ignores the buffer and streams ZCRCG, which the
+  one-byte-per-call parser handles), ZFILE names vetted by
+  `xferAcceptName` (refused → ZSKIP), data written at the running
+  offset, ZEOF → `xferReceived` → ZRINIT for the next file, ZFIN
+  answered and the sender's `OO` swallowed before `xferDone`; five
+  CANs = peer cancel, 8 CAN + 8 BS = ours; 10 s waits, ten-error
+  ceiling. `tests/zmodem-test.cla`; the e2e script's `Z`/`RZ` legs.
 - `loginlog.cla` — the login log, `Logins.txt` (TEXT/ttxt): one
   65-byte fixed-width, tab-delimited text line per session — new flag
   (`*`/space), name padded to 31, `dateTimeStr` of the login, padded
@@ -366,9 +382,9 @@ toolbox include resolution via rtdir, connection-typed parameters, the
 68k string-temp cap) shipped and is in the pinned toolchain. vDB
 (`~/repos/libvdb/db.md`) is implementable in pure Clarus.
 
-The **next** file-area steps (upload/download, sysop import, area-folder
-management, deletion cleanup, MacBinary preservation) do need runtime
-features that are not there yet — directory listing, file metadata
+The **next** file-area steps (sysop import, area-folder management,
+deletion cleanup, MacBinary preservation) do need runtime features
+that are not there yet — directory listing, file metadata
 query, file delete, arbitrary-file resource-fork bytes, set
 type/creator, mkdir, rename. Plain data-fork transfers need none of
 them. The full list, with what each unlocks, is `docs/language-gaps.md`.
@@ -388,7 +404,8 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
   paged post list, framed post view
 - `files.cla` — caller-facing file-area reader: area picker, paged
   file list, framed file view, XMODEM download
-- `xmodem.cla` — XMODEM / XMODEM-1K / YMODEM sender state machine
+- `xmodem.cla` — XMODEM / XMODEM-1K / YMODEM sender and receiver
+- `zmodem.cla` — ZMODEM sender and receiver (CRC-32/CRC-16 framing)
 - `mail.cla` — private mail: inbox, message view, compose/reply
 - `editor.cla` — line editor for new posts, replies, and mail (/S /A
   /L /D /E /I /R)

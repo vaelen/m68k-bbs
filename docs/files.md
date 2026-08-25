@@ -8,7 +8,7 @@ compatibility is promised — data structures may change freely, always
 starting from a clean database.
 
 The sysop area management (`sysop.cla`), the caller-facing browser
-(`files.cla`), and the XMODEM/XMODEM-1K/YMODEM transfers
+(`files.cla`), and the XMODEM/XMODEM-1K/YMODEM/ZMODEM transfers
 (`docs/file-transfers.md`) are built on top of the API below. This
 document covers the storage layer; the two UIs are summarized under
 "The UIs" at the end.
@@ -206,11 +206,11 @@ same table senders and paging helpers.
 
 - **Import** (sysop types a name): `file.open(filePath)` to verify,
   `size()`, then `addFile`.
-- **Upload**: done — XMODEM / XMODEM-1K / YMODEM from the file list's
+- **Upload**: done — XMODEM / XMODEM-1K / YMODEM / ZMODEM from the file list's
   `U` key; the file is written under the area folder and added with
   `fileFlagPending` (sysop uploads go live at once), and a sysop
   approves it with `A` in the file view (`docs/file-transfers.md`).
-- **Download**: done — XMODEM / XMODEM-1K / YMODEM from the file
+- **Download**: done — XMODEM / XMODEM-1K / YMODEM / ZMODEM from the file
   view, download count bumped on success (`docs/file-transfers.md`).
 - **Path check**: the first deploy with a non-empty folder should
   confirm on Snow that `file.open` accepts an HFS full path

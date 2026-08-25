@@ -3,10 +3,10 @@
 Language/runtime features the **file-area** feature set still needs from
 Clarus. The storage layer (`areasdb.cla`/`filesdb.cla`), the sysop area
 menu (`sysop.cla`), the caller-facing browser (`files.cla`), and
-XMODEM/XMODEM-1K/YMODEM transfers in both directions (`xmodem.cla`)
-are all built and working on today's toolchain; what follows is what
+XMODEM/XMODEM-1K/YMODEM/ZMODEM transfers in both directions
+(`xmodem.cla`, `zmodem.cla`) are all built and working on today's toolchain; what follows is what
 the *remaining* file-area work — sysop import, area-folder management,
-deletion cleanup, ZMODEM, and faithful Mac-file preservation — needs
+deletion cleanup, and faithful Mac-file preservation — needs
 that the language does not yet provide.
 
 Normative API details, once shipped, live in
@@ -19,8 +19,8 @@ git history; every one of those landed and is in the pinned toolchain.
 Worth stating so these aren't re-filed:
 
 - **Data-fork upload and download over the modem.** Shipped: XMODEM,
-  XMODEM-1K and YMODEM run in both directions on today's toolchain
-  (`xmodem.cla`, `docs/file-transfers.md`) — protocol framing is a
+  XMODEM-1K, YMODEM and ZMODEM run in both directions on today's
+  toolchain (`xmodem.cla`, `zmodem.cla`, `docs/file-transfers.md`) — protocol framing is a
   *library*, not a language feature, and `every N ticks` timers cover
   the ACK/NAK timeouts.
 - **Transfer CRCs.** `text.crc16x` (CRC-16/XMODEM) and `text.crc32`

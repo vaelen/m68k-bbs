@@ -563,8 +563,7 @@ func delFileConfirm(input: string) {
 // --- Download ----------------------------------------------------------
 // D in the file view -> protocol menu -> the "xfer" screen (bbs.cla
 // routes bytes to the engine). xferDone brings the caller back to the
-// file view. ponytail: one protocol on the menu; add letters with
-// engines.
+// file view.
 
 func drawXferProtoMenu() {
     sendLine("")
@@ -573,6 +572,7 @@ func drawXferProtoMenu() {
     sendLine("X) XMODEM")
     sendLine("1) XMODEM-1K")
     sendLine("Y) YMODEM")
+    sendLine("Z) ZMODEM")
     sendLine("Q) Cancel")
     sendLine("")
 }
@@ -582,6 +582,7 @@ func xferProtoChoice(input: string) {
     case "X" { startDownload('X') }
     case "1" { startDownload('1') }
     case "Y" { startDownload('Y') }
+    case "Z" { startDownload('Z') }
     case "", "Q" {
         user.screen = "fileview"
         displayPrompt()
@@ -604,6 +605,7 @@ func protoLabel(proto: char): string {
     switch proto {
     case '1' { return "XMODEM-1K" }
     case 'Y' { return "YMODEM" }
+    case 'Z' { return "ZMODEM" }
     }
     return "XMODEM"
 }
@@ -614,7 +616,11 @@ func startDownload(proto: char) {
     // are the XMODEM handshake bytes, and a sender that sees one starts
     // mid-sentence and reads the rest of the line as ACKs. See
     // docs/file-transfers.md, "Text around a transfer".
-    sendLine("Start your " + protoLabel(proto) + " receive now. Two ^X abort.")
+    if proto == 'Z' {
+        sendLine("Start your ZMODEM receive now.")
+    } else {
+        sendLine("Start your " + protoLabel(proto) + " receive now. Two ^X abort.")
+    }
     log(protoLabel(proto) + " send: " + filePath(fileRec.id))
     xferStart(proto, filePath(fileRec.id), fileRec.name)
 }
@@ -635,6 +641,7 @@ func drawUpProtoMenu() {
     sendLine("X) XMODEM")
     sendLine("1) XMODEM-1K")
     sendLine("Y) YMODEM")
+    sendLine("Z) ZMODEM")
     sendLine("Q) Cancel")
     sendLine("")
 }
@@ -642,10 +649,10 @@ func drawUpProtoMenu() {
 func upProtoChoice(input: string) {
     var choice: string = upperStr(input)
     switch choice {
-    case "X", "1", "Y" {
+    case "X", "1", "Y", "Z" {
         upProto = choice[0]
         upName = ""
-        if upProto == 'Y' {
+        if upProto == 'Y' or upProto == 'Z' {
             startUpload()                // the name comes with the file
         } else {
             user.screen = "upname"
@@ -697,7 +704,11 @@ func startUpload() {
     xferDir = 'U'
     upNames.clear()
     upSizes.clear()
-    sendLine("Send your file now. Two ^X abort.")
+    if upProto == 'Z' {
+        sendLine("Send your file now.")
+    } else {
+        sendLine("Send your file now. Two ^X abort.")
+    }
     log(protoLabel(upProto) + " receive into " + area.name)
     xferStartReceive(upProto, area.folder, upName)
 }

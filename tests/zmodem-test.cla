@@ -1,0 +1,477 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for the ZMODEM engine. Run on the host via
+// scripts/test.sh. Exits 0 on pass, 1 on the first failure.
+
+include "../zmodem.cla"
+
+var failures: int = 0
+var sent: text          // everything the engine handed to xferOut
+var doneCalls: int = 0
+var doneOk: bool = false
+var recvName: string
+var recvBytes: int = 0
+var recvCalls: int = 0
+var acceptNames: bool = true
+
+func xferOut(t: text) { sent.append(t) }
+func xferDone(ok: bool) {
+    doneCalls = doneCalls + 1
+    doneOk = ok
+}
+func xferReceived(name: string, bytes: int) {
+    recvCalls = recvCalls + 1
+    recvName = name
+    recvBytes = bytes
+}
+func xferAcceptName(name: string): bool { return acceptNames }
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+func reset() {
+    sent = ""
+    doneCalls = 0
+    doneOk = false
+    recvCalls = 0
+}
+
+// Byte i of the sample file = (i * 7) mod 256.
+func makeFile(path: string, n: int) {
+    var f: filehandle = file.create(path, "TEXT", "ttxt")
+    var body: text
+    var i: int = 0
+    while i < n {
+        body.append(char((i * 7) mod 256))
+        i = i + 1
+    }
+    f.writeAt(0, body)
+    f.close()
+}
+
+func sample(pos: int, n: int): text {
+    var t: text
+    var i: int = 0
+    while i < n {
+        t.append(char(((pos + i) * 7) mod 256))
+        i = i + 1
+    }
+    return t
+}
+
+func readAll(path: string): text {
+    var f: filehandle = file.open(path)
+    var t: text
+    if f == nil { return t }
+    f.readAt(0, f.size(), t)
+    f.close()
+    return t
+}
+
+// Build a peer frame with the engine's own builders and feed it in.
+// (The builders touch zmWire and zmLastSent only; the receiver never
+// reads zmUseCrc32, so the test may set it to pick the peer's width.)
+var peer: text
+
+func feed(t: text) {
+    var i: int = 0
+    while i < t.length {
+        zmodemChar(t[i])
+        i = i + 1
+    }
+}
+
+func peerHex(type: int, pos: int) {
+    zmWire = ""
+    zmHexHeader(type, pos)
+    peer = ""
+    peer.append(zmWire)
+    feed(peer)
+}
+
+func peerData(type: int, pos: int, data: text, fe: char, crc32: bool) {
+    zmUseCrc32 = crc32
+    zmWire = ""
+    zmBinHeader(type, pos)
+    zmSubpacket(data, fe)
+    peer = ""
+    peer.append(zmWire)
+    feed(peer)
+}
+
+func peerBin(type: int, pos: int, crc32: bool) {
+    zmUseCrc32 = crc32
+    zmWire = ""
+    zmBinHeader(type, pos)
+    peer = ""
+    peer.append(zmWire)
+    feed(peer)
+}
+
+func sameBytes(a: int, b: int, n: int): bool {
+    var i: int = 0
+    if sent.length < b + n { return false }
+    while i < n {
+        if sent[a + i] != sent[b + i] { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// The last frame in `sent` starting at `at` is a hex header of this type/pos?
+func isHex(at: int, type: int, pos: int): bool {
+    zmWire = ""
+    zmHexHeader(type, pos)
+    if sent.length < at + zmWire.length { return false }
+    return sent[at, zmWire.length] == zmWire
+}
+
+func sentEndsWithHex(type: int, pos: int): bool {
+    zmWire = ""
+    zmHexHeader(type, pos)
+    if sent.length < zmWire.length { return false }
+    return isHex(sent.length - zmWire.length, type, pos)
+}
+
+// Parse the sent bytes from `at` with the engine's own parser
+// (direction idle, so nothing is dispatched) and report the header.
+func parseAt(at: int): int {
+    var save: char = zmDir
+    var i: int = at
+    zmDir = ' '
+    zmHdrType = -1
+    zpReset()
+    while i < sent.length {
+        zmParse(sent[i])
+        i = i + 1
+    }
+    zmDir = save
+    return i
+}
+
+var check: text
+var t: text
+var body: text
+var i: int = 0
+var n: int = 0
+var mark: int = 0
+
+on App.startCLI(args: list of string) {
+    // 1. CRC-32 check value and the frame builders round-trip through the parser
+    check = "123456789"
+    expect((check.crc32(0xFFFFFFFF, 0, 9) ^ 0xFFFFFFFF) == 0xCBF43926, "text.crc32 check value 0xCBF43926")
+
+    zmDir = ' '
+    zmWire = ""
+    zmHexHeader(zmZRPOS, 0x01020304)
+    sent = ""
+    sent.append(zmWire)
+    expect(sent[0, 14] == "**\x18B0904030201" and sent[sent.length - 1] == '\x11', "hex header: ZRPOS, little-endian position, XON")
+    parseAt(0)
+    expect(zmHdrType == zmZRPOS and zmHdrPos == 0x01020304, "hex header parses back")
+    zmWire = ""
+    zmHexHeader(zmZACK, 5)
+    expect(zmWire[zmWire.length - 1] == '\x0A', "ZACK hex header: no XON")
+
+    zmUseCrc32 = true
+    zmWire = ""
+    zmBinHeader(zmZDATA, 0x90101811)   // bytes 11 18 10 90: every one escaped
+    sent = ""
+    sent.append(zmWire)
+    expect(sent[0, 3] == "*\x18C" and sent[3] == '\x0A' and sent[4] == '\x18' and sent.length >= 3 + 1 + 8 + 4, "bin32 header: escaped position bytes")
+    parseAt(0)
+    expect(zmHdrType == zmZDATA and zmHdrPos == 0x90101811, "bin32 header parses back")
+
+    zmUseCrc32 = false
+    zmWire = ""
+    zmBinHeader(zmZEOF, 3000)
+    sent = ""
+    sent.append(zmWire)
+    expect(sent[0, 3] == "*\x18A" and sent.length == 3 + 5 + 2, "bin16 header")
+    parseAt(0)
+    expect(zmHdrType == zmZEOF and zmHdrPos == 3000, "bin16 header parses back")
+
+    // a subpacket carrying every byte value, CRC-32 and CRC-16
+    body = ""
+    i = 0
+    while i < 256 {
+        body.append(char(i))
+        i = i + 1
+    }
+    body.append('@')
+    body.append('\x0D')            // CR after @ must be escaped
+    zmUseCrc32 = true
+    zmWire = ""
+    zmBinHeader(zmZDATA, 0)
+    zmSubpacket(body, zmZCRCW)
+    sent = ""
+    sent.append(zmWire)
+    parseAt(0)
+    expect(zmHdrType == zmZDATA and zmBuf == body and zpFe == zmZCRCW, "CRC-32 subpacket with all 256 byte values round-trips")
+    zmUseCrc32 = false
+    zmWire = ""
+    zmBinHeader(zmZDATA, 0)
+    zmSubpacket(body, zmZCRCE)
+    sent = ""
+    sent.append(zmWire)
+    parseAt(0)
+    expect(zmHdrType == zmZDATA and zmBuf == body and zpFe == zmZCRCE, "CRC-16 subpacket round-trips")
+    zmEscCtl = true
+    zmWire = ""
+    zmBinHeader(zmZDATA, 0)
+    zmSubpacket(body, zmZCRCW)
+    sent = ""
+    sent.append(zmWire)
+    n = sent.length
+    parseAt(0)
+    expect(zmBuf == body and n > 3 + 5 + 4 + 258 + 2 + 4 + 40, "ESCCTL: control bytes escaped, still round-trips")
+    zmEscCtl = false
+    zmUseCrc32 = true
+    zmWire = ""
+    zmBinHeader(zmZDATA, 0)
+    zmSubpacket(body, zmZCRCW)
+    sent = ""
+    sent.append(zmWire)
+    sent[10] = char(int(sent[10]) ^ 1)
+    zmHdrType = -1
+    zmBuf = ""
+    parseAt(0)
+    expect(zmHdrType == -1 or zmBuf.length == 0, "corrupt byte: no header/data delivered")
+
+    // 2. Download: the full handshake against a scripted receiver
+    makeFile("zm3000.bin", 3000)
+    reset()
+    zmodemSendStart("zm3000.bin", "zm3000.bin")
+    expect(sent[0, 3] == "rz\x0D" and isHex(3, zmZRQINIT, 0), "start: rz + ZRQINIT")
+    expect(zsState == zsWaitRinit, "waiting for ZRINIT")
+    mark = sent.length
+    peerHex(zmZRINIT, (zmCANFDX | zmCANFC32) << 24)
+    expect(zmUseCrc32, "ZRINIT with CANFC32 -> CRC-32 frames")
+    parseAt(mark)
+    expect(zmHdrType == zmZFILE and zmHdrPos == (zmZCBIN << 24), "ZRINIT -> ZFILE header (ZCBIN)")
+    expect(zmBuf == "zm3000.bin\x003000\x00" and zpFe == zmZCRCW, "ZFILE subpacket: name NUL size NUL, ZCRCW")
+    expect(zsState == zsWaitRpos, "waiting for ZRPOS")
+    mark = sent.length
+    peerHex(zmZRPOS, 0)
+    parseAt(mark)
+    expect(zmHdrType == zmZDATA and zmHdrPos == 0, "ZRPOS 0 -> ZDATA at 0")
+    expect(zmBuf == sample(0, 1024) and zpFe == zmZCRCW, "first subpacket: 1024 bytes, ZCRCW")
+    expect(sent[mark, 3] == "*\x18C", "data frames use the binary CRC-32 header")
+    mark = sent.length
+    peerHex(zmZACK, 1024)
+    parseAt(mark)
+    expect(zmHdrType == zmZDATA and zmHdrPos == 1024 and zmBuf == sample(1024, 1024), "ZACK 1024 -> ZDATA at 1024")
+    mark = sent.length
+    peerHex(zmZRPOS, 1536)
+    parseAt(mark)
+    expect(zmHdrType == zmZDATA and zmHdrPos == 1536 and zmBuf == sample(1536, 1024), "ZRPOS 1536 -> rewind, ZDATA at 1536")
+    mark = sent.length
+    peerHex(zmZACK, 2560)
+    parseAt(mark)
+    expect(zmHdrType == zmZDATA and zmHdrPos == 2560 and zmBuf == sample(2560, 440), "last subpacket is the 440-byte tail")
+    mark = sent.length
+    peerHex(zmZACK, 3000)
+    parseAt(mark)
+    expect(zmHdrType == zmZEOF and zmHdrPos == 3000, "ZACK at the end -> ZEOF 3000")
+    expect(zsState == zsWaitEofAck and doneCalls == 0, "waiting for the receiver's ZRINIT")
+    mark = sent.length
+    peerHex(zmZRINIT, (zmCANFDX | zmCANFC32) << 24)
+    expect(isHex(mark, zmZFIN, 0), "ZRINIT after ZEOF -> ZFIN")
+    mark = sent.length
+    peerHex(zmZFIN, 0)
+    expect(sent[mark, 2] == "OO" and sent.length == mark + 2, "ZFIN -> OO")
+    expect(doneCalls == 1 and doneOk and zmDir == ' ' and not zsHave, "download complete, engine idle, file closed")
+
+    // 3. Download: timeouts, retries, the error ceiling, peer cancel, skip
+    reset()
+    zmodemSendStart("zm3000.bin", "zm3000.bin")
+    n = sent.length
+    i = 0
+    while i < 19 {
+        zmodemTick()
+        i = i + 1
+    }
+    expect(sent.length == n, "19 ticks: no ZRQINIT repeat yet")
+    zmodemTick()
+    expect(sent.length == 2 * n, "20 ticks: ZRQINIT repeated")
+    i = 20
+    while i < 119 {
+        zmodemTick()
+        i = i + 1
+    }
+    expect(doneCalls == 0, "119 ticks: still waiting")
+    zmodemTick()
+    expect(doneCalls == 1 and not doneOk and sent[sent.length - 1] == '\x08' and sent[sent.length - 16] == '\x18', "120 ticks: 8 CAN + 8 BS, xferDone(false)")
+
+    reset()
+    zmodemSendStart("zm3000.bin", "zm3000.bin")
+    peerHex(zmZRINIT, 0)                 // no CANFC32: CRC-16 frames
+    expect(not zmUseCrc32, "ZRINIT without CANFC32 -> CRC-16")
+    mark = sent.length
+    peerHex(zmZRPOS, 0)
+    expect(sent[mark, 3] == "*\x18A", "CRC-16 data frame uses the ZBIN header")
+    n = sent.length - mark
+    i = 0
+    while i < 20 {
+        zmodemTick()
+        i = i + 1
+    }
+    expect(sent.length == mark + 2 * n and sameBytes(mark, mark + n, n), "20 ticks without ZACK: byte-identical resend")
+    peerHex(zmZNAK, 0)
+    expect(sent.length == mark + 3 * n, "ZNAK: resend")
+    i = 2
+    while i < 10 {
+        peerHex(zmZNAK, 0)
+        i = i + 1
+    }
+    expect(doneCalls == 1 and not doneOk and sent[sent.length - 1] == '\x08', "10th error: cancel, xferDone(false)")
+
+    reset()
+    zmodemSendStart("zm3000.bin", "zm3000.bin")
+    peerHex(zmZRINIT, 0)
+    mark = sent.length
+    t = "\x18\x18\x18\x18"
+    feed(t)
+    expect(doneCalls == 0, "four CANs: nothing yet")
+    t = "\x18"
+    feed(t)
+    expect(doneCalls == 1 and not doneOk and sent.length == mark, "fifth CAN: xferDone(false), nothing sent")
+
+    reset()
+    zmodemSendStart("zm3000.bin", "zm3000.bin")
+    peerHex(zmZRINIT, 0)
+    mark = sent.length
+    peerHex(zmZSKIP, 0)
+    expect(isHex(mark, zmZFIN, 0), "ZSKIP -> ZFIN")
+    peerHex(zmZFIN, 0)
+    expect(doneCalls == 1 and not doneOk, "skipped file: xferDone(false)")
+
+    reset()
+    zmodemSendStart("missing.bin", "missing.bin")
+    expect(doneCalls == 1 and not doneOk and sent.length == 0, "missing file -> xferDone(false)")
+
+    // 4. Upload: ZRINIT, ZFILE, data at the running offset, ZEOF, ZFIN, OO
+    reset()
+    zmodemRecvStart("")
+    expect(isHex(0, zmZRINIT, 1024 | ((zmCANFDX | zmCANFC32) << 24)), "recv: ZRINIT offers a 1K buffer and CRC-32")
+    mark = sent.length
+    peerHex(zmZRQINIT, 0)
+    expect(isHex(mark, zmZRINIT, 1024 | ((zmCANFDX | zmCANFC32) << 24)), "recv: ZRQINIT -> ZRINIT again")
+    mark = sent.length
+    t = "/tmp/up/zmup.bin\x003000 17222 100644\x00"
+    peerData(zmZFILE, zmZCBIN << 24, t, zmZCRCW, true)
+    expect(isHex(mark, zmZRPOS, 0) and zrState == zrWaitData and zrHave, "recv: ZFILE -> file created, ZRPOS 0")
+    expect(zrName == "zmup.bin", "recv: path reduced to its last segment")
+    mark = sent.length
+    peerData(zmZDATA, 0, sample(0, 1024), zmZCRCW, true)
+    expect(isHex(mark, zmZACK, 1024), "recv: ZCRCW subpacket -> ZACK 1024")
+    mark = sent.length
+    // one ZDATA frame carrying two subpackets: ZCRCG then ZCRCW
+    zmUseCrc32 = true
+    zmWire = ""
+    zmBinHeader(zmZDATA, 1024)
+    zmSubpacket(sample(1024, 1024), zmZCRCG)
+    zmSubpacket(sample(2048, 952), zmZCRCW)
+    peer = ""
+    peer.append(zmWire)
+    feed(peer)
+    expect(isHex(mark, zmZACK, 3000) and sent.length == mark + 20 and zrWritten == 3000, "recv: ZCRCG subpacket not ACKed; ZCRCW after it -> ZACK 3000")
+    mark = sent.length
+    peerBin(zmZEOF, 2999, true)
+    expect(isHex(mark, zmZRPOS, 3000), "recv: ZEOF at the wrong offset -> ZRPOS")
+    mark = sent.length
+    peerBin(zmZEOF, 3000, true)
+    expect(recvCalls == 1 and recvName == "zmup.bin" and recvBytes == 3000, "recv: ZEOF -> xferReceived")
+    expect(isHex(mark, zmZRINIT, 1024 | ((zmCANFDX | zmCANFC32) << 24)) and not zrHave, "recv: then ZRINIT for the next file")
+    expect(readAll("zmup.bin") == sample(0, 3000), "recv: file contents intact")
+    mark = sent.length
+    peerHex(zmZFIN, 0)
+    expect(isHex(mark, zmZFIN, 0) and zrState == zrWaitOO and doneCalls == 0, "recv: ZFIN -> ZFIN, waiting for OO")
+    t = "O"
+    feed(t)
+    expect(doneCalls == 0, "recv: one O is not enough")
+    feed(t)
+    expect(doneCalls == 1 and doneOk and zmDir == ' ', "recv: OO -> xferDone(true)")
+
+    // 5. Upload: CRC-16 sender, bad packets, wrong offsets, refused names, timeouts
+    reset()
+    zmodemRecvStart("")
+    t = "zmup2.bin\x00100\x00"
+    peerData(zmZFILE, 0, t, zmZCRCW, false)
+    expect(zrHave and zrName == "zmup2.bin", "recv: CRC-16 ZFILE accepted")
+    mark = sent.length
+    peerData(zmZDATA, 512, sample(0, 100), zmZCRCW, false)
+    expect(isHex(mark, zmZRPOS, 0) and zrWritten == 0, "recv: ZDATA at the wrong offset -> ZRPOS 0, nothing written")
+    mark = sent.length
+    zmUseCrc32 = false
+    zmWire = ""
+    zmBinHeader(zmZDATA, 0)
+    zmSubpacket(sample(0, 100), zmZCRCW)
+    zmWire[20] = char(int(zmWire[20]) ^ 1)
+    peer = ""
+    peer.append(zmWire)
+    feed(peer)
+    expect(isHex(mark, zmZRPOS, 0) and zrWritten == 0 and zmErrors == 1, "recv: bad CRC -> ZRPOS, one error")
+    mark = sent.length
+    peerData(zmZDATA, 0, sample(0, 100), zmZCRCW, false)
+    expect(isHex(mark, zmZACK, 100) and zrWritten == 100 and zmErrors == 0, "recv: good packet -> ZACK, errors cleared")
+    mark = sent.length
+    i = 0
+    while i < 20 {
+        zmodemTick()
+        i = i + 1
+    }
+    expect(isHex(mark, zmZRPOS, 100), "recv: 20 quiet ticks in data -> ZRPOS")
+    peerBin(zmZEOF, 100, false)
+    expect(recvCalls == 1 and recvBytes == 100, "recv: CRC-16 file complete")
+    mark = sent.length
+    acceptNames = false
+    t = "dup.bin\x005\x00"
+    peerData(zmZFILE, 0, t, zmZCRCW, false)
+    expect(isHex(mark, zmZSKIP, 0) and not zrHave and zrState == zrWaitFile, "recv: refused name -> ZSKIP")
+    acceptNames = true
+    mark = sent.length
+    i = 0
+    while i < 10 {
+        zmodemTick()
+        i = i + 1
+    }
+    expect(sentEndsWithHex(zmZRINIT, 1024 | ((zmCANFDX | zmCANFC32) << 24)) and sent.length > mark, "recv: 10 quiet ticks waiting for a file -> ZRINIT")
+    peerHex(zmZFIN, 0)
+    zmodemTick()
+    expect(doneCalls == 0, "recv: one tick after ZFIN: still waiting for OO")
+    zmodemTick()
+    expect(doneCalls == 1 and doneOk, "recv: OO never came: done after 1 s")
+
+    reset()
+    zmodemRecvStart("")
+    i = 0
+    while i < 99 {
+        zmodemTick()
+        i = i + 1
+    }
+    expect(doneCalls == 0, "recv: 99 ticks: still asking")
+    zmodemTick()
+    expect(doneCalls == 1 and not doneOk and sent[sent.length - 1] == '\x08', "recv: no sender after 10 ZRINITs -> cancel")
+
+    reset()
+    zmodemRecvStart("")
+    t = "zmup3.bin\x0010\x00"
+    peerData(zmZFILE, 0, t, zmZCRCW, true)
+    zmodemAbort()
+    expect(zmDir == ' ' and not zrHave and doneCalls == 0, "recv: abort mid-file: closed, silent")
+
+    if failures == 0 {
+        log("zmodem: all passed")
+        quit
+    }
+    log("zmodem: " + string(failures) + " FAILED")
+    quit 1
+}

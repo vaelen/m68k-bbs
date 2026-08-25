@@ -1,0 +1,895 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// ZMODEM sender and receiver, driven one byte / one tick at a time
+// like xmodem.cla, with the same callbacks the including program
+// defines (xferOut, xferDone, xferReceived, xferAcceptName). Binary
+// headers and data subpackets use CRC-32 (text.crc32) when the peer
+// offers it (CANFC32), CRC-16 (text.crc16x) otherwise; hex headers are
+// always CRC-16. Every data subpacket we send ends in ZCRCW, so a
+// download is ACK-clocked like XMODEM-1K: nothing is in flight while
+// the event loop runs. Uploads: we advertise a 1 KB buffer in ZRINIT,
+// but lsz ignores it and streams ZCRCG subpackets back to back at the
+// line rate, so the receive parser does one byte per call and never
+// waits; a CRC failure answers ZRPOS and the sender rewinds.
+// ponytail: ZCRCW per subpacket on the way out; ZCRCG streaming off a
+// fast timer if a real modem link ever needs the throughput. One file
+// per download; an upload batch takes every file the sender offers.
+// Design: docs/file-transfers.md.
+
+const zmZPAD: char = '*'
+const zmZDLE: char = '\x18'
+const zmZBIN: char = 'A'
+const zmZHEX: char = 'B'
+const zmZBIN32: char = 'C'
+const zmHexChars: string = "0123456789abcdef"
+
+// header types
+const zmZRQINIT: int = 0
+const zmZRINIT: int = 1
+const zmZSINIT: int = 2
+const zmZACK: int = 3
+const zmZFILE: int = 4
+const zmZSKIP: int = 5
+const zmZNAK: int = 6
+const zmZABORT: int = 7
+const zmZFIN: int = 8
+const zmZRPOS: int = 9
+const zmZDATA: int = 10
+const zmZEOF: int = 11
+const zmZFERR: int = 12
+
+// subpacket frame ends and the two rubout escapes
+const zmZCRCE: char = 'h'
+const zmZCRCG: char = 'i'
+const zmZCRCQ: char = 'j'
+const zmZCRCW: char = 'k'
+const zmZRUB0: char = 'l'
+const zmZRUB1: char = 'm'
+
+// ZRINIT capability flags (ZF0) and the ZFILE conversion flag we send
+const zmCANFDX: int = 0x01
+const zmCANFC32: int = 0x20
+const zmESCCTL: int = 0x40
+const zmZCBIN: int = 0x01
+
+const zmBlock: int = 1024         // data bytes per subpacket / our buffer
+const zmMaxData: int = 8192       // longest subpacket we'll assemble
+const zmWaitTicks: int = 20       // 10 s per reply
+const zmRinitTicks: int = 10      // ZRINIT every 5 s while no sender
+const zmStartTicks: int = 120     // 60 s for a receiver to appear
+const zmMaxErrors: int = 10
+
+// --- Shared state --------------------------------------------------------
+
+var zmDir: char = ' '            // 'S' sending (download), 'R' receiving (upload), ' ' idle
+var zmUseCrc32: bool = false     // our binary frames: peer offered CANFC32
+var zmEscCtl: bool = false       // peer wants every control byte escaped
+var zmLastSent: int = 0          // for the "CR after @" escape rule
+var zmCans: int = 0              // consecutive CANs from the peer
+var zmTimer: int = 0             // ticks since the last progress
+var zmErrors: int = 0
+var zmWire: text                 // the frame being built
+var zmLast: text                 // the last frame sent, for retries
+
+func zmBegin(dir: char) {
+    zmDir = dir
+    zmUseCrc32 = false
+    zmEscCtl = false
+    zmLastSent = 0
+    zmCans = 0
+    zmTimer = 0
+    zmErrors = 0
+    zpReset()
+}
+
+func zmodemChar(c: char) {
+    if zmDir == ' ' { return }
+    if zmDir == 'R' and zrState == zrWaitOO {
+        zrOOChar(c)
+        return
+    }
+    if c == zmZDLE {
+        zmCans = zmCans + 1
+        if zmCans >= 5 {
+            log("ZMODEM: cancelled by the caller.")
+            zmFinish(false)
+            return
+        }
+    } else {
+        zmCans = 0
+    }
+    zmParse(c)
+}
+
+func zmodemTick() {
+    if zmDir == 'S' {
+        zsTick()
+    } else if zmDir == 'R' {
+        zrTick()
+    }
+}
+
+// The line is gone: release the file, tell nobody.
+func zmodemAbort() {
+    if zmDir == ' ' { return }
+    zmRelease()
+}
+
+func zmRelease() {
+    if zsHave {
+        zsFile.close()
+        zsFile = nil
+        zsHave = false
+    }
+    if zrHave {
+        zrFile.close()
+        zrFile = nil
+        zrHave = false
+    }
+    zsState = zsIdle
+    zrState = zrIdle
+    zmDir = ' '
+}
+
+func zmFinish(ok: bool) {
+    zmRelease()
+    xferDone(ok)
+}
+
+// Our side gives up: the standard cancel (8 CANs, 8 backspaces), then finish.
+func zmCancel() {
+    zmWire = "\x18\x18\x18\x18\x18\x18\x18\x18\x08\x08\x08\x08\x08\x08\x08\x08"
+    zmSend()
+    zmFinish(false)
+}
+
+// --- Building frames (into zmWire) --------------------------------------
+
+func zmSend() {
+    zmLast = ""
+    zmLast.append(zmWire)
+    xferOut(zmWire)
+}
+
+func zmResend() {
+    xferOut(zmLast)
+}
+
+// One data byte, ZDLE-escaped where the protocol requires.
+func zmPut(b: char) {
+    var v: int = int(b)
+    var esc: bool = false
+    switch v {
+    case 0x18, 0x10, 0x90, 0x11, 0x91, 0x13, 0x93 { esc = true }
+    case 0x0D, 0x8D { esc = (zmLastSent & 0x7F) == 0x40 }
+    case 0x7F, 0xFF {
+        if zmEscCtl {
+            zmWire.append(zmZDLE)
+            if v == 0x7F { zmWire.append(zmZRUB0) } else { zmWire.append(zmZRUB1) }
+            zmLastSent = v
+            return
+        }
+    }
+    else { esc = zmEscCtl and (v & 0x60) == 0 }
+    }
+    if esc {
+        zmWire.append(zmZDLE)
+        zmWire.append(char(v ^ 0x40))
+    } else {
+        zmWire.append(b)
+    }
+    zmLastSent = v
+}
+
+// type, then the four position/flag bytes low first.
+func zmHeaderBytes(type: int, pos: int): text {
+    var hdr: text
+    hdr.append(char(type))
+    hdr.append(char(pos))
+    hdr.append(char(pos >> 8))
+    hdr.append(char(pos >> 16))
+    hdr.append(char(pos >> 24))
+    return hdr
+}
+
+// "** ZDLE B" + 7 bytes as hex (type, pos, CRC-16) + CR LF, then XON
+// except after ZFIN and ZACK.
+func zmHexHeader(type: int, pos: int) {
+    var hdr: text = zmHeaderBytes(type, pos)
+    var crc: int = hdr.crc16x(0, 0, 5)
+    var i: int = 0
+    hdr.append(char(crc >> 8))
+    hdr.append(char(crc))
+    zmWire.append("**\x18B")
+    while i < 7 {
+        zmWire.append(zmHexChars[int(hdr[i]) >> 4])
+        zmWire.append(zmHexChars[int(hdr[i]) & 15])
+        i = i + 1
+    }
+    zmWire.append("\x0D\x0A")
+    if type != zmZFIN and type != zmZACK { zmWire.append('\x11') }
+}
+
+// "* ZDLE A|C" + 5 escaped bytes + escaped CRC-16 (high first) or
+// CRC-32 (low first).
+func zmBinHeader(type: int, pos: int) {
+    var hdr: text = zmHeaderBytes(type, pos)
+    var crc: int = 0
+    var i: int = 0
+    zmWire.append(zmZPAD)
+    zmWire.append(zmZDLE)
+    if zmUseCrc32 { zmWire.append(zmZBIN32) } else { zmWire.append(zmZBIN) }
+    while i < 5 {
+        zmPut(hdr[i])
+        i = i + 1
+    }
+    if zmUseCrc32 {
+        crc = hdr.crc32(0xFFFFFFFF, 0, 5) ^ 0xFFFFFFFF
+        zmPutCrc32(crc)
+    } else {
+        crc = hdr.crc16x(0, 0, 5)
+        zmPut(char(crc >> 8))
+        zmPut(char(crc))
+    }
+}
+
+func zmPutCrc32(crc: int) {
+    zmPut(char(crc))
+    zmPut(char(crc >> 8))
+    zmPut(char(crc >> 16))
+    zmPut(char(crc >> 24))
+}
+
+// Escaped data, ZDLE + frame end, then the CRC over data and frame end.
+func zmSubpacket(data: text, fe: char) {
+    var i: int = 0
+    var crc: int = 0
+    var tail: text
+    tail.append(fe)
+    while i < data.length {
+        zmPut(data[i])
+        i = i + 1
+    }
+    zmWire.append(zmZDLE)
+    zmWire.append(fe)
+    if zmUseCrc32 {
+        crc = data.crc32(0xFFFFFFFF, 0, data.length)
+        crc = tail.crc32(crc, 0, 1) ^ 0xFFFFFFFF
+        zmPutCrc32(crc)
+    } else {
+        crc = data.crc16x(0, 0, data.length)
+        crc = tail.crc16x(crc, 0, 1)
+        zmPut(char(crc >> 8))
+        zmPut(char(crc))
+    }
+}
+
+// --- Parsing frames (both directions) -----------------------------------
+// Hunts for "* ZDLE", reads a hex or binary header, and after ZFILE,
+// ZDATA and ZSINIT keeps reading data subpackets. Good headers land in
+// zmHdrType/zmHdrPos and go to zsHeader/zrHeader; a good subpacket is
+// in zmBuf (frame end in zpFe) and goes to zrData; a CRC failure goes
+// to zsBad/zrBad.
+
+enum ZpState {
+    zpHunt       // waiting for ZPAD
+    zpPad        // ZPAD seen: ZPAD or ZDLE
+    zpFmt        // A, B or C
+    zpHex        // 14 hex digits
+    zpBin        // 5 escaped header bytes
+    zpBinCrc     // its CRC
+    zpData       // subpacket bytes until ZDLE + frame end
+    zpDataCrc    // its CRC
+}
+
+var zpState: ZpState = zpHunt
+var zpEsc: bool = false          // ZDLE seen, next byte is escaped
+var zpCrc32: bool = false        // this frame's CRC width, from its header format
+var zpHdr: text                  // header bytes as they arrive
+var zpNibble: int = -1           // hex: high nibble pending
+var zpFe: char = 'h'             // the subpacket's frame end
+var zpCrcGot: int = 0
+var zpCrcCount: int = 0
+var zmBuf: text                  // the subpacket payload
+var zmHdrType: int = 0
+var zmHdrPos: int = 0
+
+func zpReset() {
+    zpState = zpHunt
+    zpEsc = false
+}
+
+func zmHexVal(c: char): int {
+    if c >= '0' and c <= '9' { return int(c) - 48 }
+    if c >= 'a' and c <= 'f' { return int(c) - 87 }
+    if c >= 'A' and c <= 'F' { return int(c) - 55 }
+    return -1
+}
+
+func zmParse(c: char) {
+    var v: int = int(c)
+    var d: int = 0
+    if v == 0x11 or v == 0x13 or v == 0x91 or v == 0x93 { return }   // XON/XOFF are never data
+    switch zpState {
+    case zpHunt {
+        if c == zmZPAD { zpState = zpPad }
+    }
+    case zpPad {
+        if c == zmZDLE {
+            zpState = zpFmt
+        } else if c != zmZPAD {
+            zpState = zpHunt
+        }
+    }
+    case zpFmt {
+        zpHdr = ""
+        zpEsc = false
+        switch c {
+        case zmZBIN {
+            zpCrc32 = false
+            zpState = zpBin
+        }
+        case zmZBIN32 {
+            zpCrc32 = true
+            zpState = zpBin
+        }
+        case zmZHEX {
+            zpCrc32 = false
+            zpNibble = -1
+            zpState = zpHex
+        }
+        else { zpState = zpHunt }
+        }
+    }
+    case zpHex {
+        d = zmHexVal(c)
+        if d < 0 {
+            zpState = zpHunt
+            zmBad()
+            return
+        }
+        if zpNibble < 0 {
+            zpNibble = d
+        } else {
+            zpHdr.append(char(zpNibble * 16 + d))
+            zpNibble = -1
+        }
+        if zpHdr.length == 7 {
+            zpState = zpHunt
+            if zpHdr.crc16x(0, 0, 5) == zpHdr.wordAt(5) { zmHeader() } else { zmBad() }
+        }
+    }
+    else { zpBinary(c) }
+    }
+}
+
+// Binary states: undo ZDLE escapes, spot frame ends, count CAN runs.
+func zpBinary(c: char) {
+    var v: int = int(c)
+    if zpEsc {
+        zpEsc = false
+        switch c {
+        case zmZCRCE, zmZCRCG, zmZCRCQ, zmZCRCW {
+            if zpState != zpData {
+                zmBad()
+                return
+            }
+            zpFe = c
+            zpCrcGot = 0
+            zpCrcCount = 0
+            zpState = zpDataCrc
+            return
+        }
+        case zmZRUB0 { v = 0x7F }
+        case zmZRUB1 { v = 0xFF }
+        case zmZDLE {
+            zpEsc = true            // a CAN run; zmodemChar is counting
+            return
+        }
+        else {
+            if (v & 0x60) == 0x40 {
+                v = v ^ 0x40
+            } else {
+                zmBad()
+                return
+            }
+        }
+        }
+    } else if c == zmZDLE {
+        zpEsc = true
+        return
+    }
+    zpByte(v)
+}
+
+// A decoded byte for the current binary state.
+func zpByte(v: int) {
+    switch zpState {
+    case zpBin {
+        zpHdr.append(char(v))
+        if zpHdr.length == 5 {
+            zpCrcGot = 0
+            zpCrcCount = 0
+            zpState = zpBinCrc
+        }
+    }
+    case zpBinCrc {
+        if zpCrcByte(v) {
+            zpState = zpHunt
+            if zpCrcGot == zpCrcOf(zpHdr, 'h', false) { zmHeader() } else { zmBad() }
+        }
+    }
+    case zpData {
+        zmBuf.append(char(v))
+        if zmBuf.length > zmMaxData { zmBad() }
+    }
+    case zpDataCrc {
+        if zpCrcByte(v) {
+            if zpCrcGot != zpCrcOf(zmBuf, zpFe, true) {
+                zmBad()
+                return
+            }
+            if zpFe == zmZCRCG or zpFe == zmZCRCQ {
+                zpState = zpData        // more subpackets in this frame
+            } else {
+                zpState = zpHunt
+            }
+            zmData()
+            if zpState == zpData { zmBuf = "" }
+        }
+    }
+    }
+}
+
+// Accumulate one CRC byte; true once the CRC is complete. CRC-32
+// arrives low byte first, CRC-16 high byte first.
+func zpCrcByte(v: int): bool {
+    if zpCrc32 {
+        zpCrcGot = zpCrcGot | (v << (8 * zpCrcCount))
+        zpCrcCount = zpCrcCount + 1
+        return zpCrcCount == 4
+    }
+    zpCrcGot = zpCrcGot * 256 + v
+    zpCrcCount = zpCrcCount + 1
+    return zpCrcCount == 2
+}
+
+// The frame's CRC over t, then fe as one more byte when withFe.
+func zpCrcOf(t: text, fe: char, withFe: bool): int {
+    var crc: int = 0
+    var tail: text
+    tail.append(fe)
+    if zpCrc32 {
+        crc = t.crc32(0xFFFFFFFF, 0, t.length)
+        if withFe { crc = tail.crc32(crc, 0, 1) }
+        return crc ^ 0xFFFFFFFF
+    }
+    crc = t.crc16x(0, 0, t.length)
+    if withFe { crc = tail.crc16x(crc, 0, 1) }
+    return crc
+}
+
+func zmHeader() {
+    zmHdrType = int(zpHdr[0]) & 0x7F
+    zmHdrPos = int(zpHdr[1]) | (int(zpHdr[2]) << 8) | (int(zpHdr[3]) << 16) | (int(zpHdr[4]) << 24)
+    if zmHdrType == zmZFILE or zmHdrType == zmZDATA or zmHdrType == zmZSINIT {
+        zmBuf = ""
+        zpEsc = false
+        zpState = zpData            // a subpacket follows
+    }
+    if zmDir == 'S' {
+        zsHeader()
+    } else if zmDir == 'R' {
+        zrHeader()
+    }
+}
+
+func zmData() {
+    if zmDir == 'R' { zrData() }
+}
+
+func zmBad() {
+    zpReset()
+    if zmDir == 'S' {
+        zsRetry()
+    } else if zmDir == 'R' {
+        zrBad()
+    }
+}
+
+// --- Sender (download) ----------------------------------------------------
+// "rz" + ZRQINIT; ZRINIT tells us the receiver's CRC/escape wishes;
+// ZFILE (name NUL size NUL); ZRPOS says where to start; then per
+// subpacket: ZDATA(pos) + 1 KB + ZCRCW, wait for ZACK(pos); ZEOF; the
+// receiver's ZRINIT; ZFIN; its ZFIN; "OO".
+
+enum ZsState {
+    zsIdle
+    zsWaitRinit
+    zsWaitRpos       // ZFILE sent
+    zsWaitAck        // ZDATA subpacket sent
+    zsWaitEofAck     // ZEOF sent, expecting ZRINIT
+    zsWaitFin        // ZFIN sent, expecting ZFIN
+}
+
+var zsState: ZsState = zsIdle
+var zsFile: filehandle
+var zsHave: bool = false
+var zsName: string(63)
+var zsSize: int = 0
+var zsPos: int = 0
+var zsOk: bool = false           // the receiver acknowledged our ZEOF
+
+func zmodemSendStart(path: string, name: string) {
+    zsFile = file.open(path)
+    if zsFile == nil {
+        log("ZMODEM: cannot open " + path + ": " + lastError.message)
+        xferDone(false)
+        return
+    }
+    zsHave = true
+    zsName = name
+    zsSize = zsFile.size()
+    zsPos = 0
+    zsOk = false
+    zmBegin('S')
+    zsState = zsWaitRinit
+    zmWire = "rz\x0D"
+    zmHexHeader(zmZRQINIT, 0)
+    zmSend()
+}
+
+func zsHeader() {
+    zmTimer = 0
+    switch zmHdrType {
+    case zmZRINIT {
+        zmUseCrc32 = ((zmHdrPos >> 24) & zmCANFC32) != 0
+        zmEscCtl = ((zmHdrPos >> 24) & zmESCCTL) != 0
+        if zsState == zsWaitEofAck {
+            zsOk = true
+            zsSendFin()
+        } else if zsState == zsWaitFin {
+            zmResend()
+        } else {
+            zsSendFile()
+        }
+    }
+    case zmZRPOS {
+        if zsState == zsWaitRpos {
+            zsPos = zmHdrPos
+            zsNext()
+        } else if zsState == zsWaitAck {
+            zmErrors = zmErrors + 1     // the receiver lost something
+            if zmErrors >= zmMaxErrors {
+                log("ZMODEM: too many errors.")
+                zmCancel()
+                return
+            }
+            zsPos = zmHdrPos
+            zsNext()
+        }
+    }
+    case zmZACK {
+        if zsState == zsWaitAck {
+            zsPos = zmHdrPos
+            zmErrors = 0
+            zsNext()
+        }
+    }
+    case zmZSKIP {
+        if zsState == zsWaitRpos {
+            log("ZMODEM: receiver skipped the file.")
+            zsSendFin()
+        }
+    }
+    case zmZFIN {
+        if zsState == zsWaitFin {
+            zmWire = "OO"
+            zmSend()
+            zmFinish(zsOk)
+        }
+    }
+    case zmZNAK { zsRetry() }
+    case zmZABORT, zmZFERR {
+        log("ZMODEM: receiver aborted.")
+        zmWire = ""
+        zmHexHeader(zmZFIN, 0)
+        zmSend()
+        zmFinish(false)
+    }
+    else { }
+    }
+}
+
+func zsSendFile() {
+    var info: text
+    info.append(zsName)
+    info.append('\x00')
+    info.append(string(zsSize))
+    info.append('\x00')
+    zmWire = ""
+    zmBinHeader(zmZFILE, zmZCBIN << 24)
+    zmSubpacket(info, zmZCRCW)
+    zmSend()
+    zsState = zsWaitRpos
+}
+
+func zsNext() {
+    var buf: text
+    if zsPos >= zsSize {
+        zmWire = ""
+        zmBinHeader(zmZEOF, zsSize)
+        zmSend()
+        zsState = zsWaitEofAck
+        return
+    }
+    if not zsFile.readAt(zsPos, zmBlock, buf) {
+        log("ZMODEM: read failed: " + lastError.message)
+        zmCancel()
+        return
+    }
+    zmWire = ""
+    zmBinHeader(zmZDATA, zsPos)
+    zmSubpacket(buf, zmZCRCW)
+    zmSend()
+    zsState = zsWaitAck
+}
+
+func zsSendFin() {
+    zmWire = ""
+    zmHexHeader(zmZFIN, 0)
+    zmSend()
+    zsState = zsWaitFin
+}
+
+// ZNAK, a bad header, or a timeout: resend, up to the error ceiling.
+func zsRetry() {
+    zmErrors = zmErrors + 1
+    if zmErrors >= zmMaxErrors {
+        log("ZMODEM: too many errors.")
+        zmCancel()
+        return
+    }
+    zmTimer = 0
+    zmResend()
+}
+
+func zsTick() {
+    if zsState == zsIdle { return }
+    zmTimer = zmTimer + 1
+    if zsState == zsWaitRinit {
+        if zmTimer >= zmStartTicks {
+            log("ZMODEM: no receiver started.")
+            zmCancel()
+        } else if zmTimer mod zmWaitTicks == 0 {
+            zmResend()
+        }
+        return
+    }
+    if zmTimer >= zmWaitTicks { zsRetry() }
+}
+
+// --- Receiver (upload) ----------------------------------------------------
+// ZRINIT (1 KB buffer, CRC-32) until a ZFILE arrives; its subpacket
+// names the file; ZRPOS(0); each ZDATA subpacket is written at the
+// running offset and ZCRCW/ZCRCQ ones are ZACKed; ZEOF at the right
+// offset closes the file (xferReceived) and ZRINIT asks for the next;
+// ZFIN is answered with ZFIN, then the sender's "OO" is swallowed.
+
+enum ZrState {
+    zrIdle
+    zrWaitFile       // ZRINIT sent
+    zrWaitData       // ZRPOS sent, a file is open
+    zrWaitOO         // ZFIN answered
+}
+
+var zrState: ZrState = zrIdle
+var zrFolder: string
+var zrName: string(63)
+var zrFile: filehandle
+var zrHave: bool = false
+var zrWritten: int = 0
+var zrOO: int = 0
+
+func zmodemRecvStart(folder: string) {
+    zrFolder = folder
+    zrHave = false
+    zrWritten = 0
+    zmBegin('R')
+    zrSendRinit()
+}
+
+func zrSendRinit() {
+    zmWire = ""
+    zmHexHeader(zmZRINIT, zmBlock | ((zmCANFDX | zmCANFC32) << 24))
+    zmSend()
+    zrState = zrWaitFile
+    zmTimer = 0
+}
+
+func zrSendRpos() {
+    zmWire = ""
+    zmHexHeader(zmZRPOS, zrWritten)
+    zmSend()
+    zmTimer = 0
+}
+
+func zrHeader() {
+    zmTimer = 0
+    switch zmHdrType {
+    case zmZRQINIT {
+        if zrState == zrWaitFile { zrSendRinit() }
+    }
+    case zmZDATA {
+        if zrState != zrWaitData {
+            zpReset()
+        } else if zmHdrPos != zrWritten {
+            zpReset()                   // not where we are: the frame is junk
+            zrSendRpos()
+        }
+    }
+    case zmZEOF {
+        if zrState != zrWaitData { return }
+        if zmHdrPos != zrWritten {
+            zrSendRpos()
+            return
+        }
+        zrFile.flush()
+        zrFile.close()
+        zrFile = nil
+        zrHave = false
+        xferReceived(zrName, zrWritten)
+        zrSendRinit()
+    }
+    case zmZFIN {
+        if zrHave {                     // gave up mid-file: no entry for it
+            zrFile.close()
+            zrFile = nil
+            zrHave = false
+        }
+        zmWire = ""
+        zmHexHeader(zmZFIN, 0)
+        zmSend()
+        zrState = zrWaitOO
+        zrOO = 0
+    }
+    case zmZNAK { zmResend() }
+    case zmZABORT, zmZFERR {
+        log("ZMODEM: sender aborted.")
+        zmWire = ""
+        zmHexHeader(zmZFIN, 0)
+        zmSend()
+        zmFinish(false)
+    }
+    else { }                            // ZSINIT and ZFILE act on their subpacket
+    }
+}
+
+// A good subpacket in zmBuf for the last header.
+func zrData() {
+    zmTimer = 0
+    switch zmHdrType {
+    case zmZSINIT {
+        zmWire = ""
+        zmHexHeader(zmZACK, 0)
+        zmSend()
+    }
+    case zmZFILE {
+        if zrState == zrWaitFile { zrFileInfo() }
+    }
+    case zmZDATA {
+        if zrState != zrWaitData { return }
+        if not zrFile.writeAt(zrWritten, zmBuf) {
+            log("Upload: write failed: " + lastError.message)
+            zmCancel()
+            return
+        }
+        zrWritten = zrWritten + zmBuf.length
+        zmErrors = 0
+        if zpFe == zmZCRCW or zpFe == zmZCRCQ {
+            zmWire = ""
+            zmHexHeader(zmZACK, zrWritten)
+            zmSend()
+        }
+    }
+    else { }
+    }
+}
+
+// ZFILE's subpacket: "name NUL size ..." -- a path is reduced to its
+// last segment; the size is informational (ZEOF carries the real end).
+func zrFileInfo() {
+    var i: int = 0
+    var name: string(63)
+    var path: string
+    var c: char
+    while i < zmBuf.length and zmBuf[i] != '\x00' {
+        c = zmBuf[i]
+        if c == '/' or c == '\\' {
+            name = ""
+        } else if name.length < 63 {
+            name = name + c
+        }
+        i = i + 1
+    }
+    if not xferAcceptName(name) {
+        log("Upload: name refused: " + name)
+        zmWire = ""
+        zmHexHeader(zmZSKIP, 0)
+        zmSend()
+        return
+    }
+    if zrFolder.length == 0 {
+        path = name
+    } else {
+        path = zrFolder + ":" + name
+    }
+    zrFile = file.create(path, "BINA", "68BB")
+    if zrFile == nil {
+        log("Upload: cannot create " + name + ": " + lastError.message)
+        zmCancel()
+        return
+    }
+    zrName = name
+    zrHave = true
+    zrWritten = 0
+    zrState = zrWaitData
+    zrSendRpos()
+}
+
+// A CRC failure: ask for the data again from where we are, or for the
+// file header again, up to the error ceiling.
+func zrBad() {
+    zmErrors = zmErrors + 1
+    if zmErrors >= zmMaxErrors {
+        log("Upload: too many errors.")
+        zmCancel()
+        return
+    }
+    if zrState == zrWaitData {
+        zrSendRpos()
+    } else if zrState == zrWaitFile {
+        zrSendRinit()
+    }
+}
+
+func zrOOChar(c: char) {
+    if c == 'O' {
+        zrOO = zrOO + 1
+        if zrOO >= 2 { zmFinish(true) }
+    }
+}
+
+func zrTick() {
+    if zrState == zrIdle { return }
+    zmTimer = zmTimer + 1
+    switch zrState {
+    case zrWaitOO {
+        if zmTimer >= 2 { zmFinish(true) }
+    }
+    case zrWaitFile {
+        if zmTimer >= zmRinitTicks {
+            zmErrors = zmErrors + 1
+            if zmErrors >= zmMaxErrors {
+                log("Upload: no sender started.")
+                zmCancel()
+            } else {
+                zrSendRinit()
+            }
+        }
+    }
+    case zrWaitData {
+        if zmTimer >= zmWaitTicks {
+            zmErrors = zmErrors + 1
+            if zmErrors >= zmMaxErrors {
+                log("Upload: too many errors.")
+                zmCancel()
+            } else {
+                zrSendRpos()
+            }
+        }
+    }
+    else { }
+    }
+}
