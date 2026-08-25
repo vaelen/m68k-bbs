@@ -236,7 +236,9 @@ inputChar (bbs.cla) → processInput`.
   empty name cancels; first account gets sysop access). Logins are
   checked against the Users database (case-insensitive; wrong
   password returns to login). Last-seen is updated at login; the
-  "Welcome back / Last on / You have N new message(s)" banner is
+  "Welcome back / Last on / You have N new message(s)" banner (plus,
+  for sysops, "N file(s) are awaiting approval." via
+  `pendingFileCount`) is
   printed by `applyTerminal` once the terminal type is known, just
   before the main menu (`returning`/`previousSeen` carry it across).
   Main-menu `T` returns to the terminal-type menu; `applyTerminal`

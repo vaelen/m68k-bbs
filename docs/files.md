@@ -155,6 +155,8 @@ area, creating the database, name index, and heap on first use.
   update (the `addFile` ordering); empty clears; old bytes orphaned
 - `filePath(id): string` — empty if the entry doesn't exist
 - `fileCount()`, `filesNextId()`
+- `pendingFileCount(): int` — pending entries across every area, on
+  its own handles; call with no area open (the sysop login banner)
 - Flag consts: `fileFlagPending` (1), `fileFlagOffline` (2)
 
 ## Capacity notes
