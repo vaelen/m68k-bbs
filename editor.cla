@@ -138,6 +138,35 @@ func editBodyPrompt() {
     lineLimit = terminal.columns - 5   // one display row per numbered line
 }
 
+// Pre-load the editor rows from an existing body: each CR ends a hard
+// row (kept with its newline, the storage format above); a line longer
+// than the display keeps splitting into soft rows, the same shape
+// typing it would have produced.
+func seedEditorBody(body: text) {
+    var i: int = 0
+    var line: string = ""
+    var limit: int = terminal.columns - 5
+    var c: char
+    editLines.clear()
+    if limit < 1 { limit = 1 }
+    while i < body.length {
+        c = body[i]
+        i = i + 1
+        if c == '\x0A' { continue }
+        if c == '\x0D' {
+            editLines.add(line + "\n")
+            line = ""
+        } else {
+            line = line + c
+            if line.length >= limit {
+                editLines.add(line)      // soft row: continues on the next
+                line = ""
+            }
+        }
+    }
+    if line != "" { editLines.add(line + "\n") }
+}
+
 // Row i's text without its trailing CR, and whether it had one.
 func rowText(i: int): string {
     var row: string = editLines[i]

@@ -756,11 +756,16 @@ func editFileDescInput(input: string) {
 
 func startFileDescEditor(name: string) {
     editTarget = 'F'
-    editLines.clear()
     editPending = ' '
+    if upEditing {
+        seedEditorBody(fileLongDesc(fileRec.id))   // edit what's there
+    } else {
+        editLines.clear()
+    }
     sendEditorBanner("Long Description - " + name)
     sendLine("Enter the long description, one line at a time.")
     sendLine("/S saves, /A aborts, /? lists commands.")
+    if editLines.count > 0 { listEditLines() }
     user.screen = "editbody"
     displayPrompt()
 }
