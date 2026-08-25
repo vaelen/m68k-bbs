@@ -48,7 +48,7 @@ func xferAcceptName(name: string): bool { return acceptNames }
 // Feed a CRC frame for block blk carrying data (128 or 1024 bytes).
 func feedFrame(blk: int, data: text) {
     var i: int = 0
-    var crc: int = crcXmodem(data)
+    var crc: int = data.crc16x(0, 0, data.length)
     if data.length == 1024 { xmodemChar('\x02') } else { xmodemChar('\x01') }
     xmodemChar(char(blk))
     xmodemChar(char(255 - blk))
@@ -116,7 +116,7 @@ func expectBlock(at: int, blk: int, pos: int, n: int, name: string) {
         data.append(sent[at + 3 + i])
         i = i + 1
     }
-    crc = crcXmodem(data)
+    crc = data.crc16x(0, 0, data.length)
     ok = ok and sent[at + 131] == char(crc >> 8)
     ok = ok and sent[at + 132] == char(crc)
     expect(ok, name)
@@ -149,7 +149,7 @@ func expectBig(at: int, blk: int, pos: int, n: int, size: int, name: string) {
         data.append(sent[at + 3 + i])
         i = i + 1
     }
-    crc = crcXmodem(data)
+    crc = data.crc16x(0, 0, data.length)
     ok = ok and sent[at + 3 + size] == char(crc >> 8)
     ok = ok and sent[at + 4 + size] == char(crc)
     expect(ok, name)
@@ -163,7 +163,7 @@ on App.startCLI(args: list of string) {
 
     // 1. CRC-16/XMODEM check value
     check = "123456789"
-    expect(crcXmodem(check) == 0x31C3, "crcXmodem check value 0x31C3")
+    expect(check.crc16x(0, 0, 9) == 0x31C3, "text.crc16x check value 0x31C3")
 
     // 2. CRC start: 300-byte file -> blocks 1..3, last padded, EOT
     makeFile("xm300.bin", 300)
@@ -317,7 +317,7 @@ on App.startCLI(args: list of string) {
         check.append(sent[3 + i])
         i = i + 1
     }
-    expect(sent[131] == char(crcXmodem(check) >> 8) and sent[132] == char(crcXmodem(check)), "YMODEM: block 0 CRC")
+    expect(sent[131] == char(check.crc16x(0, 0, 128) >> 8) and sent[132] == char(check.crc16x(0, 0, 128)), "YMODEM: block 0 CRC")
     xmodemChar('\x06')
     expect(sent.length == 133, "YMODEM: ACK of block 0 sends nothing yet")
     xmodemChar('C')

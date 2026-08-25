@@ -88,11 +88,9 @@ resend: a timeout there just counts an error. Other bytes in any
 state are ignored (a receiver re-sending `C` while a block is in
 flight, prompt echo, line noise).
 
-`crcXmodem` is CRC-16/XMODEM (poly `0x1021`, init 0, no reflection,
-no final XOR; `"123456789"` → `0x31C3`), a bitwise loop. The runtime's
-`text.crc16` is CRC-16/KERMIT, a different algorithm. A table-driven
-`text.crc16x` is filed in `docs/language-gaps.md` §8; when it lands,
-`crcXmodem` becomes one call.
+The CRC is the runtime's `text.crc16x` — CRC-16/XMODEM (poly `0x1021`,
+init 0, no reflection, no final XOR; `"123456789"` → `0x31C3`). The
+runtime's `text.crc16` is CRC-16/KERMIT, a different algorithm.
 
 `conn.send` on the Mac is `PBWriteSync`: a 1029-byte frame blocks the
 event loop for ~0.2 s at 57600 bps, during which incoming bytes queue

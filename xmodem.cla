@@ -57,29 +57,6 @@ var xmCanCount: int = 0
 var xmLast: text               // last frame, resent verbatim
 var xmLastData: int = 0        // file bytes carried by xmLast
 
-// CRC-16/XMODEM: poly 0x1021, init 0, no reflection, no final XOR.
-// ponytail: bitwise loop (8 steps per byte); swap for text.crc16x
-// when the runtime grows it (docs/language-gaps.md #8).
-func crcXmodem(t: text): int {
-    var crc: int = 0
-    var i: int = 0
-    var b: int = 0
-    while i < t.length {
-        crc = crc ^ (int(t[i]) << 8)
-        b = 0
-        while b < 8 {
-            if (crc & 0x8000) != 0 {
-                crc = ((crc << 1) ^ 0x1021) & 0xFFFF
-            } else {
-                crc = (crc << 1) & 0xFFFF
-            }
-            b = b + 1
-        }
-        i = i + 1
-    }
-    return crc
-}
-
 func xmodemSendStart(path: string, name: string, mode: char) {
     xmFile = file.open(path)
     if xmFile == nil {
@@ -239,7 +216,7 @@ func xmFrame(data: text) {
         i = i + 1
     }
     if xmCrc {
-        crc = crcXmodem(data)
+        crc = data.crc16x(0, 0, data.length)
         xmLast.append(char(crc >> 8))
         xmLast.append(char(crc))
     } else {
@@ -530,7 +507,7 @@ func rvFrameDone() {
         return
     }
     if rvCrc {
-        want = crcXmodem(rvBuf)
+        want = rvBuf.crc16x(0, 0, rvBuf.length)
     } else {
         while i < rvBuf.length {
             sum = sum + int(rvBuf[i])

@@ -22,10 +22,9 @@ Worth stating so these aren't re-filed:
   XMODEM-1K and YMODEM run in both directions on today's toolchain
   (`xmodem.cla`, `docs/file-transfers.md`) — protocol framing is a
   *library*, not a language feature, and `every N ticks` timers cover
-  the ACK/NAK timeouts. ZMODEM waits only on `crc32` (§8 below).
-- **XMODEM's CRC.** `text.crc16` is CRC-16/KERMIT, not XMODEM's; a
-  ten-line bitwise loop in `xmodem.cla` covers it for now. The
-  optimized builtin is §8 below — a speed-up, not a blocker.
+  the ACK/NAK timeouts.
+- **Transfer CRCs.** `text.crc16x` (CRC-16/XMODEM) and `text.crc32`
+  (ZMODEM's) shipped (§8 below is closed); `xmodem.cla` uses `crc16x`.
 - **Capturing a data-fork file's size at import.** `file.open` then
   `size()` works today (it just leaves a handle open briefly).
 
@@ -134,7 +133,10 @@ Rename in place, and move between folders. No such call exists.
 - Nice-to-have: uploads can write straight to the final path, so this is
   a convenience rather than a blocker.
 
-### 8. Optimized transfer CRCs: `text.crc16x` and `text.crc32`
+### 8. Optimized transfer CRCs: `text.crc16x` and `text.crc32` — SHIPPED
+
+**Shipped** in the pinned toolchain (2026-08-25); `xmodem.cla` uses
+`text.crc16x`. Kept for the record:
 
 `text.crc16(h, pos, n)` implements exactly one algorithm, CRC-16/KERMIT
 (reflected `0x8408`). XMODEM and YMODEM use the *other* common CRC-16 —
@@ -169,10 +171,9 @@ poly `0x1021` forward (non-reflected), init 0, no final XOR, check value
 | 5 | Set type/creator/dates | Correct Finder identity after decode | PBSetFInfo |
 | 6 | Create a directory | Wizard-created area folders | PBDirCreate |
 | 7 | Rename / move | Pending→approved holding-area workflow | PBRename |
-| 8 | `text.crc16x` / `text.crc32` | Fast XMODEM CRC (workaround exists); ZMODEM (no workaround) | — (pure runtime) |
+| 8 | `text.crc16x` / `text.crc32` — shipped | Fast XMODEM CRC; ZMODEM | — (pure runtime) |
 
 Data-fork transfers (1‑to‑1 with the modem) need **none** of these — only
-the HFS-path spike; item 8 is a speed-up for XMODEM and a prerequisite
-only for ZMODEM. Items 1–3 make the sysop and import experience real;
+the HFS-path spike (item 8, the CRCs, has shipped). Items 1–3 make the sysop and import experience real;
 items 4–5 are what make file areas able to carry genuine Macintosh
 software rather than flat files.

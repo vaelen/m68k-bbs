@@ -316,8 +316,8 @@ inputChar (bbs.cla) → processInput`.
   `xmodemTick`, `xmodemAbort`) over a `filehandle`; mode `'X'`
   128-byte blocks, `'1'` 1K `STX` blocks with a 128-byte tail, `'Y'`
   1K plus block 0 (name NUL size NUL) and the empty end-of-batch
-  block; CRC-16 (`crcXmodem`, bitwise 0x1021 — `text.crc16` is the
-  Kermit CRC) or checksum on a NAK start (not YMODEM), ½-second
+  block; CRC-16 (`text.crc16x` — `text.crc16` is the Kermit CRC,
+  not XMODEM's) or checksum on a NAK start (not YMODEM), ½-second
   ticks for the 60 s start / 10 s ACK timeouts, ten-error ceiling,
   CAN CAN handling; the receive side prods with C/NAK, assembles
   frames byte by byte, NAKs only after the line goes quiet, and
