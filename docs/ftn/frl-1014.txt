@@ -1,0 +1,122 @@
+**********************************************************************
+FTSC                             FIDONET TECHNICAL STANDARDS COMMITTEE
+**********************************************************************
+
+Publication:  FRL-1014
+Revision:     1
+Title:        Hudson Message Base (HMB) locking semantics
+Authors:      Andrew Milner
+Issue Date:   10 February 2005
+Review Date:  N/A
+----------------------------------------------------------------------
+Contents:
+         1. RALCK003.DOC
+----------------------------------------------------------------------
+
+Status of this document
+-----------------------
+
+   This document is a Fidonet Reference Library document (FRL).
+
+   This document preserves the contents of RALCK003.DOC intact - see
+   below for Copyright, etc.
+
+
+1. RALCK003.DOC
+---------------
+
+Name    : RALCK003.DOC
+Rev     : 003
+Date    : 29 Jan 1992
+Subject : RemoteAccess Message database locking for multiuser applications.
+Author  : Andrew Milner
+
+This document (C) Copyright 1991,1992 by Andrew Milner. It may be freely
+distributed and/or included in other publications in it's entire and
+unmodified form only.
+
+
+PURPOSE
+-------
+
+The purpose of this document is to describe the locking technique that is
+used by RemoteAccess 1.11 to ensure the integrity of it's message database
+in a multi-user environment. Developers of third party software that
+requires access to the database files are strongly encouraged to implement
+the described locking scheme.
+
+The locking method is relatively simple; any competent developer should
+have no trouble implementing it. This document assumes that the reader knows
+how to call an interrupt with appropriate parameters, and read the values
+returned.
+
+
+LOCKING METHOD
+--------------
+
+All message database files must be opened in DENYNONE mode.
+
+1. Use the INT 21 5Ch function to lock a region of the MSGINFO.BBS file;
+   This region starts at byte 407, and is 1 byte long. Locking a region
+   beyond the physical file size is considered valid by SHARE, and
+   ensures that other applications may access information contained in
+   the file for read purposes while it is locked.
+
+   If an error occurred, the carry flag is set and the error returned
+   in AX:
+
+        01h = Invalid function number, means SHARE is not installed.
+              How this is handled will vary - RemoteAccess disables
+              all locking and proceeds with the update.
+              (See note 5 below).
+
+        06h = Invalid handle
+
+        21h = Lock violation - this means that another application
+              is performing an update. Keep trying to get the lock
+              for 15 seconds, then abort the update with an error
+              message if unsuccessful.
+
+2. Perform the delete, add or modify operation.
+
+3. Unlock the region that was locked in step 1.
+
+
+NOTES
+-----
+
+1. The lock need only be applied for a delete, modify or add operation.
+   Simply reading the database does not require any special treatment.
+
+2. Terminating an application does NOT automatically remove this type of
+   lock. This means that if the application which created the lock terminates
+   abnormally before the lock is removed, no other application will be able
+   to update the message database. Only a reset will remove the lock.
+
+3. RemoteAccess 1.10 introduced an extension to the locking specification.
+   If unable to get a lock on the message database, RemoteAccess will
+   create (or touch the timestamp if it already exists) a zero-length
+   semaphore file called MBUNLOCK.NOW, in the message-base directory.
+   Applications which lock the message-base for longer than 15 seconds
+   continuously should check for the presence of this file, and if it has
+   been created or touched, release the lock temporarily to allow
+   RemoteAccess to perform an update operation.
+
+4. Applications should never assume that MSGINFO.BBS has not changed; this
+   file should be read after the lock (step 1) and rewritten again if
+   appropriate before the lock is removed (step 3).
+
+5. Many network shells also support the INT 21 5Ch function, making SHARE
+   unnecessary. Therefore, simply doing a SHARE "installation check" is
+   not sufficient. The application should attempt an actual lock in order
+   to determine whether this function is supported.
+
+
+CREDITS
+-------
+
+The locking specification described in this document was originally
+co-developed by Andrew Milner and Joaquim Homrighausen. The MBUNLOCK.NOW
+extension (see note 3) was suggested by Gerard van der Land.
+
+**********************************************************************

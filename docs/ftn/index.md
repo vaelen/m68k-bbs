@@ -1,0 +1,144 @@
+# Fidonet Technical Standards
+
+  - [FTS-0001](fts-0001.txt)  Basic Fidonet Technical Standard
+  - [FTS-0004](fts-0004.txt)  Echomail specification
+  - [FTS-0006](fts-0006.txt)  YOOHOO and YOOHOO/2U2
+  - [FTS-0007](fts-0007.txt)  SEAlink protocol extension
+  - [FTS-0008](fts-0008.txt)  Bark file-request protocol extension
+  - [FTS-0009](fts-0009.txt)  Message identification and reply linkage
+  - [FTS-1024](fts-1024.txt)  Raw ifcico mail transfer protocol
+  - [FTS-1025](fts-1025.txt)  Simple E-Mail Attach Transport (S.E.A.T.)
+  - [FTS-1026](fts-1026.txt)  Binkp/1.0 Protocol specification
+  - [FTS-1027](fts-1027.txt)  Binkp/1.0 optional protocol extension CRAM
+  - [FTS-1028](fts-1028.txt)  Binkp protocol extension Non-reliable Mode
+  - [FTS-1029](fts-1029.txt)  Binkp optional protocol extension Dataframe Compression
+  - [FTS-1030](fts-1030.txt)  Binkp optional protocol extension CRC Checksum
+  - [FTS-4000](fts-4000.txt)  Control paragraphs
+  - [FTS-4001](fts-4001.txt)  Addressing control paragraphs
+  - [FTS-4008](fts-4008.txt)  Time zone information (TZUTC)
+  - [FTS-4009](fts-4009.txt)  Netmail tracking (Via)
+  - [FTS-5000](fts-5000.txt)  The Distribution Nodelist
+  - [FTS-5001](fts-5001.txt)  Nodelist Flags and Userflags
+  - [FTS-5002](fts-5002.txt)  Pointlist formats
+  - [FTS-5003](fts-5003.txt)  Character set definition in Fidonet messages
+  - [FTS-5004](fts-5004.txt)  DSN Distributed Nodelist
+  - [FTS-5005](fts-5005.txt)  Advanced Binkleyterm Style Outbound flow and control
+  - [FTS-5006](fts-5006.txt)  Tick file format
+
+# Fidonet Standards Proposals
+
+  - [FSP-1024](fsp-1024.txt)  Binkp/1.1 Protocol specification
+  - [FSP-1027](fsp-1027.txt)  Binkp extensions: No Dupes mode and No Dupes
+  - [FSP-1034](fsp-1034.txt)  Advanced BinkleyTerm Style Outbound flow and control files
+  - [FSP-1040](fsp-1040.txt)  SRIF file request interface
+
+# Fidonet Reference Library
+
+  - [FSC-0003](fsc-0003.txt)  FidoNet Route Files Explained
+  - [FSC-0004](fsc-0004.txt)  Zones and Zonegates explained primitively
+  - [FSC-0005](fsc-0005.txt)  Opus 1.01 Netmail passwording scheme
+  - [FSC-0007](fsc-0007.txt)  RFC-822-style msg header proposal
+  - [FSC-0009](fsc-0009.txt)  Nodelist Flag Draft Document
+  - [FSC-0010](fsc-0010.txt)  Dutchie 2.80 SEAlink File Resynch
+  - [FSC-0011](fsc-0011.txt)  Experiences/corrections to FSC-0001
+  - [FSC-0014](fsc-0014.txt)  Binary-style msg proposal
+  - [FSC-0015](fsc-0015.txt)  FOSSIL 5.0 Documentation
+  - [FSC-0016](fsc-0016.txt)  FidoNet Mail Session Startup
+  - [FSC-0017](fsc-0017.txt)  Archive Philosophy and Document Naming
+  - [FSC-0020](fsc-0020.txt)  Alternate Nodelist Flag Proposal
+  - [FSC-0021](fsc-0021.txt)  VFOSSIL, OS/2 Video FOSSIL Appendage
+  - [FSC-0023](fsc-0023.txt)  Bundle naming convention proposal
+  - [FSC-0024](fsc-0024.txt)  Binary bundle proposal
+  - [FSC-0025](fsc-0025.txt)  AVATAR Video Spec
+  - [FSC-0028](fsc-0028.txt)  Proposed file-forwarding standard
+  - [FSC-0030](fsc-0030.txt)  Proposal for message identification
+  - [FSC-0031](fsc-0031.txt)  Proposed message id/linkage standard
+  - [FSC-0032](fsc-0032.txt)  Proposed message quoting standard
+  - [FSC-0033](fsc-0033.txt)  Proposal for message identification
+  - [FSC-0034](fsc-0034.txt)  Gateways to and from FidoNet(r)
+  - [FSC-0035](fsc-0035.txt)  Transparent gateways to/from FidoNet
+  - [FSC-0036](fsc-0036.txt)  Group Mail specification
+  - [FSC-0037](fsc-0037.txt)  AVATAR 0+ Video Spec
+  - [FSC-0038](fsc-0038.txt)  A Domain Proposal For Fidonet
+  - [FSC-0039](fsc-0039.txt)  A type-2 packet extension proposal
+  - [FSC-0040](fsc-0040.txt)  Proposed modem handling extension
+  - [FSC-0042](fsc-0042.txt)  A modified gateway agreement
+  - [FSC-0043](fsc-0043.txt)  Some hints on recognizing control lines in Fidonet ...
+  - [FSC-0044](fsc-0044.txt)  Improved duplicate detection
+  - [FSC-0045](fsc-0045.txt)  Proposed new packet header
+  - [FSC-0046](fsc-0046.txt)  Product ID for FidoNet message handlers
+  - [FSC-0047](fsc-0047.txt)  The ^ASPLIT kludge line
+  - [FSC-0048](fsc-0048.txt)  Proposed type-2 packet extension
+  - [FSC-0049](fsc-0049.txt)  Passing domain information during FTS-0006 sessions
+  - [FSC-0050](fsc-0050.txt)  Character set identifier for FidoNet msg editors
+  - [FSC-0051](fsc-0051.txt)  System-independent way of transferring special cha ...
+  - [FSC-0052](fsc-0052.txt)  A proposal for making the PATH zone aware
+  - [FSC-0053](fsc-0053.txt)  Specifications for the ^aFLAGS field
+  - [FSC-0054](fsc-0054.txt)  The CHARSET proposal
+  - [FSC-0055](fsc-0055.txt)  Security passwords in nodelist updates
+  - [FSC-0056](fsc-0056.txt)  EMSI/IEMSI protocol definition
+  - [FSC-0057](fsc-0057.txt)  Echo Area Managers - Specifications for Requests
+  - [FSC-0058](fsc-0058.txt)  A New Way Of Addressing In FidoNet
+  - [FSC-0059](fsc-0059.txt)  Newsgroup Interchange within FidoNet
+  - [FSC-0061](fsc-0061.txt)  Proposed Guidelines for the FileBone
+  - [FSC-0062](fsc-0062.txt)  Nodelist Flag Indicating Online Times
+  - [FSC-0063](fsc-0063.txt)  Proposal For FidoNet Messages
+  - [FSC-0064](fsc-0064.txt)  InterDomain Message ID, Gating, Linking and Addressing
+  - [FSC-0065](fsc-0065.txt)  Type 3 ASCII: A Proposal
+  - [FSC-0066](fsc-0066.txt)  Type 3 Binary: A Proposal
+  - [FSC-0067](fsc-0067.txt)  A Proposal For Sensible New Kludge Lines
+  - [FSC-0068](fsc-0068.txt)  A Proposed Replacement For FTS-0004
+  - [FSC-0069](fsc-0069.txt)  A FidoNet (FTN) Domain Name Service
+  - [FSC-0070](fsc-0070.txt)  Improving FidoNet/UseNet Gating and Dupe Checking
+  - [FSC-0071](fsc-0071.txt)  Distributed FREQ (DFREQ) Specifications
+  - [FSC-0072](fsc-0072.txt)  The HYDRA File Transfer Protocol
+  - [FSC-0073](fsc-0073.txt)  Encrypted message identification for Fidonet
+  - [FSC-0074](fsc-0074.txt)  Proposed echomail specification to replace FTS-0004
+  - [FSC-0076](fsc-0076.txt)  A Proposal for NetMail AreaTags
+  - [FSC-0077](fsc-0077.txt)  Type-10 Packet Format
+  - [FSC-0078](fsc-0078.txt)  Gateway between Fidonet compatible networks
+  - [FSC-0079](fsc-0079.txt)  RTF Mail: message formatting in Type-2 message packet
+  - [FSC-0080](fsc-0080.txt)  Describing FidoNet with a layered model
+  - [FSC-0081](fsc-0081.txt)  A type-3 packet proposal
+  - [FSC-0082](fsc-0082.txt)  Proposed new packet type
+  - [FSC-0083](fsc-0083.txt)  Proposed standard for message IDS on FTN systems
+  - [FSC-0084](fsc-0084.txt)  EDX1: Electronic Data Exchange standard level 1
+  - [FSC-0085](fsc-0085.txt)  Proposal for "NOZIP" and "ERX" nodelist flags
+  - [FSC-0086](fsc-0086.txt)  SRIF: Description of new Standard Requestion ...
+  - [FSC-0087](fsc-0087.txt)  File forwarding in FidoNet technology networks
+  - [FSC-0088](fsc-0088.txt)  Compatibility & Link Qualifier Extens ... EMSI ...
+  - [FSC-0089](fsc-0089.txt)  The INTL: netmail addressing control line
+  - [FSC-0090](fsc-0090.txt)  FTSC Product Codes and Application Form
+  - [FSC-0091](fsc-0091.txt)  ISDN nodelist flags (supersedes FSC-0075)
+  - [FSC-0092](fsc-0092.txt)  New control lines for forwarded messages
+  - [FSC-0093](fsc-0093.txt)  Reduced seen-by lines
+  - [FRL-1001](frl-1001.txt)  Suggested use of Nodelist Fields
+  - [FRL-1002](frl-1002.txt)  Standard Fidonet Addressing
+  - [FRL-1003](frl-1003.txt)  The Distribution Nodelist
+  - [FRL-1004](frl-1004.txt)  Timezone information in FTN messages
+  - [FRL-1005](frl-1005.txt)  Via kludge specification
+  - [FRL-1006](frl-1006.txt)  Binkp - a protocol for transferring FidoNet mail over reliable connections
+  - [FRL-1007](frl-1007.txt)  Numeric reply indication in FTN subject lines
+  - [FRL-1008](frl-1008.txt)  Kludge for specifying addition e-mail reply addresses
+  - [FRL-1009](frl-1009.txt)  Multiple recipient address specification to gateway
+  - [FRL-1010](frl-1010.txt)  New control lines for forwarded messages
+  - [FRL-1011](frl-1011.txt)  Year 2000 issues in FTN software
+  - [FRL-1012](frl-1012.txt)  Moderating by Voting echomail distribution system
+  - [FRL-1013](frl-1013.txt)  Binkp optional protocol extension Multiple Password
+  - [FRL-1014](frl-1014.txt)  Hudson Message Base (HMB) locking semantics
+  - [FRL-1015](frl-1015.txt)  Zone 2 nodelist flags
+  - [FRL-1016](frl-1016.txt)  Integration of IP-Nodes in the nodelist
+  - [FRL-1017](frl-1017.txt)  The ICM flag
+  - [FRL-1018](frl-1018.txt)  Binkp/1.0 optional protocol extension Multiple Batch
+  - [FRL-1019](frl-1019.txt)  IPv6 colon substitution in the nodelist
+  - [FRL-1020](frl-1020.txt)  Character set definition in Fidonet messages
+  - [FRL-1021](frl-1021.txt)  Unicode character set on Fidonet messages
+  - [FRL-1022](frl-1022.txt)  Binkp optional protocol extension CRC Checksum
+  - [FRL-1026](frl-1026.txt)  Translation of a Fidonet Address into an Internet Domain Name
+  - [FRL-1026](frl-1026.txt)  Translation of a Fidonet Address into an Internet Domain Name
+  - [FRL-1028](frl-1028.txt)  FTN Address Format
+  - [FRL-1032](frl-1032.txt)  Binkp optional protocol extension Dataframe Compression
+  - [FRL-1035](frl-1035.txt)  DNS Distributed nodelist
+  - [FRL-1036](frl-1036.txt)  IPv6 numbers in the nodelist
+  - [FRL-1038](frl-1038.txt)  The INO4 flag
+  - [FRL-1039](frl-1039.txt)  Tic file format
