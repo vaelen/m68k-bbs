@@ -981,6 +981,7 @@ func sendFolderHelp() {
     sendLine("  :Downloads           a folder inside the application's directory")
     sendLine("  Shareware CD         the root of a volume by that name")
     sendLine("  BBS HD:Files:Games   a full path to a folder")
+    sendLine("")
 }
 
 func editAreaChoice(input: string) {

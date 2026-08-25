@@ -759,6 +759,8 @@ func startFileDescEditor(name: string) {
     editLines.clear()
     editPending = ' '
     sendEditorBanner("Long Description - " + name)
+    sendLine("Enter the long description, one line at a time.")
+    sendLine("/S saves, /A aborts, /? lists commands.")
     user.screen = "editbody"
     displayPrompt()
 }
@@ -809,7 +811,15 @@ func addUploadEntry(body: text) {
 }
 
 func backToFileView() {
+    var w: list of int
     upEditing = false
+    // Re-read the entry and re-wrap the long description -- descLines
+    // still holds the pre-edit text, so a bare drawFileView would show
+    // the freshly saved description as missing.
+    fileViewWidths(w)
+    loadFile(fileRec.id)
+    wrapText(fileLongDesc(fileRec.id), w[0], descLines)
+    descPage = 1
     user.screen = "fileview"
     drawFileView()
     displayPrompt()
