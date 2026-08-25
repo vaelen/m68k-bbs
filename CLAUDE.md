@@ -152,8 +152,11 @@ inputChar (bbs.cla) → processInput`.
   SEND; the probe also offers WILL ECHO and WILL/DO SGA, so telnet
   clients go character-at-a-time with local echo off — the client's
   DO ECHO/SGA are agreed silently, DONT ECHO clears terminal.echo;
+  BINARY (RFC 856) agreed both ways — `tnBinaryIn`/`tnBinaryOut`,
+  and `telnetBinaryRequest()` asks for what's still off at transfer
+  start, since NVT mode mangles CR in binary data;
   unknown WILL → DONT, other DO/DONT → WONT), releases clean bytes to
-  `inputChar`, drops NVT CR NUL's NUL, applies NAWS to
+  `inputChar`, drops NVT CR NUL's NUL unless the client sends BINARY, applies NAWS to
   `terminal.columns/rows` via `setColumns`/`setRows` (clamped 20-132 /
   10-60 physical) and records
   TERMINAL-TYPE/SPEED replies. Interception is on only while
@@ -328,7 +331,9 @@ inputChar (bbs.cla) → processInput`.
   byte** — they are the XMODEM handshake bytes (docs/file-transfers.md,
   "Text around a transfer"; the e2e script enforces it).
   `tests/xmodem-test.cla` unit-tests it; `scripts/xmodem-e2e.sh`
-  receives with `lrz` over `socat` (`docs/file-transfers.md`).
+  receives with `lrz` over `socat`, raw and again through
+  `scripts/telnet-shim.py` (a SyncTERM-faithful telnet layer)
+  (`docs/file-transfers.md`).
 - `zmodem.cla` — ZMODEM sender **and** receiver
   (`zmodemSendStart(path, name)` / `zmodemRecvStart(folder)`,
   `zmodemChar`, `zmodemTick`, `zmodemAbort`): one parser for hex,
@@ -420,7 +425,7 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
   `postsdb.cla`, `maildb.cla`, `areasdb.cla`, `filesdb.cla`,
   `terminal.cla`, `termio.cla`, `btree.cla`, `vdb.cla` — modules above
 - `tests/` — host-lane test suites; `scripts/` — build/test/deploy,
-  `xmodem-e2e.sh` (lrz over socat)
+  `xmodem-e2e.sh` (lrz over socat, raw and via `telnet-shim.py`)
 - `bin/`, `vendor/` — pinned compiler + runtime/toolbox snapshot
 - `docs/` — language reference + Snow how-to (symlinks), language-gaps.md,
   telnet-negotiation-reference.md and vt100.codes.txt (protocol notes)

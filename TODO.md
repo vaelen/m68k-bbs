@@ -33,3 +33,18 @@ download in the file view covers the common case, and this is mostly UI.
 - The `*` marker has to fit both the 79- and 39-column layouts.
 
 ~80-100 lines in `files.cla`, ~40 in the engines. No language gap.
+
+## ZRINIT ESCCTL for non-BINARY telnet links
+
+Telnet transfers rely on BINARY (RFC 856) being agreed both ways
+(`telnet.cla`, `telnetBinaryRequest`); a client that refuses it stays
+in NVT mode, which appends LF to every lone CR it sends and drops a
+NUL after a CR it receives. For ZMODEM there is a belt-and-braces
+option: set ESCCTL in our `ZRINIT` flags so the sender ZDLE-escapes
+every control byte (CR included) and the NVT rewriting never sees a
+bare CR in the data. Only helps uploads (our receiver's `ZRINIT`), and
+only ZMODEM — XMODEM/YMODEM have no escaping, so a client that can't
+do BINARY still can't transfer those. Not needed by SyncTERM, which
+negotiates BINARY at connect; add if some other client turns up that
+won't. `zmodem.cla` receiver's `ZRINIT` builder, plus a unit case in
+`tests/zmodem-test.cla` (the parser side already handles ESCCTL).

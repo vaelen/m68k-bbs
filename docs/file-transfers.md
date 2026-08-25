@@ -20,9 +20,14 @@ session dispatch carries it:
   hands every raw byte to `xferChar(c)` — before the linemode/hotkey
   assembly, so nothing is buffered, echoed or interpreted. The
   scanner and telnet layers stay in front, on purpose: telnet clients
-  in binary mode send data byte 0xFF as `IAC IAC`, which `telnet.cla`
-  already folds back to one byte, and the scanner still notices a
-  `NO CARRIER` if the line drops mid-transfer.
+  send data byte 0xFF as `IAC IAC`, which `telnet.cla` folds back to
+  one byte, and the scanner still notices a `NO CARRIER` if the line
+  drops mid-transfer. `xferStart`/`xferStartReceive` call
+  `telnetBinaryRequest()` first: a telnet link must be in BINARY
+  (RFC 856) both ways, because in NVT mode a client appends LF to
+  every CR it sends and drops a NUL after a CR it receives (SyncTERM
+  asks for BINARY at connect; `telnet.cla` agrees, and asks for
+  whichever direction is still off).
 - **Bytes out.** `xferOut(t: text)` sends the frame through
   `telnetSend(modem, …)` in 255-byte slices (frames are 1 KB and
   more; strings cap at 255): IAC doubling for telnet callers, no
@@ -321,9 +326,18 @@ and a sysop's login banner counts pending files across all areas
   against 1K mode, `lrz --ymodem` and `lrz --zmodem` (exact 3000-byte
   files) through `socat`, then runs the uploads the other way with
   `lsz -X`, `lsz -X -k`, `lsz --ymodem` and `lsz --zmodem` into the
-  harness's receiver. `bbs.cla` itself cannot run on the host: window/menu/`every`
-  declarations make it a UI program and the host runtime has no UI
-  lane. Needs `socat` and `lrzsz` (Homebrew).
+  harness's receiver. Every leg then runs again behind
+  `scripts/telnet-shim.py`, a stdio filter that frames the wire the way
+  a telnet-mode SyncTERM does (its connect-time WILL/DO BINARY, IAC
+  doubling, and the NVT CR LF / CR NUL rewriting when BINARY is
+  refused -- a transcription of `syncterm/telnet_io.c`), with the
+  harness's telnet processor on (`T` prefix on its mode arg). The
+  sample file has CR NUL, a lone CR, CR LF, 0xFF and CR 0xFF planted
+  at offset 100 so each run crosses the bytes NVT mangles;
+  `TELNET_SHIM_LOG=path` dumps both wire directions. `bbs.cla` itself
+  cannot run on the host: window/menu/`every` declarations make it a
+  UI program and the host runtime has no UI lane. Needs `socat`,
+  `lrzsz` (Homebrew) and `python3`.
 - **Snow:** reset the image to the baseline (CLAUDE.md), `hcopy -r` a
   host-built `Users.*`/`Areas.*`/`ARE01.*` seed plus the sample file
   next to the app, `scripts/deploy.sh`, double-click 68kBBS, then

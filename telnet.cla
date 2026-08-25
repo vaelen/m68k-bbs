@@ -14,10 +14,12 @@
 // DO TERMINAL-TYPE / DO NAWS / DO TERMINAL-SPEED, and any telnet verb
 // coming back sets terminal.telnet. WILL TERMINAL-TYPE and WILL
 // TERMINAL-SPEED are answered with the SB SEND request; NAWS
-// subnegotiation updates terminal.columns/rows. Every other WILL is
-// refused with DONT and every DO/DONT with WONT (we offer no local
-// options -- in particular no ECHO/SGA, which keeps clients in
-// line-at-a-time local-echo mode, matching our Line input mode).
+// subnegotiation updates terminal.columns/rows. BINARY (RFC 856) is
+// agreed in both directions -- SyncTERM asks for it at connect, and
+// telnetBinaryRequest() asks for it at transfer start -- because in
+// NVT mode a telnet client appends LF to every CR it sends and drops
+// a NUL after a CR it receives, which corrupts file transfers. Every
+// other WILL is refused with DONT and every DO/DONT with WONT.
 
 include "terminal.cla"
 
@@ -29,6 +31,7 @@ const tnWONT: char = '\xFC'
 const tnDO:   char = '\xFD'
 const tnDONT: char = '\xFE'
 
+const optBinary:   char = '\x00'   // BINARY (RFC 856)
 const optEcho:     char = '\x01'   // ECHO (RFC 857)
 const optSGA:      char = '\x03'   // SUPPRESS-GO-AHEAD (RFC 858)
 const optTermType: char = '\x18'   // TERMINAL-TYPE (24)
@@ -47,11 +50,31 @@ var tnVerb: char           // which of WILL/WONT/DO/DONT
 var tnPayload: string(63)  // SB option byte + payload (overflow dropped)
 var telnetIntercept: bool = false   // watch incoming bytes for IAC
 var tnAfterCR: bool = false         // last data byte was CR (for CR NUL)
+var tnBinaryIn: bool = false        // client sends binary (its WILL / our DO)
+var tnBinaryOut: bool = false       // we send binary (its DO / our WILL)
 
 func telnetReset() {
     tnState = tnData
     tnPayload = ""
     tnAfterCR = false
+    tnBinaryIn = false
+    tnBinaryOut = false
+}
+
+// Ask a telnet client for BINARY in whichever direction is still off
+// (call before a file transfer). Set optimistically like SyncTERM does:
+// the client's agreeing WILL/DO then needs no reply, and a refusal
+// clears the flag again in telnetVerb.
+func telnetBinaryRequest() {
+    if not terminal.telnet { return }
+    if not tnBinaryIn {
+        tnBinaryIn = true
+        telnetOut("\xFF\xFD\x00")   // DO BINARY
+    }
+    if not tnBinaryOut {
+        tnBinaryOut = true
+        telnetOut("\xFF\xFB\x00")   // WILL BINARY
+    }
 }
 
 // Open the negotiation: DO TERMINAL-TYPE / NAWS / TERMINAL-SPEED,
@@ -67,19 +90,32 @@ func telnetVerb(verb: char, opt: char) {
     if verb == tnWILL {
         if opt == optTermType or opt == optSpeed {
             telnetOut("\xFF\xFA" + opt + "\x01\xFF\xF0")   // SB <opt> SEND SE
+        } else if opt == optBinary {
+            if not tnBinaryIn {
+                tnBinaryIn = true
+                telnetOut("\xFF\xFD\x00")   // DO: yes, send binary
+            }
         } else if opt != optNaws and opt != optSGA {
             telnetOut("\xFF\xFE" + opt)   // DONT: option we didn't ask for
         }
         // NAWS/SGA need no reply: NAWS's answer is the client's SB,
         // SGA was agreed by our probe's DO
     } else if verb == tnDO {
-        if opt != optEcho and opt != optSGA {
+        if opt == optBinary {
+            if not tnBinaryOut {
+                tnBinaryOut = true
+                telnetOut("\xFF\xFB\x00")   // WILL: we send binary
+            }
+        } else if opt != optEcho and opt != optSGA {
             telnetOut("\xFF\xFC" + opt)   // WONT: not an option we offer
         }
         // ECHO/SGA: our probe already said WILL; the DO is the agreement
     } else if verb == tnDONT {
         if opt == optEcho { terminal.echo = false }   // client keeps local echo
+        if opt == optBinary { tnBinaryOut = false }
         telnetOut("\xFF\xFC" + opt)       // WONT: acknowledge disabled
+    } else if opt == optBinary {
+        tnBinaryIn = false                // WONT BINARY: back to NVT CR NUL
     }
     // WONT: the option stays off; silence (refusal is final)
 }
@@ -121,7 +157,7 @@ func dataChar(c: char) {
     case tnData {
         if c == tnIAC {
             tnState = tnCmd
-        } else if c == '\x00' and tnAfterCR {
+        } else if c == '\x00' and tnAfterCR and not tnBinaryIn {
             tnAfterCR = false     // NVT end-of-line is CR NUL: drop the NUL
         } else {
             tnAfterCR = (c == '\x0D')

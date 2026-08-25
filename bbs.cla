@@ -93,6 +93,7 @@ func xferStart(proto: char, path: string, name: string) {
     xferProto = proto
     xferPath = path
     user.screen = "xfer"
+    telnetBinaryRequest()    // 8-bit clean both ways for a telnet caller
     switch proto {
     case 'X', '1', 'Y' { xmodemSendStart(path, name, proto) }
     case 'Z' { zmodemSendStart(path, name) }
@@ -103,6 +104,7 @@ func xferStartReceive(proto: char, folder: string, name: string) {
     xferProto = proto
     xferPath = ""
     user.screen = "xfer"
+    telnetBinaryRequest()
     switch proto {
     case 'X', '1', 'Y' { xmodemRecvStart(proto, folder, name) }
     case 'Z' { zmodemRecvStart(folder) }

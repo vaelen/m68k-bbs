@@ -146,6 +146,44 @@ on App.startCLI(args: list of string) {
     feedString("ok")
     expectReleased("ok", "reset returns to data state")
 
+    // 18. BINARY (RFC 856): agreed both ways; once the client sends
+    // binary a NUL after CR is data, not NVT end-of-line
+    feedString("\xFF\xFB\x00")
+    expectWire("\xFF\xFD\x00", "WILL BINARY answered with DO")
+    feedString("A\x0D\x00B")
+    expectReleased("A\x0D\x00B", "CR NUL passes through in binary mode")
+    feedString("\xFF\xFB\x00")
+    expectWire("", "repeated WILL BINARY not re-acknowledged")
+    feedString("\xFF\xFD\x00")
+    expectWire("\xFF\xFB\x00", "DO BINARY answered with WILL")
+    feedString("\xFF\xFC\x00")
+    expectWire("", "WONT BINARY answered with silence")
+    feedString("A\x0D\x00B")
+    expectReleased("A\x0DB", "CR NUL dropped again after WONT BINARY")
+    feedString("\xFF\xFE\x00")
+    expectWire("\xFF\xFC\x00", "DONT BINARY answered with WONT")
+
+    // 19. telnetBinaryRequest asks for whichever direction is still off
+    telnetBinaryRequest()
+    expectWire("\xFF\xFD\x00\xFF\xFB\x00", "binary request sends DO + WILL when both off")
+    feedString("\xFF\xFB\x00\xFF\xFD\x00")
+    expectWire("", "the client's WILL/DO answering our request need no reply")
+    feedString("A\x0D\x00B")
+    expectReleased("A\x0D\x00B", "binary in force after the requested WILL")
+    telnetBinaryRequest()
+    expectWire("", "binary request is silent once both directions are on")
+    feedString("\xFF\xFE\x00")
+    expectWire("\xFF\xFC\x00", "DONT BINARY after the request answered with WONT")
+    telnetBinaryRequest()
+    expectWire("\xFF\xFB\x00", "binary request re-offers only the refused direction")
+    terminal.telnet = false
+    telnetReset()
+    telnetBinaryRequest()
+    expectWire("", "binary request is silent for a non-telnet caller")
+    terminal.telnet = true
+    feedString("A\x0D\x00B")
+    expectReleased("A\x0DB", "telnetReset drops binary mode")
+
     if failures > 0 {
         log("telnet-test: FAILED")
         quit 1

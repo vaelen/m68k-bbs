@@ -5,7 +5,11 @@
 # the host runtime has no UI lane, so bbs.cla itself only runs on the
 # Mac) listens on TCP and on CONNECT either sends sample.bin (arg
 # X/1/Y/Z; lrz receives it) or receives into recv/ (arg RX/R1/RY/RZ;
-# lsz sends sample.bin). Needs socat and lrzsz.
+# lsz sends sample.bin). Every leg then runs again behind
+# scripts/telnet-shim.py, which frames the wire the way a telnet-mode
+# SyncTERM does (IAC doubling, BINARY negotiation, NVT CR handling);
+# a T prefix on the harness arg turns the telnet processor on. Needs
+# socat, lrzsz and python3.
 # Usage: scripts/xmodem-e2e.sh [port]
 set -e
 cd "$(dirname "$0")/.."
@@ -23,9 +27,12 @@ include "$REPO/zmodem.cla"
 var modem: connection
 var mode: char = 'X'
 var recv: bool = false
+var telnet: bool = false
 
 func connected() {
     log("connected")
+    telnetReset()
+    telnetIntercept = telnet
     // The same wording files.cla sends, so this rig catches a capital C
     // (or NAK/CAN) creeping back into the announcement: senders take
     // those as the handshake and start mid-sentence.
@@ -34,6 +41,7 @@ func connected() {
     } else {
         telnetSend(modem, "Start your XMODEM receive now. Two ^X abort.\x0D\x0A")
     }
+    telnetBinaryRequest()   // as xferStart/xferStartReceive do
     if mode == 'Z' {
         // a different wire name: lrz won't overwrite the YMODEM leg's file
         if recv { zmodemRecvStart("") } else { zmodemSendStart("sample.bin", "zsample.bin") }
@@ -69,12 +77,18 @@ func xferDone(ok: bool) {
 // can't build; the unit suite covers the timeouts.
 
 on App.startCLI(args: list of string) {
+    var a: string
     if args.count > 0 {
-        if args[0].length == 2 {
+        a = args[0]
+        if a[0] == 'T' {
+            telnet = true
+            a = a[1, a.length - 1]
+        }
+        if a.length == 2 {
             recv = true
-            mode = args[0][1]
+            mode = a[1]
         } else {
-            mode = args[0][0]
+            mode = a[0]
         }
     }
     modem.open(serial "modem:57600")
@@ -103,6 +117,9 @@ fi
 bin/clarusc emit --rtdir vendor/runtime/clarus/ -o "$WORK/harness.c" "$WORK/harness.cla"
 cc -O1 -I vendor/runtime/host -o "$WORK/harness" "$WORK/harness.c" vendor/runtime/host/rt.c
 head -c 3000 /dev/urandom > "$WORK/sample.bin"   # 2 x 1K + a 952-byte tail
+# The byte pairs a telnet NVT link mangles: CR NUL, a lone CR, CR LF,
+# 0xFF (IAC) and CR IAC. Planted so every run exercises them.
+printf '\r\000A\rB\r\n\377\377\r\377\000' | dd of="$WORK/sample.bin" bs=1 seek=100 conv=notrunc 2>/dev/null
 head -c 1000 /dev/urandom > "$WORK/m1.bin"
 head -c 2000 /dev/urandom > "$WORK/m2.bin"
 head -c 1500 /dev/urandom > "$WORK/m3.bin"
@@ -111,16 +128,17 @@ head -c 1500 /dev/urandom > "$WORK/m3.bin"
 # CONNECT line reaches the scanner and lrz then owns both directions.
 mkdir -p "$WORK/recv"
 run_one() {   # $1 = mode (X/1/Y), $2 = lrz flags, $3 = output name, $4 = expected size, $5 = lrz name arg
-    (cd "$WORK" && CLARUS_SERIAL_MODEM=listen:$PORT ./harness $1 > "harness-$3.log" 2>&1) &
+    (cd "$WORK" && CLARUS_SERIAL_MODEM=listen:$PORT ./harness $T$1 > "harness-$3.log" 2>&1) &
     HARNESS=$!
     sleep 1
     cat > "$WORK/drive.sh" <<EOF
 #!/bin/sh
-printf '\r\nCONNECT 57600\r\n'; sleep 1
+$PRE
 cd "$WORK/recv" && exec lrz $2 $5
 EOF
     chmod +x "$WORK/drive.sh"
-    socat TCP:localhost:$PORT EXEC:"$WORK/drive.sh" 2>"$WORK/lrz-$3.log" || true
+    rm -f "$WORK/recv/$3"   # lrz skips a file that already exists
+    socat TCP:localhost:$PORT EXEC:"$SHIM $WORK/drive.sh" 2>"$WORK/lrz-$3.log" || true
     sleep 1
     kill $HARNESS 2>/dev/null || true
     wait $HARNESS 2>/dev/null || true
@@ -139,17 +157,17 @@ EOF
 # Uploads: the harness runs in recv/ (so the file lands there) and lsz
 # sends sample.bin from the driver.
 run_up() {   # $1 = mode (RX/R1/RY), $2 = lsz flags, $3 = expected name, $4 = expected size
-    (cd "$WORK/recv" && CLARUS_SERIAL_MODEM=listen:$PORT ../harness $1 > "../harness-up-$1.log" 2>&1) &
+    (cd "$WORK/recv" && CLARUS_SERIAL_MODEM=listen:$PORT ../harness $T$1 > "../harness-up-$1.log" 2>&1) &
     HARNESS=$!
     sleep 1
     cat > "$WORK/drive.sh" <<EOF
 #!/bin/sh
-printf '\r\nCONNECT 57600\r\n'; sleep 1
+$PRE
 cd "$WORK" && exec lsz $2 sample.bin
 EOF
     chmod +x "$WORK/drive.sh"
     rm -f "$WORK/recv/$3"
-    socat TCP:localhost:$PORT EXEC:"$WORK/drive.sh" 2>"$WORK/lsz-$1.log" || true
+    socat TCP:localhost:$PORT EXEC:"$SHIM $WORK/drive.sh" 2>"$WORK/lsz-$1.log" || true
     sleep 1
     kill $HARNESS 2>/dev/null || true
     wait $HARNESS 2>/dev/null || true
@@ -167,17 +185,17 @@ EOF
 # Multi-file upload: lsz sends three files in one session; the receiver
 # loops ZFILE..ZEOF..ZRINIT (YMODEM: block 0 per file). All three land.
 run_up_multi() {   # $1 = mode (RZ/RY), $2 = lsz flags
-    (cd "$WORK/recv" && CLARUS_SERIAL_MODEM=listen:$PORT ../harness $1 > "../harness-multi-$1.log" 2>&1) &
+    (cd "$WORK/recv" && CLARUS_SERIAL_MODEM=listen:$PORT ../harness $T$1 > "../harness-multi-$1.log" 2>&1) &
     HARNESS=$!
     sleep 1
     cat > "$WORK/drive.sh" <<EOF
 #!/bin/sh
-printf '\r\nCONNECT 57600\r\n'; sleep 1
+$PRE
 cd "$WORK" && exec lsz $2 m1.bin m2.bin m3.bin
 EOF
     chmod +x "$WORK/drive.sh"
     rm -f "$WORK/recv/m1.bin" "$WORK/recv/m2.bin" "$WORK/recv/m3.bin"
-    socat TCP:localhost:$PORT EXEC:"$WORK/drive.sh" 2>"$WORK/lsz-multi-$1.log" || true
+    socat TCP:localhost:$PORT EXEC:"$SHIM $WORK/drive.sh" 2>"$WORK/lsz-multi-$1.log" || true
     sleep 1
     kill $HARNESS 2>/dev/null || true
     wait $HARNESS 2>/dev/null || true
@@ -197,16 +215,16 @@ EOF
 # zrWaitCrc path against a real sender).
 run_up_resume() {
     head -c 1500 "$WORK/sample.bin" > "$WORK/recv/sample.bin"
-    (cd "$WORK/recv" && CLARUS_SERIAL_MODEM=listen:$PORT ../harness RZ > "../harness-upres.log" 2>&1) &
+    (cd "$WORK/recv" && CLARUS_SERIAL_MODEM=listen:$PORT ../harness ${T}RZ > "../harness-upres.log" 2>&1) &
     HARNESS=$!
     sleep 1
     cat > "$WORK/drive.sh" <<EOF
 #!/bin/sh
-printf '\r\nCONNECT 57600\r\n'; sleep 1
+$PRE
 cd "$WORK" && exec lsz --zmodem -r -b sample.bin
 EOF
     chmod +x "$WORK/drive.sh"
-    socat TCP:localhost:$PORT EXEC:"$WORK/drive.sh" 2>"$WORK/lsz-upres.log" || true
+    socat TCP:localhost:$PORT EXEC:"$SHIM $WORK/drive.sh" 2>"$WORK/lsz-upres.log" || true
     sleep 1
     kill $HARNESS 2>/dev/null || true
     wait $HARNESS 2>/dev/null || true
@@ -223,16 +241,16 @@ EOF
 # resumes from it (the sender obeying ZRPOS>0 and answering ZCRC).
 run_dl_resume() {
     head -c 1500 "$WORK/sample.bin" > "$WORK/recv/zsample.bin"
-    (cd "$WORK" && CLARUS_SERIAL_MODEM=listen:$PORT ./harness Z > "harness-dlres.log" 2>&1) &
+    (cd "$WORK" && CLARUS_SERIAL_MODEM=listen:$PORT ./harness ${T}Z > "harness-dlres.log" 2>&1) &
     HARNESS=$!
     sleep 1
     cat > "$WORK/drive.sh" <<EOF
 #!/bin/sh
-printf '\r\nCONNECT 57600\r\n'; sleep 1
+$PRE
 cd "$WORK/recv" && exec lrz --zmodem -r -b
 EOF
     chmod +x "$WORK/drive.sh"
-    socat TCP:localhost:$PORT EXEC:"$WORK/drive.sh" 2>"$WORK/lrz-dlres.log" || true
+    socat TCP:localhost:$PORT EXEC:"$SHIM $WORK/drive.sh" 2>"$WORK/lrz-dlres.log" || true
     sleep 1
     kill $HARNESS 2>/dev/null || true
     wait $HARNESS 2>/dev/null || true
@@ -244,17 +262,34 @@ EOF
     fi
 }
 
-run_one X "-X -b" checksum.bin 3072 checksum.bin
-run_one X "-X -b -c" crc.bin 3072 crc.bin
-run_one 1 "-X -b -c" xmodem1k.bin 3072 xmodem1k.bin
-run_one Y "--ymodem -b" sample.bin 3000 ""      # YMODEM names the file itself
-run_up RX "-X -b" upload.bin 3072
-run_up R1 "-X -b -k" upload.bin 3072
-run_up RY "--ymodem -b" sample.bin 3000
-run_one Z "--zmodem -b" zsample.bin 3000 ""    # ZMODEM names the file too
-run_up RZ "--zmodem -b" sample.bin 3000
-run_up_multi RZ "--zmodem -b"
-run_up_multi RY "--ymodem -b"
-run_up_resume
-run_dl_resume
+run_all() {
+    run_one X "-X -b" checksum.bin 3072 checksum.bin
+    run_one X "-X -b -c" crc.bin 3072 crc.bin
+    run_one 1 "-X -b -c" xmodem1k.bin 3072 xmodem1k.bin
+    run_one Y "--ymodem -b" sample.bin 3000 ""      # YMODEM names the file itself
+    run_up RX "-X -b" upload.bin 3072
+    run_up R1 "-X -b -k" upload.bin 3072
+    run_up RY "--ymodem -b" sample.bin 3000
+    run_one Z "--zmodem -b" zsample.bin 3000 ""    # ZMODEM names the file too
+    run_up RZ "--zmodem -b" sample.bin 3000
+    run_up_multi RZ "--zmodem -b"
+    run_up_multi RY "--ymodem -b"
+    run_up_resume
+    run_dl_resume
+}
+
+# Raw socket: the driver prints the modem's CONNECT line itself.
+PRE="printf '\r\nCONNECT 57600\r\n'; sleep 1"
+SHIM=""
+T=""
+run_all
+echo "raw legs passed"
+
+# Telnet-mode caller: the shim prints CONNECT, negotiates like SyncTERM
+# and frames both directions; the harness runs its telnet processor.
+PRE=""
+SHIM="python3 $REPO/scripts/telnet-shim.py"
+T="T"
+run_all
+echo "telnet legs passed"
 echo "xmodem e2e passed"
