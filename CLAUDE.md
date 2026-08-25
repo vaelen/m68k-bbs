@@ -270,7 +270,8 @@ inputChar (bbs.cla) → processInput`.
   detail cards, lettered-field edit cards (buffered; `S` saves, `Q`
   discards; a sysop cannot change their own access level or delete
   their own account), Y/N delete confirmations over the detail card,
-  the New Board wizard, and the same L/S/E/N/D tree over file areas
+  the New Board wizard, folder-syntax help (`sendFolderHelp`) before
+  both area folder prompts, and the same L/S/E/N/D tree over file areas
   (`Areas` database: name/description/folder/access; Sysop menu `F`).
   `parseIntStr` (all-digits or 0) lets ID-or-name prompts
   disambiguate naturally.
@@ -294,10 +295,13 @@ inputChar (bbs.cla) → processInput`.
   menu `xferproto`: `X` XMODEM, `1` XMODEM-1K, `Y` YMODEM →
   `startDownload` → `xferStart`; `xferDone` bumps the download count
   and redraws the view), sysop-only `X` delete and `A` approve on a
-  pending entry, `Q` up one level. The list's `U` uploads
-  (`upproto` → `upname` for XMODEM → `updesc` → `xferStartReceive`);
-  `xferReceived` adds the entry with `fileFlagPending` unless the
-  uploader is a sysop.
+  pending entry, `E` edit descriptions (short prompt, then the line
+  editor with `editTarget 'F'`; `/S` replaces the long description
+  via `setFileLongDesc`, `/A` keeps it), `Q` up one level. The list's
+  `U` uploads (`upproto` → `upname` for XMODEM → `xferStartReceive`);
+  `xferReceived` queues each received file and the describe loop then
+  prompts short description + long-description editor per file before
+  `addFile` (`fileFlagPending` unless the uploader is a sysop).
 - `mail.cla` — private mail UI: main-menu `M` → paged inbox (`*`
   marks unread, newest first) → framed message view (viewing marks
   read; `R` reply, `D` delete with Y/N confirm, `>`/`<` between
@@ -328,8 +332,10 @@ inputChar (bbs.cla) → processInput`.
   `durationStr` — appended on disconnect; `loginLogRecent(n, out)`
   reads the newest n in one positioned read, newest first; field
   offsets are the `login*At` consts.
-- `editor.cla` — WWIV-style line editor for new posts, replies, and
-  private mail (`editTarget` picks the save target). Each numbered
+- `editor.cla` — WWIV-style line editor for new posts, replies,
+  private mail, and file long descriptions (`editTarget` picks the
+  save target; `'F'` routes /S and /A to files.cla's
+  `fileDescSave`/`fileDescAbort`). Each numbered
   line is one display row (`lineLimit = terminal.columns - 5`, set by
   `editBodyPrompt`): typing past the end of a row starts the next row
   with no newline in the text (`inputSoft`), Enter ends a row with a

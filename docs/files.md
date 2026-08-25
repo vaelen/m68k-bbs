@@ -150,6 +150,9 @@ area, creating the database, name index, and heap on first use.
 - `fileLongDesc(id): text` — from the heap; empty if none
 - `saveFile(): bool` — write `fileRec` back (downloads, flags,
   description, uploader, name); long description carried over
+- `setFileLongDesc(id, longDesc): bool` — replace the long
+  description: heap append + flush first, then the journaled header
+  update (the `addFile` ordering); empty clears; old bytes orphaned
 - `filePath(id): string` — empty if the entry doesn't exist
 - `fileCount()`, `filesNextId()`
 - Flag consts: `fileFlagPending` (1), `fileFlagOffline` (2)
@@ -173,7 +176,11 @@ same table senders and paging helpers.
   `saveArea`, `Q` discards; in edit, `-` clears the folder back to the
   app directory), a Y/N delete over the detail card, and a New Area
   wizard (name → description → folder → access, empty name cancels).
-  Deleting an area leaves its `ARE<nn>` files and folder behind.
+  Deleting an area leaves its `ARE<nn>` files and folder behind. Both
+  folder prompts print `sendFolderHelp` examples first — empty = app
+  directory, `:Downloads` = folder inside it, a bare name = a volume,
+  or a full path — because `filePath` joins `<folder>:<name>`, making
+  a bare subfolder name read as a volume name.
 
 - **Caller** (`files.cla`, main menu `F`): area picker → paged file
   list → framed file view. Two visibility rules enforced here (the
@@ -187,9 +194,10 @@ same table senders and paging helpers.
   frame width as the last header line) and the paged long description
   below it. Sysops additionally get
   `X` delete (a `dbDelete` of the header; the physical file and heap
-  bytes stay behind, like post deletion) and `A` approve on a pending
-  entry. `D` downloads and `U` (on the list) uploads
-  (`docs/file-transfers.md`).
+  bytes stay behind, like post deletion), `A` approve on a pending
+  entry, and `E` edit the short and long descriptions. `D` downloads
+  and `U` (on the list) uploads, with descriptions prompted after the
+  transfer (`docs/file-transfers.md`).
 
 ## Later steps (what this layout already supports)
 

@@ -972,11 +972,23 @@ func drawEditAreaCard() {
     sendRule(BottomLeft, BottomCenter, BottomRight, w)
 }
 
+// What a folder value means to the File Manager -- printed before both
+// folder prompts (fileFolderPath joins "<folder>:<name>", so a bare
+// name would be read as a volume; docs/files.md).
+func sendFolderHelp() {
+    sendLine("Folder examples:")
+    sendLine("  (empty)              the BBS application's own directory")
+    sendLine("  :Downloads           a folder inside the application's directory")
+    sendLine("  Shareware CD         the root of a volume by that name")
+    sendLine("  BBS HD:Files:Games   a full path to a folder")
+}
+
 func editAreaChoice(input: string) {
     switch upperStr(input) {
     case "N", "D", "F", "A" {
         editField = upperStr(input)[0]
         user.screen = "editareaval"
+        if editField == 'F' { sendFolderHelp() }
         displayPrompt()
     }
     case "S" {
@@ -1130,6 +1142,7 @@ func newAreaDesc(input: string) {
     }
     area.description = input
     user.screen = "newareafolder"
+    sendFolderHelp()
     displayPrompt()
 }
 

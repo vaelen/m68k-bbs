@@ -26,6 +26,7 @@ func heapSize(): int {
 }
 
 on App.startCLI(args: list of string) {
+    var desc3: text
     var id1: int
     var id2: int
     var id3: int
@@ -109,6 +110,15 @@ on App.startCLI(args: list of string) {
     expect(filesNextId() == 3, "next ID survives reopen")
     expect(findFile("README.TXT") == id2, "name index survives reopen")
     expect(fileLongDesc(id1) == desc1, "heap offsets still valid after reopen")
+
+    // long-description replacement: heap append + header update
+    desc3 = "replacement text\x0D"
+    expect(setFileLongDesc(id1, desc3), "setFileLongDesc replaces")
+    expect(fileLongDesc(id1) == desc3, "new long description reads back")
+    desc3 = ""
+    expect(setFileLongDesc(id1, desc3), "setFileLongDesc clears")
+    expect(fileLongDesc(id1).length == 0, "cleared long description is empty")
+    expect(not setFileLongDesc(99, desc3), "missing entry rejected")
     filesClose()
 
     if failures > 0 {

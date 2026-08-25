@@ -210,6 +210,29 @@ func saveFile(): bool {
 // The physical file's path: the loaded `area`'s folder joined to the
 // entry's name with ":", or the bare name when the folder is empty
 // (the app's own directory). Empty if the entry doesn't exist.
+// Replace entry `id`'s long description: append the new text to the
+// heap and flush BEFORE the journaled header update (the addFile
+// ordering), so a crash never leaves a header pointing at missing
+// text. Empty text clears it. The old heap bytes are orphaned (no
+// compactor, like posts).
+func setFileLongDesc(id: int, longDesc: text): bool {
+    var b: filehandle = filesDesc
+    var rec: text
+    var off: int = 0
+    if not dbIsOpen(filesDb) or b == nil { return false }
+    rec = dbFind(filesDb, id)
+    if rec.length != fileRecordSize { return false }
+    if longDesc.length > 0 {
+        off = b.size()
+        if off < 0 { return false }
+        if not b.append(longDesc) { return false }
+        if not b.flush() { return false }
+    }
+    rec.setIntAt(fOffDescOff, off)
+    rec.setIntAt(fOffDescLen, longDesc.length)
+    return dbUpdate(filesDb, id, rec)
+}
+
 // The physical path for a name in the loaded area.
 func fileFolderPath(name: string): string {
     if area.folder.length == 0 { return name }

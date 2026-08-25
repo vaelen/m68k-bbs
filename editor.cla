@@ -21,7 +21,8 @@ var editPending: char = ' '     // 'E'/'I': next line replaces/inserts;
 var editPendingLine: int = 0
 var editPendingHard: bool = false   // /E target row ended with Enter
 var editOriginal: string
-var editTarget: char = 'P'      // 'P' board post, 'M' private mail
+var editTarget: char = 'P'      // 'P' board post, 'M' private mail,
+                                // 'F' file long description (files.cla)
 
 // ponytail: 100 lines max; raise if real posts ever hit it.
 const editMaxLines: int = 100
@@ -101,6 +102,10 @@ func editSubjectInput(input: string) {
 }
 
 func abortEditor() {
+    if editTarget == 'F' {
+        fileDescAbort()
+        return
+    }
     if editTarget == 'M' {
         sendLine("Message aborted.")
         backToInbox()
@@ -349,6 +354,10 @@ func saveEditor() {
     while i < editLines.count {
         body = body + editLines[i]   // rows carry their own newlines
         i = i + 1
+    }
+    if editTarget == 'F' {
+        fileDescSave(body)
+        return
     }
     if editTarget == 'M' {
         if sendMail(user.name, user.id, mailToName, mailToId, editSubject, body) >= 1 {

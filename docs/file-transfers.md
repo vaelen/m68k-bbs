@@ -177,13 +177,23 @@ view is `X` (it was `D`); the list-side delete is unchanged.
 
 Uploading: `U) Upload File` on the file list → the same protocol menu →
 `Filename:` (XMODEM and XMODEM-1K only; YMODEM carries the name) →
-`Description:` → `Send your file now. Two ^X abort.` Each file that
-arrives prints `Received <name> (<n> bytes).`, and the session ends
-with `Upload complete.` plus, for ordinary callers,
-`It will be listed once the sysop approves it.` — the entry is stored
-with `fileFlagPending`, hidden from everyone but sysops until a sysop
-opens it and presses `A) Approve File`. A sysop's own uploads are
-listed immediately.
+`Send your file now. Two ^X abort.` — the transfer starts at once.
+Descriptions come **after** it: for each file that arrived (a YMODEM
+batch describes each in turn), `Describe <name> (<n> bytes)` prompts
+for a one-line description and then opens the line editor
+(`docs/boards.md`'s editor, `editTarget 'F'`) for the long
+description — `/S` saves the entry with it, `/A` saves the entry
+without one (the file is already on disk either way). Ordinary
+callers' entries are stored with `fileFlagPending` — hidden from
+everyone but sysops until one opens the file and presses
+`A) Approve File`; a sysop's own uploads are listed immediately. A
+failed transfer still describes whatever fully arrived.
+
+Sysops also get `E) Edit Descriptions` in the file view:
+`Description [<current>]:` (empty keeps it), then the same editor for
+the long description — `/S` replaces it (`setFileLongDesc`: the old
+heap bytes are orphaned, like deleted posts), `/A` keeps it; the
+short description saves either way.
 
 ## Testing
 

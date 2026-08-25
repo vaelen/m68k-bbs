@@ -420,6 +420,7 @@ func drawFileViewMenu() {
     sendLine("D) Download File")
     if user.access == accessSysop {
         if (fileRec.flags & fileFlagPending) != 0 { sendLine("A) Approve File") }
+        sendLine("E) Edit Descriptions")
         sendLine("X) Delete File")
     }
     sendLine("Q) Return to File List")
@@ -487,6 +488,13 @@ func fileViewChoice(input: string) {
                 sendLine("Save failed: " + lastError.message)
             }
             drawFileView()
+        }
+        displayPrompt()
+    }
+    case "E" {
+        if user.access == accessSysop {
+            upEditing = true
+            user.screen = "editfiledesc"
         }
         displayPrompt()
     }
@@ -586,7 +594,11 @@ func xferProtoChoice(input: string) {
 var xferDir: char = 'D'          // 'D' download, 'U' upload
 var upProto: char = 'X'
 var upName: string(31)
-var upDesc: string(63)
+var upShort: string(63)
+var upNames: list of string(31)   // received this session, awaiting describe
+var upSizes: list of int
+var upIndex: int = 0
+var upEditing: bool = false       // editor saves to fileRec, not a new entry
 
 func protoLabel(proto: char): string {
     switch proto {
@@ -608,9 +620,13 @@ func startDownload(proto: char) {
 }
 
 // --- Upload ------------------------------------------------------------
-// U on the file list -> protocol -> (XMODEM: filename) -> description ->
-// the "xfer" screen. Each received file becomes a pending entry
-// (sysops' own uploads go live at once); xferDone returns to the list.
+// U on the file list -> protocol -> (XMODEM: filename) -> the "xfer"
+// screen. Descriptions come AFTER the transfer: each received file is
+// queued by xferReceived, and the describe loop prompts for a short
+// description then the long-description editor (editor.cla, target
+// 'F') per file before addFile (pending unless the uploader is a
+// sysop). The same short-prompt + editor pair, with upEditing set, is
+// the file view's sysop E) Edit.
 
 func drawUpProtoMenu() {
     sendLine("")
@@ -630,11 +646,11 @@ func upProtoChoice(input: string) {
         upProto = choice[0]
         upName = ""
         if upProto == 'Y' {
-            user.screen = "updesc"       // the name comes with the file
+            startUpload()                // the name comes with the file
         } else {
             user.screen = "upname"
+            displayPrompt()
         }
-        displayPrompt()
     }
     case "", "Q" {
         user.screen = "files"
@@ -674,6 +690,44 @@ func upNameInput(input: string) {
         return
     }
     upName = input
+    startUpload()
+}
+
+func startUpload() {
+    xferDir = 'U'
+    upNames.clear()
+    upSizes.clear()
+    sendLine("Send your file now. Two ^X abort.")
+    log(protoLabel(upProto) + " receive into " + area.name)
+    xferStartReceive(upProto, area.folder, upName)
+}
+
+// Engine callback: one file landed on disk. Just queue it -- the
+// describe loop adds the entry once the session is back in line mode.
+func xferReceived(name: string, bytes: int) {
+    upNames.add(name)
+    upSizes.add(bytes)
+    log("Upload: " + name + " (" + intStr(bytes) + " bytes) from " + user.name)
+    sendLine("Received " + name + " (" + intStr(bytes) + " bytes).")
+}
+
+// --- Describing --------------------------------------------------------
+// One received file at a time: short description prompt, then the
+// long-description editor; /S saves the entry with the body, /A saves
+// it without one (the file is already on disk either way).
+
+func describeNext() {
+    upEditing = false
+    if upIndex >= upNames.count {
+        upNames.clear()
+        upSizes.clear()
+        user.screen = "files"
+        drawFileList()
+        displayPrompt()
+        return
+    }
+    sendLine("")
+    sendLine("Describe " + upNames[upIndex] + " (" + intStr(upSizes[upIndex]) + " bytes)")
     user.screen = "updesc"
     displayPrompt()
 }
@@ -684,24 +738,81 @@ func upDescInput(input: string) {
         displayPrompt()
         return
     }
-    upDesc = input
-    xferDir = 'U'
-    sendLine("Send your file now. Two ^X abort.")
-    log(protoLabel(upProto) + " receive into " + area.name)
-    xferStartReceive(upProto, area.folder, upName)
+    upShort = input
+    startFileDescEditor(upNames[upIndex])
 }
 
-// Engine callback: one file landed on disk.
-func xferReceived(name: string, bytes: int) {
-    var none: text
-    var flags: int = fileFlagPending
-    if user.access == accessSysop { flags = 0 }
-    if addFile(name, user.name, upDesc, bytes, flags, none) < 1 {
-        log("Upload: addFile failed for " + name + ": " + lastError.message)
+// E) Edit in the file view (sysop): new short description (empty
+// keeps the current one), then the editor for the long description.
+func editFileDescInput(input: string) {
+    if input.length > 63 {
+        sendLine("Descriptions are limited to 63 characters.")
+        displayPrompt()
         return
     }
-    log("Upload: " + name + " (" + intStr(bytes) + " bytes) from " + user.name)
-    sendLine("Received " + name + " (" + intStr(bytes) + " bytes).")
+    if input != "" { fileRec.description = input }
+    startFileDescEditor(fileRec.name)
+}
+
+func startFileDescEditor(name: string) {
+    editTarget = 'F'
+    editLines.clear()
+    editPending = ' '
+    sendEditorBanner("Long Description - " + name)
+    user.screen = "editbody"
+    displayPrompt()
+}
+
+// Editor /S: the body is the long description.
+func fileDescSave(body: text) {
+    if upEditing {
+        if setFileLongDesc(fileRec.id, body) and saveFile() {
+            sendLine("Saved.")
+        } else {
+            sendLine("Save failed: " + lastError.message)
+        }
+        backToFileView()
+        return
+    }
+    addUploadEntry(body)
+}
+
+// Editor /A: keep the existing long description (edit) or add the
+// entry without one (upload).
+func fileDescAbort() {
+    var none: text
+    if upEditing {
+        if saveFile() {
+            sendLine("Description saved; long description unchanged.")
+        } else {
+            sendLine("Save failed: " + lastError.message)
+        }
+        backToFileView()
+        return
+    }
+    addUploadEntry(none)
+}
+
+func addUploadEntry(body: text) {
+    var flags: int = fileFlagPending
+    if user.access == accessSysop { flags = 0 }
+    if addFile(upNames[upIndex], user.name, upShort, upSizes[upIndex], flags, body) < 1 {
+        sendLine("Save failed: " + lastError.message)
+        log("Upload: addFile failed for " + upNames[upIndex] + ": " + lastError.message)
+    } else if flags != 0 {
+        sendLine("Added; it will be listed once the sysop approves it.")
+    } else {
+        sendLine("Added.")
+    }
+    upIndex = upIndex + 1
+    describeNext()
+}
+
+func backToFileView() {
+    upEditing = false
+    user.screen = "fileview"
+    drawFileView()
+    displayPrompt()
 }
 
 // Engine callback: the transfer is over and the engine is idle.
@@ -710,15 +821,12 @@ func xferDone(ok: bool) {
     if xferDir == 'U' {
         if ok {
             sendLine("Upload complete.")
-            if user.access != accessSysop {
-                sendLine("It will be listed once the sysop approves it.")
-            }
         } else {
             sendLine("Upload failed.")
         }
-        user.screen = "files"
-        drawFileList()
-        displayPrompt()
+        // describe whatever fully arrived, even after a failed batch
+        upIndex = 0
+        describeNext()
         return
     }
     if ok {
