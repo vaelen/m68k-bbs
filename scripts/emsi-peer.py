@@ -45,23 +45,30 @@ def read_until(sock, marker, limit=8192):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, required=True)
+    ap.add_argument("--port", type=int, help="listen here as the harness's modem")
+    ap.add_argument("--connect", help="HOST:PORT -- call in through the modem emulator instead "
+                                      "(the Mac has dialed; the emulator sends it CONNECT)")
     ap.add_argument("--address", default="21:1/100")
     ap.add_argument("--password", default="SECRET")
     ap.add_argument("--inbound", required=True)
     ap.add_argument("--outbound", required=True)
     a = ap.parse_args()
-    ls = socket.socket()
-    ls.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    ls.bind(("127.0.0.1", a.port))
-    ls.listen(1)
-    sock, _ = ls.accept()
-    print("peer: harness connected", flush=True)
-    line = read_until(sock, b"\r")
-    if not line.startswith(b"ATDT"):
-        print("peer: expected ATDT, got %r" % line)
-        sys.exit(1)
-    sock.sendall(b"\r\nCONNECT 57600\r\n")
+    if a.connect:
+        host, port = a.connect.rsplit(":", 1)
+        sock = socket.create_connection((host, int(port)))
+        print("peer: connected to the modem emulator", flush=True)
+    else:
+        ls = socket.socket()
+        ls.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        ls.bind(("127.0.0.1", a.port))
+        ls.listen(1)
+        sock, _ = ls.accept()
+        print("peer: harness connected", flush=True)
+        line = read_until(sock, b"\r")
+        if not line.startswith(b"ATDT"):
+            print("peer: expected ATDT, got %r" % line)
+            sys.exit(1)
+        sock.sendall(b"\r\nCONNECT 57600\r\n")
     sock.sendall(seq(b"EMSI_REQ"))
     read_until(sock, b"**EMSI_INQ")
     read_until(sock, b"\r")                       # the INQ's crc + CR
@@ -93,13 +100,18 @@ def main():
     r = subprocess.run(["lsz", "--zmodem", "-b", "-q"] + files,
                        stdin=fd, stdout=fd, stderr=subprocess.DEVNULL)
     print("peer: lsz exit %d, sent %s" % (r.returncode, [os.path.basename(f) for f in files]), flush=True)
+    # the caller hangs up: +++/ATH reach us directly from the harness,
+    # or the modem emulator acts on them and just drops us (EOF)
     tail = b""
     while b"ATH" not in tail:
         chunk = sock.recv(64)
         if not chunk:
             break
         tail += chunk
-    sock.sendall(b"\r\nNO CARRIER\r\n")
+    try:
+        sock.sendall(b"\r\nNO CARRIER\r\n")
+    except OSError:
+        pass
     sock.close()
     print("peer: hung up", flush=True)
 

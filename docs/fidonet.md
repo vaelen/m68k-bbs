@@ -414,6 +414,10 @@ real `lrz`/`lsz`. Two deviations from the text above: the Mac menu is
 named `FidoNet` (a `Network` menu would clash with the `Network`
 record type), and the wire name of our outbound packet is
 `<8-hex of now()>.pkt` rather than `<nn>.pkt`, so the bridge never sees
-two polls' packets under one name. The bridge (`fnemsi` in libftn and
-the modem emulator's dialing) is the remaining piece; the deferrals are
-in `TODO.md`.
+two polls' packets under one name. Verified on Snow (Mac II, System 7) as well: with the sysop's queued
+poll dialing through the modem emulator and `emsi-peer.py --connect`
+answering as the mailer, the Mac's packet arrived intact, both fixture
+packets were tossed into the right board and inbox, and the network
+card recorded the poll as ok. The bridge (`fnemsi` in libftn and the
+modem emulator's dialing) is the remaining piece; the deferrals are in
+`TODO.md`.
