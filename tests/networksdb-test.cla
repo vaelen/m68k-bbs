@@ -1,0 +1,87 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for networksdb.cla. Run by scripts/test.sh.
+// Exits 0 on pass, 1 on the first failure.
+
+include "../networksdb.cla"
+
+var failures: int = 0
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+on App.startCLI(args: list of string) {
+    var n: Network
+    var id: int
+    var rec: text
+
+    expect(networksOpen(), "networks db created")
+    expect(networkCount() == 0, "no networks yet")
+    expect(not loadNetwork(1), "missing network fails to load")
+
+    n.name = "fsxNet"
+    n.domain = "fsxnet"
+    n.addr = parseAddress("21:1/141")
+    n.uplink = parseAddress("21:1/100")
+    n.sessionPw = "SESSION"
+    n.packetPw = "PKTPW"
+    n.areafixPw = "AFIX"
+    n.areafixName = "AreaFix"
+    n.dial = "5551234"
+    n.utcOffset = -300
+    n.pollInterval = 60
+    n.flags = netFlagEnabled
+    id = createNetwork(n)
+    expect(id == 1, "first network created")
+    rec = dbFind(networksDb, 1)
+    expect(rec.length == networkRecordSize, "record is 256 bytes")
+    expect(rec.wordAt(nOffAddr) == 21 and rec.wordAt(nOffAddr + 4) == 141, "address packed at 64")
+    expect(rec.wordAt(nOffUplink + 4) == 100, "uplink packed at 72")
+
+    expect(loadNetwork(1), "load network")
+    expect(network.name == "fsxNet" and network.domain == "fsxnet", "name/domain roundtrip")
+    expect(addressStr(network.addr) == "21:1/141", "our address roundtrip")
+    expect(addressStr(network.uplink) == "21:1/100", "uplink roundtrip")
+    expect(network.sessionPw == "SESSION" and network.packetPw == "PKTPW" and network.areafixPw == "AFIX", "passwords roundtrip")
+    expect(network.areafixName == "AreaFix" and network.dial == "5551234", "robot/dial roundtrip")
+    expect(network.utcOffset == -300, "negative UTC offset roundtrip")
+    expect(network.pollInterval == 60 and network.flags == netFlagEnabled, "interval/flags roundtrip")
+    expect(network.lastPoll == 0 and network.lastResult == pollNever, "never polled")
+    expect(networkEnabled(), "enabled")
+
+    network.lastPoll = now()
+    network.lastResult = pollOk
+    network.utcOffset = 540
+    expect(saveNetwork(), "save")
+    expect(loadNetwork(1) and network.lastResult == pollOk and network.utcOffset == 540, "saved fields reload")
+    expect(network.lastPoll != 0, "lastPoll stored")
+
+    n.name = "Fidonet"
+    n.addr = parseAddress("1:123/456")
+    n.flags = 0
+    expect(createNetwork(n) == 2, "second network")
+    expect(findNetworkByZone(21) == 1 and network.name == "fsxNet", "find by zone loads it")
+    expect(findNetworkByZone(1) == 0, "disabled network not found by zone")
+    expect(findNetworkByZone(99) == 0, "unknown zone")
+    expect(findNetworkByName("fidonet") == 2, "find by name, case-insensitive")
+    expect(findNetworkByName("nope") == 0, "unknown name")
+    expect(pollResultName(pollBadPassword) == "bad password", "result names")
+
+    networksClose()
+    expect(networksOpen() and networkCount() == 2, "reopen")
+    networksClose()
+
+    if failures > 0 {
+        log("networksdb-test: FAILED")
+        quit 1
+    }
+    log("networksdb-test: all passed")
+    quit
+}

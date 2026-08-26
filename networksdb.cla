@@ -1,0 +1,197 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// The Networks database: one record per FTN network we are a leaf
+// node on (docs/fidonet.md, "Networks"). 256-byte records, vDB record
+// ID = network ID:
+//   0    name (32-byte Pascal)         32   domain (32-byte Pascal)
+//   64   our address (4 x u16)         72   uplink address (4 x u16)
+//   80   session password (16)         96   packet password (8)
+//   104  AreaFix password (16)         120  AreaFix robot name (32)
+//   152  dial string (32)              184  UTC offset, minutes (i16)
+//   186  poll interval, minutes (u16)  188  flags (u16; bit 0 enabled)
+//   190  lastPoll (i32)                194  lastResult (u8)
+
+include "vdb.cla"
+include "ftnaddr.cla"
+
+const networkRecordSize: int = 256
+const nOffName: int = 0
+const nOffDomain: int = 32
+const nOffAddr: int = 64
+const nOffUplink: int = 72
+const nOffSessionPw: int = 80
+const nOffPacketPw: int = 96
+const nOffAreafixPw: int = 104
+const nOffAreafixName: int = 120
+const nOffDial: int = 152
+const nOffUtc: int = 184
+const nOffInterval: int = 186
+const nOffFlags: int = 188
+const nOffLastPoll: int = 190
+const nOffLastResult: int = 194
+
+const netFlagEnabled: int = 1
+
+const pollNever: int = 0
+const pollOk: int = 1
+const pollNoCarrier: int = 2
+const pollNotMailer: int = 3
+const pollBadPassword: int = 4
+const pollAddressMismatch: int = 5
+const pollTransferFailed: int = 6
+const pollTimeout: int = 7
+
+record Network {
+    id: int
+    name: string(31)
+    domain: string(31)
+    addr: FtnAddress
+    uplink: FtnAddress
+    sessionPw: string(15)
+    packetPw: string(7)
+    areafixPw: string(15)
+    areafixName: string(31)
+    dial: string(31)
+    utcOffset: int      // minutes east of UTC
+    pollInterval: int   // minutes; 0 = manual only
+    flags: int
+    lastPoll: int       // Mac-epoch seconds; 0 = never
+    lastResult: int     // poll* code
+}
+
+var networksDb: Database
+var network: Network    // last loaded network
+
+func networksOpen(): bool {
+    networksDb = dbOpen("Networks", "68BB")
+    if dbIsOpen(networksDb) { return true }
+    networksDb = dbCreate("Networks", networkRecordSize, "68BB")
+    return dbIsOpen(networksDb)
+}
+
+func networksClose() {
+    if dbIsOpen(networksDb) { dbClose(networksDb) }
+    networksDb = new Database
+}
+
+func networkCount(): int {
+    return dbRecordCount(networksDb)
+}
+
+// For enumerating networks: loop loadNetwork over 1 .. networksNextId()-1.
+func networksNextId(): int {
+    return dbNextRecordId(networksDb)
+}
+
+// Zero-pad t to `off`, then append s as a Pascal field (clamped to max).
+func nwPascalAt(t: text, off: int, s: string, max: int) {
+    var v: string = s
+    if v.length > max { v = v[0, max] }
+    while t.length < off {
+        t.append(char(0))
+    }
+    t.append(char(v.length))
+    t.append(v)
+}
+
+func packNetwork(n: Network): text {
+    var t: text
+    nwPascalAt(t, nOffName, n.name, 31)
+    nwPascalAt(t, nOffDomain, n.domain, 31)
+    while t.length < nOffAddr {
+        t.append(char(0))
+    }
+    packAddress(t, n.addr)
+    packAddress(t, n.uplink)
+    nwPascalAt(t, nOffSessionPw, n.sessionPw, 15)
+    nwPascalAt(t, nOffPacketPw, n.packetPw, 7)
+    nwPascalAt(t, nOffAreafixPw, n.areafixPw, 15)
+    nwPascalAt(t, nOffAreafixName, n.areafixName, 31)
+    nwPascalAt(t, nOffDial, n.dial, 31)
+    while t.length < nOffUtc {
+        t.append(char(0))
+    }
+    btAppendWord(t, n.utcOffset & 0xFFFF)
+    btAppendWord(t, n.pollInterval)
+    btAppendWord(t, n.flags)
+    btAppendInt(t, n.lastPoll)
+    t.append(char(n.lastResult))
+    return t
+}
+
+// Returns the new network ID, or -1.
+func createNetwork(n: Network): int {
+    return dbAdd(networksDb, packNetwork(n))
+}
+
+// Write the global `network` back to its record.
+func saveNetwork(): bool {
+    if network.id < 1 { return false }
+    return dbUpdate(networksDb, network.id, packNetwork(network))
+}
+
+func loadNetwork(id: int): bool {
+    var rec: text = dbFind(networksDb, id)
+    var u: int
+    if rec.length != networkRecordSize { return false }
+    network.id = id
+    network.name = dbExtractString(rec, nOffName)
+    network.domain = dbExtractString(rec, nOffDomain)
+    network.addr = addressAt(rec, nOffAddr)
+    network.uplink = addressAt(rec, nOffUplink)
+    network.sessionPw = dbExtractString(rec, nOffSessionPw)
+    network.packetPw = dbExtractString(rec, nOffPacketPw)
+    network.areafixPw = dbExtractString(rec, nOffAreafixPw)
+    network.areafixName = dbExtractString(rec, nOffAreafixName)
+    network.dial = dbExtractString(rec, nOffDial)
+    u = rec.wordAt(nOffUtc)
+    if u >= 32768 { u = u - 65536 }
+    network.utcOffset = u
+    network.pollInterval = rec.wordAt(nOffInterval)
+    network.flags = rec.wordAt(nOffFlags)
+    network.lastPoll = rec.intAt(nOffLastPoll)
+    network.lastResult = int(rec[nOffLastResult])
+    return true
+}
+
+func networkEnabled(): bool {
+    return (network.flags & netFlagEnabled) != 0
+}
+
+// First enabled network whose address is in `zone`, loaded; 0 if none.
+// ponytail: linear scan -- a board has a handful of networks.
+func findNetworkByZone(zone: int): int {
+    var id: int = 1
+    var last: int = networksNextId()
+    while id < last {
+        if loadNetwork(id) and networkEnabled() and network.addr.zone == zone { return id }
+        id = id + 1
+    }
+    return 0
+}
+
+// Network by name (case-insensitive), loaded; 0 if none.
+func findNetworkByName(name: string): int {
+    var id: int = 1
+    var last: int = networksNextId()
+    while id < last {
+        if loadNetwork(id) and dbStrEqCI(network.name, name) { return id }
+        id = id + 1
+    }
+    return 0
+}
+
+func pollResultName(r: int): string {
+    switch r {
+    case pollNever { return "never polled" }
+    case pollOk { return "ok" }
+    case pollNoCarrier { return "no carrier" }
+    case pollNotMailer { return "not a mailer" }
+    case pollBadPassword { return "bad password" }
+    case pollAddressMismatch { return "address mismatch" }
+    case pollTransferFailed { return "transfer failed" }
+    case pollTimeout { return "timeout" }
+    }
+    return "unknown"
+}
