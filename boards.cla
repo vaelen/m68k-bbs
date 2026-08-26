@@ -277,7 +277,7 @@ func loadPostView(n: int): bool {
         return false
     }
     postNum = n
-    wrapText(postBody(post.id), w[0], bodyLines)
+    wrapText(stripKludges(postBody(post.id)), w[0], bodyLines)
     bodyPage = 1
     drawPostView()
     return true

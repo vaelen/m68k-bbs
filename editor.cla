@@ -21,6 +21,8 @@ var editPending: char = ' '     // 'E'/'I': next line replaces/inserts;
 var editPendingLine: int = 0
 var editPendingHard: bool = false   // /E target row ended with Enter
 var editOriginal: string
+var editReplyMsgId: string(79)  // parent's MSGID for the REPLY kludge ("" = none)
+var editMsgId: string(79)       // MSGID given to the message being saved
 var editTarget: char = 'P'      // 'P' board post, 'M' private mail,
                                 // 'F' file long description (files.cla)
 
@@ -42,6 +44,7 @@ func sendEditorBanner(title: string) {
 func startNewPost() {
     editTarget = 'P'
     editThread = 0
+    editReplyMsgId = ""
     editSubject = ""
     editLines.clear()
     editPending = ' '
@@ -55,6 +58,7 @@ func startNewPost() {
 func startReply() {
     var sub: string = post.subject
     editTarget = 'P'
+    editReplyMsgId = findKludge(postBody(post.id), "MSGID:")
     if post.threadId == 0 {
         editThread = post.id
     } else {
@@ -377,9 +381,27 @@ func editBodyInput(input: string) {
     displayPrompt()
 }
 
+// The kludge prefix for a message we originate on network address a:
+// its own MSGID, plus REPLY when answering a message that had one.
+func editKludges(a: FtnAddress): text {
+    var t: text
+    editMsgId = newMsgId(a)
+    t.append(ftnKludge)
+    t.append("MSGID: " + editMsgId)
+    t.append(ftnCR)
+    if editReplyMsgId != "" {
+        t.append(ftnKludge)
+        t.append("REPLY: " + editReplyMsgId)
+        t.append(ftnCR)
+    }
+    return t
+}
+
 func saveEditor() {
     var body: text
     var i: int = 0
+    var id: int
+    var none: FtnAddress
     while i < editLines.count {
         body = body + editLines[i]   // rows carry their own newlines
         i = i + 1
@@ -397,7 +419,14 @@ func saveEditor() {
         backToInbox()
         return
     }
-    if addPost(user.name, editThread, editSubject, body) >= 1 {
+    if boardNetworked() and loadNetwork(board.networkId) {
+        // kludges first, as toss stores inbound ones (readers hide ^A lines)
+        body = editKludges(network.addr) + body
+        id = addPostFtn(user.name, 0, editThread, editSubject, body, msgIdCrc(editMsgId), none, 0)
+    } else {
+        id = addPost(user.name, editThread, editSubject, body)
+    }
+    if id >= 1 {
         sendLine("Post saved.")
         postPage = 1
     } else {

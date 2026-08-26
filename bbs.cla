@@ -25,6 +25,7 @@ include "editor.cla"
 include "loginlog.cla"
 include "xmodem.cla"
 include "zmodem.cla"
+include "ftntoss.cla"
 include "toolbox/osutils.cla"   // DateTimeRec / SecondsToDate (via --rtdir)
 
 app BBS {

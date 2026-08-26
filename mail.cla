@@ -185,7 +185,7 @@ func loadMessageView(n: int): bool {
     }
     mailNum = n
     markRead(message.id)
-    wrapText(messageBody(message.id), w[0], bodyLines)
+    wrapText(stripKludges(messageBody(message.id)), w[0], bodyLines)
     bodyPage = 1
     drawMessageView()
     return true
