@@ -32,6 +32,7 @@ on App.startCLI(args: list of string) {
     var r: text
     var body1: text
     var body2: text
+    var a: FtnAddress
 
     body1 = "Hello, world!"
     body2 = "This is a longer reply body, packed right after the first."
@@ -84,6 +85,18 @@ on App.startCLI(args: list of string) {
     expect(r == body2, "heap offsets still valid after reopen")
     threadPosts(id1, ids)
     expect(ids.count == 3, "thread index survives reopen")
+
+    // FTN fields: crc/origin/flags roundtrip, the MsgId index, explicit dates
+    a = parseAddress("21:1/242")
+    expect(addPostFtn("Rixter", 0, 0, "Rick's BBS", body1, 12345, a, postFlagInbound) == 4, "FTN post added")
+    expect(loadPost(4) and post.msgidCrc == 12345 and post.flags == postFlagInbound, "crc/flags roundtrip")
+    expect(addressStr(post.origin) == "21:1/242", "origin roundtrip")
+    expect(loadPost(id1) and post.msgidCrc == 0 and addressIsZero(post.origin) and post.flags == 0, "local post has zero FTN fields")
+    expect(findPostByMsgId(12345) == 4, "MsgId index finds the post")
+    expect(findPostByMsgId(99999) < 0, "unknown crc")
+    expect(findPostByMsgId(0) < 0, "crc 0 is never looked up")
+    expect(addPostFtn("x", 0 - 1000000, 0, "dated", body1, 0, a, 0) == 5, "explicit created accepted")
+    expect(loadPost(5) and post.created == 0 - 1000000, "created stored as given")
     postsClose()
 
     if failures > 0 {

@@ -4,7 +4,7 @@
 // Posts for one message board: fixed-size header records in a vDB
 // database plus an append-only body heap, the classic message-base
 // split (Hudson/Squish/JAM). A board's files are BRD<nn>.DAT/.IDX/
-// .I00/.JNL (headers, board IDs 1-99) and BRD<nn>.MSG (bodies).
+// .I00/.I01/.JNL (headers, board IDs 1-99) and BRD<nn>.MSG (bodies).
 //
 // On-disk header record (160 bytes, vDB record ID = post ID):
 //   0    sender, 64-byte Pascal field (a name, not a user ID, so
@@ -15,7 +15,10 @@
 //   72   subject, 64-byte Pascal field
 //   136  body offset in the .MSG heap (i32)
 //   140  body length (i32; 0 = no body)
-//   144+ reserved
+//   144  msgidCrc (u32, indexed): crc32 of the FTN MSGID; 0 = none
+//   148  origin address (4 x u16; zeros for a local post)
+//   156  flags (u16; bit 0 = inbound from the network)
+//   158+ reserved
 //
 // Bodies are exact-fit and never journaled: addPost appends + flushes
 // the body BEFORE the journaled header add, so a crash can only leave
@@ -24,6 +27,7 @@
 // later if it ever matters.
 
 include "vdb.cla"
+include "ftnaddr.cla"
 
 const postRecordSize: int = 160
 const pOffSender: int = 0
@@ -32,6 +36,11 @@ const pOffThread: int = 68
 const pOffSubject: int = 72
 const pOffBodyOff: int = 136
 const pOffBodyLen: int = 140
+const pOffMsgId: int = 144
+const pOffOrigin: int = 148
+const pOffFlags: int = 156
+
+const postFlagInbound: int = 1
 
 record Post {
     id: int
@@ -39,6 +48,9 @@ record Post {
     created: int
     threadId: int
     subject: string(63)
+    msgidCrc: int
+    origin: FtnAddress
+    flags: int
 }
 
 var postsDb: Database
@@ -61,6 +73,10 @@ func postsOpen(boardId: int): bool {
         postsDb = dbCreate(name, postRecordSize, "68BB")
         if not dbIsOpen(postsDb) { return false }
         if not dbAddIndex(postsDb, "Thread", itID, pOffThread) {
+            postsClose()
+            return false
+        }
+        if not dbAddIndex(postsDb, "MsgId", itID, pOffMsgId) {
             postsClose()
             return false
         }
@@ -93,7 +109,7 @@ func postsNextId(): int {
     return dbNextRecordId(postsDb)
 }
 
-func packPost(sender: string, threadId: int, subject: string, bodyOff: int, bodyLen: int): text {
+func packPost(sender: string, created: int, threadId: int, subject: string, bodyOff: int, bodyLen: int, msgidCrc: int, origin: FtnAddress, flags: int): text {
     var t: text
     var s: string = sender
     var sub: string = subject
@@ -104,7 +120,7 @@ func packPost(sender: string, threadId: int, subject: string, bodyOff: int, body
     while t.length < pOffCreated {
         t.append(char(0))
     }
-    btAppendInt(t, now())
+    btAppendInt(t, created)
     btAppendInt(t, threadId)
     t.append(char(sub.length))
     t.append(sub)
@@ -113,15 +129,27 @@ func packPost(sender: string, threadId: int, subject: string, bodyOff: int, body
     }
     btAppendInt(t, bodyOff)
     btAppendInt(t, bodyLen)
+    btAppendInt(t, msgidCrc)
+    packAddress(t, origin)
+    btAppendWord(t, flags)
     return t
 }
 
-// Add a post; threadId is 0 for a new thread, or the thread starter's
-// post ID for a reply. Returns the new post ID, or -1.
+// Add a local post; threadId is 0 for a new thread, or the thread
+// starter's post ID for a reply. Returns the new post ID, or -1.
 func addPost(sender: string, threadId: int, subject: string, body: text): int {
+    var none: FtnAddress
+    return addPostFtn(sender, 0, threadId, subject, body, 0, none, 0)
+}
+
+// The full form: created 0 = now; msgidCrc/origin/flags from the
+// packet (toss) or a generated MSGID (local posts on a networked board).
+func addPostFtn(sender: string, created: int, threadId: int, subject: string, body: text, msgidCrc: int, origin: FtnAddress, flags: int): int {
     var b: filehandle = postsBody
     var off: int
+    var when: int = created
     if not dbIsOpen(postsDb) or b == nil { return -1 }
+    if when == 0 { when = now() }
     off = b.size()
     if off < 0 { return -1 }
     if body.length > 0 {
@@ -129,7 +157,7 @@ func addPost(sender: string, threadId: int, subject: string, body: text): int {
         if not b.append(body) { return -1 }
         if not b.flush() { return -1 }
     }
-    return dbAdd(postsDb, packPost(sender, threadId, subject, off, body.length))
+    return dbAdd(postsDb, packPost(sender, when, threadId, subject, off, body.length, msgidCrc, origin, flags))
 }
 
 // Load post `id`'s header into the global `post`.
@@ -141,7 +169,17 @@ func loadPost(id: int): bool {
     post.created = rec.intAt(pOffCreated)
     post.threadId = rec.intAt(pOffThread)
     post.subject = dbExtractString(rec, pOffSubject)
+    post.msgidCrc = rec.intAt(pOffMsgId)
+    post.origin = addressAt(rec, pOffOrigin)
+    post.flags = rec.wordAt(pOffFlags)
     return true
+}
+
+// The post carrying MSGID CRC `crc` in the open board; -1 if none (or
+// crc is 0, which marks "no MSGID" and is never looked up).
+func findPostByMsgId(crc: int): int {
+    if crc == 0 { return -1 }
+    return dbFindByInt(postsDb, "MsgId", crc)
 }
 
 // Fetch post `id`'s body from the heap; empty if the post has none
