@@ -75,7 +75,7 @@ Mac                       modem emulator              fnemsi / fnmailer         
  │ **EMSI_ACK ×2 ──────────▶│                           │                            │
  │ ZMODEM send (our .pkt) ─▶│ ────────────────────────▶ │ ZMODEM receive → outbox/   │
  │ ◀────────────────────────│ ◀──────────────────────── │ ZMODEM send inbox/*.pkt    │
- │ +++ … ATH\r ────────────▶│ SIGTERM child, OK to Mac  │ (child exits)              │
+ │ +++ … ATH\r ────────────▶│ SIGTERM child             │ (child exits)              │
  │ ◀── \r\nNO CARRIER\r\n   │                           │ fnmailer --once ══════════▶│ push what the
  │ toss                     │                           │   (post-poll)              │ Mac just sent
 ```
