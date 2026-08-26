@@ -15,14 +15,19 @@
 //   200  created (i32, Mac-epoch seconds)
 //   204  body offset in Mail.MSG (i32)
 //   208  body length (i32; 0 = no body)
-//   212  flags (u16; bit 0 = read, bits 1-15 reserved)
-//   214+ reserved (intended for Fidonet addresses -- docs/mail.md)
+//   212  flags (u16; bit 0 = read, bit 1 = sent -- outbound netmail
+//        delivered to the uplink; bits 2-15 reserved)
+//   214  fromAddr (4 x u16; nonzero with fromUserId 0 = inbound netmail)
+//   222  toAddr (4 x u16; nonzero with toUserId 0 = outbound netmail)
+//   230  msgidCrc (u32; crc32 of the FTN MSGID, 0 = none)
+//   234+ reserved
 //
 // sendMail appends + flushes the body BEFORE the journaled header add,
 // so a crash can only orphan heap bytes, never point at missing text.
 // Deleted messages orphan their body bytes (no heap compactor).
 
 include "vdb.cla"
+include "ftnaddr.cla"
 
 const mailRecordSize: int = 256
 const mOffFrom: int = 0
@@ -34,7 +39,11 @@ const mOffCreated: int = 200
 const mOffBodyOff: int = 204
 const mOffBodyLen: int = 208
 const mOffFlags: int = 212
+const mOffFromAddr: int = 214
+const mOffToAddr: int = 222
+const mOffMsgId: int = 230
 const mailFlagRead: int = 1
+const mailFlagSent: int = 2
 
 record Message {
     id: int
@@ -45,6 +54,9 @@ record Message {
     toUserId: int
     created: int
     flags: int
+    fromAddr: FtnAddress
+    toAddr: FtnAddress
+    msgidCrc: int
 }
 
 var mailDb: Database
@@ -91,7 +103,7 @@ func mailNextId(): int {
     return dbNextRecordId(mailDb)
 }
 
-func packMessage(fromName: string, fromUserId: int, toName: string, toUserId: int, subject: string, bodyOff: int, bodyLen: int): text {
+func packMessage(fromName: string, fromUserId: int, toName: string, toUserId: int, subject: string, created: int, bodyOff: int, bodyLen: int, fromAddr: FtnAddress, toAddr: FtnAddress, msgidCrc: int): text {
     var t: text
     var f: string = fromName
     var tn: string = toName
@@ -116,18 +128,30 @@ func packMessage(fromName: string, fromUserId: int, toName: string, toUserId: in
     }
     btAppendInt(t, fromUserId)
     btAppendInt(t, toUserId)
-    btAppendInt(t, now())
+    btAppendInt(t, created)
     btAppendInt(t, bodyOff)
     btAppendInt(t, bodyLen)
-    btAppendWord(t, 0)      // flags: unread
+    btAppendWord(t, 0)      // flags: unread, unsent
+    packAddress(t, fromAddr)
+    packAddress(t, toAddr)
+    btAppendInt(t, msgidCrc)
     return t
 }
 
-// Store a message; returns the new message ID, or -1.
+// Store a local message; returns the new message ID, or -1.
 func sendMail(fromName: string, fromUserId: int, toName: string, toUserId: int, subject: string, body: text): int {
+    var none: FtnAddress
+    return sendMailFtn(fromName, fromUserId, none, toName, toUserId, none, subject, body, 0, 0)
+}
+
+// Full form; created 0 = now. toUserId 0 + toAddr = outbound netmail,
+// fromUserId 0 + fromAddr = inbound (docs/fidonet.md, "Mail").
+func sendMailFtn(fromName: string, fromUserId: int, fromAddr: FtnAddress, toName: string, toUserId: int, toAddr: FtnAddress, subject: string, body: text, msgidCrc: int, created: int): int {
     var b: filehandle = mailBody
     var off: int
+    var when: int = created
     if not dbIsOpen(mailDb) or b == nil { return -1 }
+    if when == 0 { when = now() }
     off = b.size()
     if off < 0 { return -1 }
     if body.length > 0 {
@@ -135,7 +159,7 @@ func sendMail(fromName: string, fromUserId: int, toName: string, toUserId: int, 
         if not b.append(body) { return -1 }
         if not b.flush() { return -1 }
     }
-    return dbAdd(mailDb, packMessage(fromName, fromUserId, toName, toUserId, subject, off, body.length))
+    return dbAdd(mailDb, packMessage(fromName, fromUserId, toName, toUserId, subject, when, off, body.length, fromAddr, toAddr, msgidCrc))
 }
 
 // Load message `id`'s header into the global `message`.
@@ -150,6 +174,9 @@ func loadMessage(id: int): bool {
     message.toUserId = rec.intAt(mOffToId)
     message.created = rec.intAt(mOffCreated)
     message.flags = rec.wordAt(mOffFlags)
+    message.fromAddr = addressAt(rec, mOffFromAddr)
+    message.toAddr = addressAt(rec, mOffToAddr)
+    message.msgidCrc = rec.intAt(mOffMsgId)
     return true
 }
 
@@ -183,6 +210,31 @@ func markRead(id: int): bool {
 
 func deleteMessage(id: int): bool {
     return dbDelete(mailDb, id)
+}
+
+// Set the sent flag on outbound netmail the uplink has accepted.
+func markSent(id: int): bool {
+    var rec: text = dbFind(mailDb, id)
+    if rec.length != mailRecordSize { return false }
+    rec.setWordAt(mOffFlags, rec.wordAt(mOffFlags) | mailFlagSent)
+    return dbUpdate(mailDb, id, rec)
+}
+
+// Outbound netmail not yet sent: addressed to no local user, written
+// by one, sent bit clear. Oldest first.
+func outboundMailIds(ids: list of int) {
+    var all: list of int
+    var rec: text
+    var i: int = 0
+    ids.clear()
+    dbFindAllByInt(mailDb, "ToUser", 0, all)
+    while i < all.count {
+        rec = dbFind(mailDb, all[i])
+        if rec.length == mailRecordSize and rec.intAt(mOffFromId) != 0 and (rec.wordAt(mOffFlags) & mailFlagSent) == 0 {
+            ids.add(all[i])
+        }
+        i = i + 1
+    }
 }
 
 // Unread messages addressed to `userId`.

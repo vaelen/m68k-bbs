@@ -42,8 +42,11 @@ indexed lookups, the heap gives exact-fit variable-length bodies.
 | 200 | 4 | created | i32, Mac-epoch seconds |
 | 204 | 4 | body offset | i32, byte offset into `Mail.MSG` |
 | 208 | 4 | body length | i32; 0 = no body (offset then meaningless) |
-| 212 | 2 | flags | u16; bit 0 = read. Bits 1–15 reserved |
-| 214 | 42 | reserved | zero |
+| 212 | 2 | flags | u16; bit 0 = read, bit 1 = sent (outbound netmail delivered). Bits 2–15 reserved |
+| 214 | 8 | fromAddr | zone, net, node, point (4 × u16); nonzero with fromUserId 0 = inbound netmail |
+| 222 | 8 | toAddr | 4 × u16; nonzero with toUserId 0 = outbound netmail |
+| 230 | 4 | msgidCrc | u32; crc32 of the FTN MSGID, 0 = none |
+| 234 | 22 | reserved | zero |
 
 - Names are stored **alongside** the resolved user IDs, not instead of
   them: the IDs drive lookups, the names drive display. A renamed or

@@ -29,6 +29,8 @@ on App.startCLI(args: list of string) {
     var id1: int
     var id2: int
     var id3: int
+    var id4: int
+    var id5: int
     var r: text
     var body1: text
     var body2: text
@@ -82,19 +84,37 @@ on App.startCLI(args: list of string) {
     expect(unreadCount(1) == 1, "still one unread")
     expect(not markRead(99), "marking a missing message fails")
 
+    // netmail: outbound (to nobody local) and inbound (from nobody local)
+    id4 = sendMailFtn("alice", 1, parseAddress("21:1/141"), "Sysop", 0, parseAddress("21:1/100"), "Hello hub", body1, 777, 0)
+    id5 = sendMailFtn("Areafix", 0, parseAddress("21:1/100"), "alice", 1, parseAddress("21:1/141"), "Areafix reply", body2, 778, 0 - 5000000)
+    expect(id4 == 4 and id5 == 5, "netmail stored")
+    expect(loadMessage(id4) and addressStr(message.toAddr) == "21:1/100" and message.toUserId == 0, "outbound address/ids")
+    expect(message.msgidCrc == 777 and (message.flags & mailFlagSent) == 0, "unsent")
+    expect(loadMessage(id5) and addressStr(message.fromAddr) == "21:1/100" and message.fromUserId == 0, "inbound address")
+    expect(message.created == 0 - 5000000, "explicit created stored")
+    expect(loadMessage(id2) and addressIsZero(message.fromAddr) and addressIsZero(message.toAddr), "local mail has zero addresses")
+    inboxIds(1, ids)
+    expect(ids.count == 3 and ids[2] == id5, "inbound netmail lands in the inbox")
+    outboundMailIds(ids)
+    expect(ids.count == 1 and ids[0] == id4, "outbound queue")
+    expect(markSent(id4), "mark sent")
+    outboundMailIds(ids)
+    expect(ids.count == 0, "sent mail leaves the queue")
+    expect(loadMessage(id4) and (message.flags & mailFlagSent) != 0, "sent flag set")
+
     // delete
     expect(deleteMessage(id1), "delete first message")
     expect(not loadMessage(id1), "deleted message gone")
     inboxIds(1, ids)
-    expect(ids.count == 1 and ids[0] == id3, "inbox index updated on delete")
-    expect(heapSize() == body1.length + body2.length, "delete leaves heap bytes orphaned")
+    expect(ids.count == 2 and ids[0] == id3 and ids[1] == id5, "inbox index updated on delete")
+    expect(heapSize() == 2 * body1.length + 2 * body2.length, "delete leaves heap bytes orphaned")
     expect(not deleteMessage(id1), "deleting twice fails")
 
     // persistence
     mailClose()
     expect(mailOpen(), "mail db reopens")
-    expect(mailCount() == 2, "count survives reopen")
-    expect(mailNextId() == 4, "next ID survives reopen")
+    expect(mailCount() == 4, "count survives reopen")
+    expect(mailNextId() == 6, "next ID survives reopen")
     r = messageBody(id2)
     expect(r == body2, "heap offsets still valid after reopen")
     inboxIds(2, ids)
