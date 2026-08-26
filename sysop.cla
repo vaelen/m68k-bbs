@@ -122,6 +122,28 @@ func parseIntStr(s: string): int {
     return n
 }
 
+// A board's network as shown to the sysop. Loads the network (the
+// global `network` is display scratch here).
+func networkLabel(id: int): string {
+    if id == 0 { return "local" }
+    if loadNetwork(id) { return network.name }
+    return "#" + intStr(id) + " (missing)"
+}
+
+// Resolve an ID or name typed at a network prompt: 0 for empty/"-"
+// (local), the ID when it exists, else -1.
+func resolveNetwork(input: string): int {
+    var id: int = parseIntStr(input)
+    if input == "" or input == "-" { return 0 }
+    if id > 0 {
+        if loadNetwork(id) { return id }
+        return -1
+    }
+    id = findNetworkByName(input)
+    if id > 0 { return id }
+    return -1
+}
+
 func accessName(a: char): string {
     if a == accessSysop { return "Sysop" }
     return "User"
@@ -386,7 +408,9 @@ func drawBoardDetails() {
     sendDetailRow("ID",          intStr(board.id), w)
     sendDetailRow("Name",        board.name, w)
     sendDetailRow("Description", board.description, w)
-    sendDetailRow("Network",     board.network, w)
+    sendDetailRow("Network",     networkLabel(board.networkId), w)
+    sendDetailRow("Echo tag",    board.tag, w)
+    sendDetailRow("Exported",    intStr(board.lastExported), w)
     sendRule(BottomLeft, BottomCenter, BottomRight, w)
 }
 
@@ -576,13 +600,14 @@ func drawEditBoardCard() {
     sendDetailRow("ID",             intStr(board.id), w)
     sendDetailRow("N) Name",        board.name, w)
     sendDetailRow("D) Description", board.description, w)
-    sendDetailRow("W) Network",     board.network, w)
+    sendDetailRow("W) Network",     networkLabel(board.networkId), w)
+    sendDetailRow("T) Echo tag",    board.tag, w)
     sendRule(BottomLeft, BottomCenter, BottomRight, w)
 }
 
 func editBoardChoice(input: string) {
     switch upperStr(input) {
-    case "N", "D", "W" {
+    case "N", "D", "W", "T" {
         editField = upperStr(input)[0]
         user.screen = "editboardval"
         displayPrompt()
@@ -608,12 +633,14 @@ func editBoardValuePrompt() {
     switch editField {
     case 'N' { sendData("Name [" + board.name + "]: ") }
     case 'D' { sendData("Description [" + board.description + "]: ") }
-    case 'W' { sendData("Network [" + board.network + "]: ") }
+    case 'W' { sendData("Network (ID or name, - = local) [" + networkLabel(board.networkId) + "]: ") }
+    case 'T' { sendData("Echo tag (- = none) [" + board.tag + "]: ") }
     }
 }
 
 func editBoardValue(input: string) {
     var ok: bool = true
+    var id: int = 0
     if input != "" {
         switch editField {
         case 'N' {
@@ -633,11 +660,22 @@ func editBoardValue(input: string) {
             }
         }
         case 'W' {
-            if input.length > 15 {
-                sendLine("Networks are limited to 15 characters.")
+            id = resolveNetwork(input)
+            if id < 0 {
+                sendLine("No such network.")
                 ok = false
             } else {
-                board.network = input
+                board.networkId = id
+            }
+        }
+        case 'T' {
+            if input.length > 63 {
+                sendLine("Echo tags are limited to 63 characters.")
+                ok = false
+            } else if input == "-" {
+                board.tag = ""
+            } else {
+                board.tag = upperStr(input)
             }
         }
         }
@@ -740,7 +778,8 @@ func delBoardConfirm(input: string) {
 func startNewBoard() {
     board.name = ""
     board.description = ""
-    board.network = "local"
+    board.tag = ""
+    board.networkId = 0
     user.screen = "newboardname"
     displayPrompt()
 }
@@ -773,21 +812,40 @@ func newBoardDesc(input: string) {
 }
 
 func newBoardNet(input: string) {
-    var id: int = 0
-    if input.length > 15 {
-        sendLine("Networks are limited to 15 characters.")
+    var id: int = resolveNetwork(input)
+    if id < 0 {
+        sendLine("No such network.")
         displayPrompt()
         return
     }
-    if input != "" { board.network = input }
-    id = createBoard(board.name, board.description, board.network)
+    board.networkId = id
+    if id == 0 {
+        finishNewBoard()
+        return
+    }
+    user.screen = "newboardtag"
+    displayPrompt()
+}
+
+func newBoardTag(input: string) {
+    if input == "" or input.length > 63 {
+        sendLine("Echo tags are 1-63 characters.")
+        displayPrompt()
+        return
+    }
+    board.tag = upperStr(input)
+    finishNewBoard()
+}
+
+func finishNewBoard() {
+    var id: int = createBoard(board.name, board.description, board.tag, board.networkId)
     if id < 1 {
         sendLine("Create failed: " + lastError.message)
         gotoScreen("sysopboards")
         return
     }
-    board.id = id
     sendLine("Board " + intStr(id) + " created.")
+    loadBoard(id)
     drawBoardDetails()
     user.screen = "sysopboards"
     displayPrompt()

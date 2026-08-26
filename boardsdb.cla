@@ -5,26 +5,35 @@
 // posts live in their own database (postsdb.cla), keyed by board ID,
 // so posts never need a board-ID index.
 //
-// On-disk record ("Boards" database, 160 bytes, vDB record ID =
-// board ID):
+// On-disk record ("Boards" database, 256 bytes, vDB record ID =
+// board ID) -- docs/fidonet.md, "Boards":
 //   0    name, 64-byte Pascal field
 //   64   description, 64-byte Pascal field
-//   128  network, 16-byte Pascal field ("local" for now; Fidonet-style
-//        echomail networks later)
-//   144+ reserved
+//   128  echo tag, 64-byte Pascal field (empty = local board)
+//   192  networkId (i32; 0 = local)
+//   196  lastExported (i32; highest post ID already scanned out)
+//   200  flags (u16; bit 0 = subscribed via AreaFix)
+//   202+ reserved
 
 include "vdb.cla"
 
-const boardRecordSize: int = 160
+const boardRecordSize: int = 256
 const bOffName: int = 0
 const bOffDescription: int = 64
-const bOffNetwork: int = 128
+const bOffTag: int = 128
+const bOffNetwork: int = 192
+const bOffLastExported: int = 196
+const bOffFlags: int = 200
+const boardFlagSubscribed: int = 1
 
 record Board {
     id: int
     name: string(63)
     description: string(63)
-    network: string(15)
+    tag: string(63)
+    networkId: int
+    lastExported: int
+    flags: int
 }
 
 var boardsDb: Database
@@ -54,14 +63,14 @@ func boardsNextId(): int {
 
 // Serialize board fields into a record image (dbAdd/dbUpdate zero-pad
 // it to record_size).
-func packBoard(name: string, description: string, network: string): text {
+func packBoard(name: string, description: string, tag: string, networkId: int, lastExported: int, flags: int): text {
     var t: text
     var n: string = name
     var d: string = description
-    var w: string = network
+    var g: string = tag
     if n.length > 63 { n = n[0, 63] }
     if d.length > 63 { d = d[0, 63] }
-    if w.length > 15 { w = w[0, 15] }
+    if g.length > 63 { g = g[0, 63] }
     t.append(char(n.length))
     t.append(n)
     while t.length < bOffDescription {
@@ -69,23 +78,29 @@ func packBoard(name: string, description: string, network: string): text {
     }
     t.append(char(d.length))
     t.append(d)
+    while t.length < bOffTag {
+        t.append(char(0))
+    }
+    t.append(char(g.length))
+    t.append(g)
     while t.length < bOffNetwork {
         t.append(char(0))
     }
-    t.append(char(w.length))
-    t.append(w)
+    btAppendInt(t, networkId)
+    btAppendInt(t, lastExported)
+    btAppendWord(t, flags)
     return t
 }
 
 // Create a board; returns the new board ID, or -1.
-func createBoard(name: string, description: string, network: string): int {
-    return dbAdd(boardsDb, packBoard(name, description, network))
+func createBoard(name: string, description: string, tag: string, networkId: int): int {
+    return dbAdd(boardsDb, packBoard(name, description, tag, networkId, 0, 0))
 }
 
 // Write the global `board` back to its record.
 func saveBoard(): bool {
     if board.id < 1 { return false }
-    return dbUpdate(boardsDb, board.id, packBoard(board.name, board.description, board.network))
+    return dbUpdate(boardsDb, board.id, packBoard(board.name, board.description, board.tag, board.networkId, board.lastExported, board.flags))
 }
 
 // Load board `id` into the global `board`.
@@ -95,6 +110,14 @@ func loadBoard(id: int): bool {
     board.id = id
     board.name = dbExtractString(rec, bOffName)
     board.description = dbExtractString(rec, bOffDescription)
-    board.network = dbExtractString(rec, bOffNetwork)
+    board.tag = dbExtractString(rec, bOffTag)
+    board.networkId = rec.intAt(bOffNetwork)
+    board.lastExported = rec.intAt(bOffLastExported)
+    board.flags = rec.wordAt(bOffFlags)
     return true
+}
+
+// A board carries echomail when it names both a network and a tag.
+func boardNetworked(): bool {
+    return board.networkId != 0 and board.tag != ""
 }

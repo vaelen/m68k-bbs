@@ -11,6 +11,7 @@ include "telnet.cla"
 include "user.cla"
 include "usersdb.cla"
 include "boardsdb.cla"
+include "networksdb.cla"
 include "postsdb.cla"
 include "termio.cla"
 include "sysop.cla"
@@ -429,7 +430,7 @@ func lineScreen(s: string): bool {
     case "deluserid", "delboardid", "delareaid" { return true }
     case "boardnum", "areanum", "postnum", "filenum", "mailnum" { return true }
     case "mailto", "editsubject", "editbody", "delpostnum", "delfilenum" { return true }
-    case "newboardname", "newboarddesc", "newboardnet" { return true }
+    case "newboardname", "newboarddesc", "newboardnet", "newboardtag" { return true }
     case "newareaname", "newareadesc", "newareafolder" { return true }
     case "upname", "updesc", "editfiledesc" { return true }
     }
@@ -492,7 +493,8 @@ func displayPrompt() {
     case "delfileconfirm" { sendData("Delete this file? (Y/N): ") }
     case "newboardname" { sendData("Board name: ") }
     case "newboarddesc" { sendData("Description: ") }
-    case "newboardnet"  { sendData("Network [local]: ") }
+    case "newboardnet"  { sendData("Network (ID or name, Enter = local): ") }
+    case "newboardtag"  { sendData("Echo tag: ") }
     case "newareaname"   { sendData("Area name: ") }
     case "newareadesc"   { sendData("Description: ") }
     case "newareafolder" { sendData("Folder (Enter = app directory): ") }
@@ -644,6 +646,7 @@ func processInput(input: string) {
     case "newboardname" { newBoardName(input) }
     case "newboarddesc" { newBoardDesc(input) }
     case "newboardnet"  { newBoardNet(input) }
+    case "newboardtag"  { newBoardTag(input) }
     case "newareaname"   { newAreaName(input) }
     case "newareadesc"   { newAreaDesc(input) }
     case "newareafolder" { newAreaFolder(input) }
@@ -978,6 +981,11 @@ on App.launch {
     } else {
         log("Boards database unavailable: " + lastError.message)
     }
+    if networksOpen() {
+        log("Networks database open (" + intStr(networkCount()) + " networks).")
+    } else {
+        log("Networks database unavailable: " + lastError.message)
+    }
     if mailOpen() {
         log("Mail database open (" + intStr(mailCount()) + " messages).")
     } else {
@@ -1011,6 +1019,7 @@ extend File {
     on Quit.select {
         usersClose()
         boardsClose()
+        networksClose()
         mailClose()
         areasClose()
         filesClose()
@@ -1022,6 +1031,7 @@ extend Main {
     on closed {              // closing the log window exits the app
         usersClose()
         boardsClose()
+        networksClose()
         mailClose()
         areasClose()
         filesClose()

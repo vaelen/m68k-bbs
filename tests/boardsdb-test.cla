@@ -26,8 +26,8 @@ on App.startCLI(args: list of string) {
     expect(boardCount() == 0, "no boards yet")
     expect(not loadBoard(1), "missing board fails to load")
 
-    id1 = createBoard("General", "General discussion", "local")
-    id2 = createBoard("Retro", "Retrocomputing talk", "local")
+    id1 = createBoard("General", "General discussion", "", 0)
+    id2 = createBoard("fsxNet Ads", "Adverts", "FSX_ADS", 1)
     expect(id1 == 1 and id2 == 2, "board IDs assigned in order")
     expect(boardCount() == 2, "count tracks creation")
     expect(boardsNextId() == 3, "next ID exposed for enumeration")
@@ -36,12 +36,22 @@ on App.startCLI(args: list of string) {
     expect(board.id == id1, "board id set")
     expect(board.name == "General", "name roundtrip")
     expect(board.description == "General discussion", "description roundtrip")
-    expect(board.network == "local", "network roundtrip")
+    expect(board.tag == "" and board.networkId == 0, "local board has no tag/network")
+    expect(not boardNetworked(), "local board is not networked")
+
+    expect(loadBoard(id2) and board.tag == "FSX_ADS" and board.networkId == 1, "tag/network roundtrip")
+    expect(boardNetworked(), "tagged board on a network is networked")
+    expect(board.lastExported == 0 and board.flags == 0, "marks start at zero")
+    board.lastExported = 17
+    board.flags = boardFlagSubscribed
+    expect(saveBoard(), "save marks")
+    expect(loadBoard(id2) and board.lastExported == 17 and board.flags == boardFlagSubscribed, "marks roundtrip")
+    expect(dbFind(boardsDb, id2).length == 256, "record is 256 bytes")
 
     boardsClose()
     expect(boardsOpen(), "existing db reopens")
     expect(boardCount() == 2, "count survives reopen")
-    expect(loadBoard(id2) and board.name == "Retro", "boards survive reopen")
+    expect(loadBoard(id2) and board.name == "fsxNet Ads", "boards survive reopen")
     boardsClose()
 
     if failures > 0 {

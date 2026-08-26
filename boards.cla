@@ -19,7 +19,11 @@ func boardRowCells(id: int, rec: text, cells: list of string) {
     cells.add(dbExtractString(rec, bOffName))
     if terminal.columns >= minimumWideTerminalWidth {
         cells.add(dbExtractString(rec, bOffDescription))
-        cells.add(dbExtractString(rec, bOffNetwork))
+        if dbExtractString(rec, bOffTag) == "" {
+            cells.add("local")
+        } else {
+            cells.add(dbExtractString(rec, bOffTag))
+        }
     }
 }
 
