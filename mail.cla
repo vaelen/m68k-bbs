@@ -82,7 +82,11 @@ func drawInbox() {
             }
             cells.add(dbExtractString(rec, mOffSubject))
             if terminal.columns >= minimumWideTerminalWidth {
-                cells.add(dbExtractString(rec, mOffFrom))
+                if rec.intAt(mOffFromId) == 0 and rec.wordAt(mOffFromAddr) != 0 {
+                    cells.add(dbExtractString(rec, mOffFrom) + " (" + addressStr(addressAt(rec, mOffFromAddr)) + ")")
+                } else {
+                    cells.add(dbExtractString(rec, mOffFrom))
+                }
                 cells.add(dateTimeStr(rec.intAt(mOffCreated)))
             }
             sendLine(rowLine(cells, w))
@@ -198,13 +202,17 @@ func drawMessageView() {
     var i: int = 0
     var last: int = 0
     var d: string = dateTimeStr(message.created)
+    var from: string = message.fromName
+    var netmail: bool = not addressIsZero(message.fromAddr) or not addressIsZero(message.toAddr)
 
+    if not addressIsZero(message.fromAddr) { from = from + " (" + addressStr(message.fromAddr) + ")" }
     postViewWidths(w)
     if terminal.columns < minimumWideTerminalWidth {
         pageRows = terminal.rows - 10
     } else {
         pageRows = terminal.rows - 9
     }
+    if netmail { pageRows = pageRows - 1 }     // the To: row below
     bodyPages = (bodyLines.count + pageRows - 1) / pageRows
     if bodyPages < 1 { bodyPages = 1 }
     if bodyPage > bodyPages { bodyPage = bodyPages }
@@ -213,13 +221,20 @@ func drawMessageView() {
     sendTableTitle(message.subject, w)
     cells.clear()
     if terminal.columns < minimumWideTerminalWidth {
-        cells.add("From: " + message.fromName)
+        cells.add("From: " + from)
         sendLine(rowLine(cells, w))
         cells.clear()
         cells.add("Date: " + d)
         sendLine(rowLine(cells, w))
     } else {
-        cells.add(pad("From: " + message.fromName, w[0] - 23) + "Date: " + d)
+        cells.add(pad("From: " + from, w[0] - 23) + "Date: " + d)
+        sendLine(rowLine(cells, w))
+    }
+    if netmail {
+        // netmail shows who it was addressed to (the original name when
+        // it landed with the sysop as unknown-recipient mail)
+        cells.clear()
+        cells.add("To: " + message.toName)
         sendLine(rowLine(cells, w))
     }
     sendRule(CenterLeft, Center, CenterRight, w)
@@ -326,6 +341,9 @@ func delMailConfirm(input: string) {
 
 var mailToId: int = 0
 var mailToName: string(63)
+var mailToAddr: FtnAddress      // outbound netmail destination (zero = local)
+var mailFromAddr: FtnAddress    // our address on that network
+var mailToPending: string(63)   // the name typed at To:, awaiting an address
 
 func startNewMail() {
     editTarget = 'M'
@@ -335,6 +353,9 @@ func startNewMail() {
     editPending = ' '
     mailToId = 0
     mailToName = ""
+    mailToAddr = new FtnAddress
+    mailFromAddr = new FtnAddress
+    editReplyMsgId = ""
     sendEditorBanner("New Message")
     user.screen = "mailto"
     displayPrompt()
@@ -350,11 +371,15 @@ func mailToInput(input: string) {
     }
     id = findUserId(trimStr(input))
     if id < 1 {
-        sendLine("No such user.")
+        mailToPending = trimStr(input)
+        if mailToPending.length > 63 { mailToPending = mailToPending[0, 63] }
+        sendLine("Not a local user. Enter a FidoNet address to send netmail, or nothing to cancel.")
+        user.screen = "mailaddr"
         displayPrompt()
         return
     }
     rec = dbFind(usersDb, id)
+    mailToAddr = new FtnAddress
     mailToId = id
     mailToName = dbExtractString(rec, uOffName)
     sendLine("To: " + mailToName)
@@ -362,10 +387,68 @@ func mailToInput(input: string) {
     displayPrompt()
 }
 
+// Netmail: the address for a To: name that isn't local. Empty cancels;
+// the zone picks the network we send from.
+func mailAddrInput(input: string) {
+    var a: FtnAddress = parseAddress(trimStr(input))
+    if input == "" {
+        abortEditor()
+        return
+    }
+    if addressIsZero(a) {
+        sendLine("Enter an address like 21:1/100.")
+        displayPrompt()
+        return
+    }
+    if findNetworkByZone(a.zone) == 0 {
+        sendLine("No network for zone " + intStr(a.zone) + ".")
+        displayPrompt()
+        return
+    }
+    mailToAddr = a
+    mailFromAddr = network.addr
+    mailToId = 0
+    mailToName = mailToPending
+    sendLine("To: " + mailToName + " (" + addressStr(a) + ")")
+    user.screen = "editsubject"
+    displayPrompt()
+}
+
+// "Re: <orig>" unless it already is one.
+func replySubject(orig: string): string {
+    var sub: string = orig
+    if sub.length < 4 or sub[0, 4] != "Re: " {
+        if sub.length > 59 { sub = sub[0, 59] }
+        sub = "Re: " + sub
+    }
+    return sub
+}
+
 // Reply to the message on screen: To = its sender, subject Re: <orig>.
+// Inbound netmail replies to the sender's address, no prompt.
 func startMailReply() {
-    var sub: string = message.subject
     var rec: text = dbFind(usersDb, message.fromUserId)
+    if message.fromUserId < 1 and not addressIsZero(message.fromAddr) {
+        if findNetworkByZone(message.fromAddr.zone) == 0 {
+            sendLine("No network for zone " + intStr(message.fromAddr.zone) + ".")
+            displayPrompt()
+            return
+        }
+        editTarget = 'M'
+        editThread = 0
+        mailToId = 0
+        mailToName = message.fromName
+        mailToAddr = message.fromAddr
+        mailFromAddr = network.addr
+        editReplyMsgId = findKludge(messageBody(message.id), "MSGID:")
+        editSubject = replySubject(message.subject)
+        editLines.clear()
+        editPending = ' '
+        sendEditorBanner("Reply to " + mailToName + " (" + addressStr(mailToAddr) + ")")
+        user.screen = "editsubject"
+        displayPrompt()
+        return
+    }
     if message.fromUserId < 1 or rec.length != userRecordSize {
         sendLine("The sender is no longer a user here.")
         displayPrompt()
@@ -375,11 +458,9 @@ func startMailReply() {
     editThread = 0
     mailToId = message.fromUserId
     mailToName = dbExtractString(rec, uOffName)
-    if sub.length < 4 or sub[0, 4] != "Re: " {
-        if sub.length > 59 { sub = sub[0, 59] }
-        sub = "Re: " + sub
-    }
-    editSubject = sub
+    mailToAddr = new FtnAddress
+    editReplyMsgId = ""
+    editSubject = replySubject(message.subject)
     editLines.clear()
     editPending = ' '
     sendEditorBanner("Reply to " + mailToName)

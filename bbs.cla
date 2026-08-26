@@ -430,7 +430,7 @@ func lineScreen(s: string): bool {
     case "edituserval", "editboardval", "editareaval" { return true }
     case "deluserid", "delboardid", "delareaid" { return true }
     case "boardnum", "areanum", "postnum", "filenum", "mailnum" { return true }
-    case "mailto", "editsubject", "editbody", "delpostnum", "delfilenum" { return true }
+    case "mailto", "mailaddr", "editsubject", "editbody", "delpostnum", "delfilenum" { return true }
     case "newboardname", "newboarddesc", "newboardnet", "newboardtag" { return true }
     case "newareaname", "newareadesc", "newareafolder" { return true }
     case "upname", "updesc", "editfiledesc" { return true }
@@ -486,6 +486,7 @@ func displayPrompt() {
     case "mail", "mailview" { mailPrompt() }
     case "delmailconfirm" { sendData("Delete this message? (Y/N): ") }
     case "mailto" { sendData("To: ") }
+    case "mailaddr" { sendData("Address (zone:net/node): ") }
     case "editsubject" { editSubjectPrompt() }
     case "editbody"    { editBodyPrompt() }
     case "delpostnum"     { sendData("Delete post #: ") }
@@ -638,6 +639,7 @@ func processInput(input: string) {
     case "mailview" { mailViewChoice(input) }
     case "delmailconfirm" { delMailConfirm(input) }
     case "mailto" { mailToInput(input) }
+    case "mailaddr" { mailAddrInput(input) }
     case "editsubject" { editSubjectInput(input) }
     case "editbody"    { editBodyInput(input) }
     case "delpostnum"     { delPostNumInput(input) }

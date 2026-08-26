@@ -411,10 +411,18 @@ func saveEditor() {
         return
     }
     if editTarget == 'M' {
-        if sendMail(user.name, user.id, mailToName, mailToId, editSubject, body) >= 1 {
+        if addressIsZero(mailToAddr) {
+            id = sendMail(user.name, user.id, mailToName, mailToId, editSubject, body)
+        } else {
+            body = editKludges(mailFromAddr) + body
+            id = sendMailFtn(user.name, user.id, mailFromAddr, mailToName, 0, mailToAddr, editSubject, body, msgIdCrc(editMsgId), 0)
+        }
+        if id < 1 {
+            sendLine("Send failed: " + lastError.message)
+        } else if addressIsZero(mailToAddr) {
             sendLine("Message sent.")
         } else {
-            sendLine("Send failed: " + lastError.message)
+            sendLine("Netmail queued for the next poll.")
         }
         backToInbox()
         return
