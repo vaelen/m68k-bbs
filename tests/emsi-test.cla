@@ -1,0 +1,239 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for emsi.cla: the poll sequence driven by canned
+// bytes. Run by scripts/test.sh. Exits 0 on pass, 1 on the first
+// failure.
+
+include "../emsi.cla"
+
+var failures: int = 0
+var sent: text            // everything the session handed to xferOut
+var modemSent: text       // raw modem commands (ATDT/ATH)
+var isConnected: bool = false
+var hangupPhase: int = 0
+var peer: text
+
+func xferOut(t: text) { sent.append(t) }
+func ftnModemSend(s: string) { modemSent.append(s) }
+func ftnSysopName(): string { return "sysop" }
+func xferDone(ok: bool) { emsiXferDone(ok) }
+func xferReceived(name: string, bytes: int) { emsiFileReceived(name, bytes) }
+func xferAcceptName(name: string): bool { return emsiAcceptName(name) }
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+func feed(t: text) {
+    var i: int = 0
+    while i < t.length {
+        emsiChar(t[i])
+        i = i + 1
+    }
+}
+
+func feedStr(s: string) {
+    var t: text = s
+    feed(t)
+}
+
+// A peer sequence "**EMSI_XXX" + crc + CR.
+func seq(name: string): string {
+    var t: text = name
+    return "**" + name + hex4(t.crc16x(0, 0, t.length)) + "\x0D"
+}
+
+// A peer EMSI_DAT carrying `data`.
+func datFrom(data: string): text {
+    var t: text
+    var out: text
+    t.append("EMSI_DAT")
+    t.append(hex4(data.length))
+    t.append(data)
+    out.append("**")
+    out.append(t)
+    out.append(hex4(t.crc16x(0, 0, t.length)))
+    out.append('\x0D')
+    return out
+}
+
+func peerHex(type: int, pos: int) {
+    zmWire = ""
+    zmHexHeader(type, pos)
+    peer = ""
+    peer.append(zmWire)
+    feed(peer)
+}
+
+func ticks(n: int) {
+    var i: int = 0
+    while i < n {
+        emsiTick()
+        i = i + 1
+    }
+}
+
+func datCrcOk(t: text, at: int): bool {
+    var len: int = hexVal(t[at + 10, 4])
+    var body: text
+    var crc: int
+    if len < 0 { return false }
+    body = t.textAt(at + 2, 12 + len)
+    crc = body.crc16x(0, 0, body.length)
+    return hexVal(t[at + 14 + len, 4]) == crc and t[at + 18 + len] == '\x0D'
+}
+
+func seed() {
+    var n: Network
+    expect(usersOpen() and boardsOpen() and mailOpen() and networksOpen(), "databases open")
+    user.name = "sysop"
+    user.access = accessSysop
+    expect(createUser() == 1, "sysop is user 1")
+    n.name = "fsxNet"
+    n.addr = parseAddress("21:1/141")
+    n.uplink = parseAddress("21:1/100")
+    n.sessionPw = "SECRET"
+    n.dial = "5551234"
+    n.utcOffset = 540
+    n.flags = netFlagEnabled
+    expect(createNetwork(n) == 1, "network 1")
+    expect(createBoard("Ads", "adverts", "FSX_ADS", 1) == 1, "board 1 on network 1")
+}
+
+func happyPath() {
+    var i: int
+    sent = ""
+    modemSent = ""
+    ftnPollRequest(1)
+    expect(ftnPolling and ftnNetId == 1, "polling network 1")
+    expect(modemSent == "ATDT5551234\x0D", "dialed")
+    expect(emState == emDial, "waiting for CONNECT")
+    expect(not file.exists(ftnOutPath(1)), "nothing pending: no outbound packet")
+
+    isConnected = true
+    emsiConnected()
+    expect(emState == emInit, "connected: init")
+    ticks(2)
+    expect(sent == "\x0D", "CR whacked after 1 s")
+    ticks(2)
+    expect(sent == "\x0D\x0D", "another CR")
+    sent = ""
+    feedStr(seq("EMSI_REQ"))
+    expect(sent.indexOf("**EMSI_INQC816\x0D") == 0, "REQ -> INQ")
+    i = sent.indexOf("**EMSI_DAT")
+    expect(i > 0, "then our EMSI_DAT")
+    expect(sent.indexOf("{EMSI}{21:1/141}{SECRET}{8N1,PUA}{ZMO,NRQ}{00}{68kBBS}{0.2}") > 0, "DAT fields")
+    expect(datCrcOk(sent, i), "our DAT's length and CRC check")
+    expect(emState == emWaitAck, "waiting for ACK")
+
+    sent = ""
+    feedStr(seq("EMSI_ACK"))
+    expect(emState == emWaitDat, "ACKed: waiting for their DAT")
+    feed(datFrom("{EMSI}{21:1/100 21:1/1}{SECRET}{8N1,PUA}{ZMO,ZAP,NRQ}{FE}{fnemsi}{0.1}{}"))
+    expect(sent.indexOf("**EMSI_ACKA490\x0D**EMSI_ACKA490\x0D") == 0, "their DAT ACKed twice")
+    expect(emState == emSend, "sending")
+    expect(sent.indexOf("rz\x0D") > 0, "ZMODEM empty batch started")
+
+    sent = ""
+    peerHex(zmZRINIT, (zmCANFDX | zmCANFC32) << 24)
+    peerHex(zmZFIN, 0)
+    expect(emState == emRecv, "send done: receiving")
+    expect(sent.indexOf("OO") >= 0, "OO after their ZFIN")
+    // the peer has nothing for us either
+    sent = ""
+    peerHex(zmZFIN, 0)
+    feedStr("OO")
+    expect(emState == emHangup and hangupPhase == 1, "receive done: hanging up")
+    expect(emResult == pollOk, "result ok")
+
+    isConnected = false
+    emsiDisconnected()
+    expect(not ftnPolling and emState == emIdle, "idle after NO CARRIER")
+    expect(loadNetwork(1) and network.lastResult == pollOk and network.lastPoll != 0, "poll recorded")
+}
+
+func failureCases() {
+    // wrong password
+    sent = ""
+    modemSent = ""
+    hangupPhase = 0
+    ftnPollRequest(1)
+    isConnected = true
+    emsiConnected()
+    feedStr(seq("EMSI_REQ"))
+    feedStr(seq("EMSI_ACK"))
+    feed(datFrom("{EMSI}{21:1/100}{WRONG}{8N1,PUA}{ZMO}{FE}{x}{1}{}"))
+    expect(emState == emHangup and emResult == pollBadPassword, "bad password hangs up")
+    isConnected = false
+    emsiDisconnected()
+    expect(loadNetwork(1) and network.lastResult == pollBadPassword, "bad password recorded")
+
+    // address mismatch
+    ftnPollRequest(1)
+    isConnected = true
+    emsiConnected()
+    feedStr(seq("EMSI_REQ"))
+    feedStr(seq("EMSI_ACK"))
+    feed(datFrom("{EMSI}{21:1/999}{SECRET}{8N1,PUA}{ZMO}{FE}{x}{1}{}"))
+    expect(emResult == pollAddressMismatch, "address mismatch")
+    isConnected = false
+    emsiDisconnected()
+
+    // bad CRC on their DAT -> NAK, still waiting
+    ftnPollRequest(1)
+    isConnected = true
+    emsiConnected()
+    feedStr(seq("EMSI_REQ"))
+    feedStr(seq("EMSI_ACK"))
+    sent = ""
+    feedStr("**EMSI_DAT0006{EMSI}0000\x0D")
+    expect(sent == "**EMSI_NAKEEC3\x0D" and emState == emWaitDat, "bad CRC is NAKed")
+    isConnected = false
+    emsiAbort()
+    emsiDisconnected()
+
+    // no CONNECT: dial timeout
+    ftnPollRequest(1)
+    modemSent = ""
+    ticks(121)
+    expect(modemSent == "ATH\x0D" and emResult == pollNoCarrier and not ftnPolling, "dial timeout: ATH, no carrier, idle")
+
+    // not a mailer: no EMSI_REQ within 60 s
+    ftnPollRequest(1)
+    isConnected = true
+    emsiConnected()
+    sent = ""
+    ticks(121)
+    expect(sent.indexOf("**EMSI_INQC816\x0D**EMSI_INQC816\x0D") >= 0, "INQ sent twice at 20 s")
+    expect(emResult == pollNotMailer and hangupPhase == 1, "not a mailer")
+    isConnected = false
+    emsiDisconnected()
+
+    // queue: a request for the network being polled is not queued twice
+    ftnPollRequest(1)
+    ftnPollRequest(1)
+    expect(ftnQueue.count == 0, "same network not queued twice")
+    isConnected = false
+    emsiAbort()
+    emsiDisconnected()
+    expect(not ftnPolling, "idle")
+}
+
+on App.startCLI(args: list of string) {
+    seed()
+    expect(ftnEnsureFolders(), "folders")
+    happyPath()
+    failureCases()
+    if failures > 0 {
+        log("emsi-test: FAILED")
+        quit 1
+    }
+    log("emsi-test: all passed")
+    quit
+}

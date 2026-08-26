@@ -1670,8 +1670,3 @@ func newNetName(input: string) {
     drawEditNetCard()
     displayPrompt()
 }
-
-// ponytail: stub until emsi.cla lands (Task 16 of the plan).
-func ftnQueuePoll(netId: int) {
-    log("Poll queued for network " + intStr(netId))
-}

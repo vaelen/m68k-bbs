@@ -672,6 +672,7 @@ func upProtoChoice(input: string) {
 // engine, which vets YMODEM names through it.
 func xferAcceptName(name: string): bool {
     var i: int = 0
+    if ftnPolling { return emsiAcceptName(name) }
     if name.length == 0 or name.length > 31 { return false }
     while i < name.length {
         if name[i] == ':' { return false }
@@ -716,6 +717,10 @@ func startUpload() {
 // Engine callback: one file landed on disk. Just queue it -- the
 // describe loop adds the entry once the session is back in line mode.
 func xferReceived(name: string, bytes: int) {
+    if ftnPolling {
+        emsiFileReceived(name, bytes)
+        return
+    }
     upNames.add(name)
     upSizes.add(bytes)
     log("Upload: " + name + " (" + intStr(bytes) + " bytes) from " + user.name)
@@ -843,6 +848,10 @@ func backToFileView() {
 
 // Engine callback: the transfer is over and the engine is idle.
 func xferDone(ok: bool) {
+    if ftnPolling {
+        emsiXferDone(ok)
+        return
+    }
     sendLine("")
     if xferDir == 'U' {
         if ok {

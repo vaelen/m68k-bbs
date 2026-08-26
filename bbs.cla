@@ -26,6 +26,7 @@ include "loginlog.cla"
 include "xmodem.cla"
 include "zmodem.cla"
 include "ftntoss.cla"
+include "emsi.cla"
 include "toolbox/osutils.cla"   // DateTimeRec / SecondsToDate (via --rtdir)
 
 app BBS {
@@ -50,6 +51,10 @@ menu File {
 
 menu Edit { standard edit }
 
+menu FidoNet {
+    item PollAll "Poll All Networks"
+}
+
 var modem: connection
 var isConnected: bool = false
 
@@ -64,6 +69,18 @@ func sendData(s: string) {
 // Raw negotiation bytes from telnet.cla -- never escaped.
 func telnetOut(s: string) {
     modem.send(s)
+}
+
+// Modem commands for the FTN poll (emsi.cla): raw, never escaped.
+func ftnModemSend(s: string) {
+    modem.send(s)
+}
+
+// User 1's name for the EMSI IDENT field.
+func ftnSysopName(): string {
+    var rec: text = dbFind(usersDb, 1)
+    if rec.length != userRecordSize { return "Sysop" }
+    return dbExtractString(rec, uOffName)
 }
 
 // --- File transfers ----------------------------------------------------
@@ -208,6 +225,10 @@ func echoBuffer() {
 func inputChar(c: char) {
     var single: string(1)
     if not isConnected { return }
+    if user.screen == "ftn" {
+        emsiChar(c)
+        return
+    }
     if user.screen == "xfer" {
         xferChar(c)
         return
@@ -916,6 +937,12 @@ func logoff() {
 }
 
 every 30 ticks {
+    if ftnPolling { emsiTick() }
+    ftnSchedMinutes = ftnSchedMinutes + 1
+    if ftnSchedMinutes >= 120 {      // once a minute: interval polls
+        ftnSchedMinutes = 0
+        ftnSchedule()
+    }
     if user.screen == "xfer" { xferTick() }
     if telnetProbe > 0 {
         telnetProbe = telnetProbe - 1
@@ -943,6 +970,14 @@ func connected() {
     pendingHash = 0
     returning = false
     sessionName = ""
+    if ftnPolling {
+        // our own outbound call: the mailer answered, not a caller
+        telnetIntercept = false
+        user.screen = "ftn"
+        log("Mailer connected.")
+        emsiConnected()
+        return
+    }
     log("Caller connected.")
     sendLine("Welcome to 68kBBS!")
     sendLine("Type NEW at the login prompt to create an account.")
@@ -958,6 +993,10 @@ func disconnected() {
     hangupPhase = 0
     telnetProbe = 0
     telnetIntercept = false
+    if ftnPolling {
+        emsiDisconnected()      // toss, commit, record, next queued poll
+        return
+    }
     if user.screen == "xfer" { xferAbort() }
     postsClose()
     if sessionName != "" {
@@ -967,6 +1006,7 @@ func disconnected() {
         sessionName = ""
     }
     log("Caller disconnected.")
+    ftnNext()                   // a poll the sysop queued runs now
 }
 
 // Append text to the log window, dropping LF (0x0A) -- the Mac newline
@@ -1021,6 +1061,9 @@ on App.launch {
     } else {
         log("Areas database unavailable: " + lastError.message)
     }
+    if not ftnEnsureFolders() {
+        log("FTN folders unavailable: " + lastError.message)
+    }
     modem.open(serial "modem:9600")
 }
 
@@ -1049,6 +1092,15 @@ extend File {
         areasClose()
         filesClose()
         quit
+    }
+}
+
+extend FidoNet {
+    on PollAll.select {
+        if isConnected {
+            log("A caller is online; polls will run after the call.")
+        }
+        ftnPollAll()
     }
 }
 
