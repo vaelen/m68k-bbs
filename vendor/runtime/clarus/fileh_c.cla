@@ -38,6 +38,15 @@ external func FhHFlush(h: int): int
 external func FhHClose(h: int)
 external func FhHErrno(): int
 
+// FhHStat/FhHStatField (filesystem-api Task 3): FhHStat does one stat(2)
+// call and caches the result; FhHStatField reads one field back out of
+// that cached result (0 size, 1 rsrcSize -- unused on the host, always 0
+// via rtFhDevStatRsrcSize below -- 2 created, 3 modified, 4 isDir), so a
+// single rtFhDevStat call backs all seven rtFhDevStat* getters below
+// without re-statting.
+external func FhHStat(path: string): int
+external func FhHStatField(which: int): int
+
 func rtFhDevOpen(path: string): int {
     return FhHOpen(path)
 }
@@ -93,4 +102,134 @@ func rtFhDevClose(h: int) {
 
 func rtFhDevLastOSErr(): int {
     return FhHErrno()
+}
+
+// rtFhDevStat/rtFhDevStat*: the host lane's own contract for the seven
+// FileInfo scalars (spec %3, "Host behaviour") -- rsrcSize/type/creator
+// have no host filesystem concept, so they're the documented zero/empty
+// defaults; size/created/modified/isDir come straight from FhHStatField.
+func rtFhDevStat(path: string): bool {
+    return FhHStat(path) == 0
+}
+
+func rtFhDevStatSize(): int {
+    return FhHStatField(0)
+}
+
+func rtFhDevStatRsrcSize(): int {
+    return 0
+}
+
+func rtFhDevStatType(): string {
+    return ""
+}
+
+func rtFhDevStatCreator(): string {
+    return ""
+}
+
+func rtFhDevStatCreated(): int {
+    return FhHStatField(2)
+}
+
+func rtFhDevStatModified(): int {
+    return FhHStatField(3)
+}
+
+func rtFhDevStatIsDir(): bool {
+    return FhHStatField(4) != 0
+}
+
+// rtFhListBuf: the file.list(path, names) cursor's scratch buffer -- one
+// SerNewPtr(256) allocated in rtFhDevListBegin, read by rtFhDevListNext,
+// freed by rtFhDevListEnd. Host lane only (this module is never spliced
+// onto the native lane -- see the header comment above), so a
+// module-level var here never touches a native golden.
+var rtFhListBuf: ptr = ptr(0)
+
+// rtFhListFailed (fix round 1): true once this listing's FhHListNext has
+// returned -1 (a real readdir() error, not "done") -- rtFhList (fileh.cla)
+// checks rtFhDevListFailed() after its ListNext loop so a truncated
+// listing surfaces as false + lastError instead of a silent true.
+var rtFhListFailed: bool = false
+
+// FhHMakeDir/Delete/ListBegin/ListNext/ListEnd/SetTimes/Rename/Move
+// (filesystem-api Task 4): the directory/catalog surface's host lane,
+// runtime/host/rt_fileh.inc's own rt_ext_FhH* bodies. FhHListNext writes
+// a Pascal-string name into a caller-supplied 256-byte buffer (0 = got
+// one, 1 = done, -1 = error); rtFhDevListNext below reads it back into a
+// `string` byte by byte via peekb, the same Pascal-buffer-to-string idiom
+// rtFh68kName (fileh_68k.cla) uses in reverse.
+external func FhHMakeDir(path: string): int
+external func FhHDelete(path: string): int
+external func FhHListBegin(path: string): int
+external func FhHListNext(buf: ptr): int
+external func FhHListEnd()
+external func FhHSetTimes(path: string, created: int, modified: int): int
+external func FhHRename(path: string, newName: string): int
+external func FhHMove(path: string, dirPath: string): int
+
+func rtFhDevMakeDir(path: string): int {
+    return FhHMakeDir(path)
+}
+
+func rtFhDevDelete(path: string): int {
+    return FhHDelete(path)
+}
+
+func rtFhDevListBegin(path: string): bool {
+    if FhHListBegin(path) != 0 {
+        return false
+    }
+    rtFhListBuf = SerNewPtr(256)
+    rtFhListFailed = false
+    return true
+}
+
+func rtFhDevListNext(): string {
+    var s: string
+    var n: int
+    var i: int
+    var rc: int
+
+    rc = FhHListNext(rtFhListBuf)
+    if rc != 0 {
+        if rc < 0 {
+            rtFhListFailed = true
+        }
+        return ""
+    }
+    n = peekb(rtFhListBuf)
+    i = 0
+    while i < n {
+        s = s + char(peekb(rtFhListBuf + 1 + i))
+        i = i + 1
+    }
+    return s
+}
+
+// rtFhDevListFailed: the lane-neutral error signal rtFhList checks after
+// its ListNext loop (fix round 1) -- true here iff the last ListNext saw
+// FhHListNext return -1 (a real readdir() failure, spec's own
+// "0 = got one, 1 = done, -1 = error" contract).
+func rtFhDevListFailed(): bool {
+    return rtFhListFailed
+}
+
+func rtFhDevListEnd() {
+    FhHListEnd()
+    SerDisposePtr(rtFhListBuf)
+    rtFhListBuf = ptr(0)
+}
+
+func rtFhDevSetInfo(path: string, ftype: string, fcreator: string, created: int, modified: int): int {
+    return FhHSetTimes(path, created, modified)
+}
+
+func rtFhDevRename(path: string, newName: string): int {
+    return FhHRename(path, newName)
+}
+
+func rtFhDevMove(path: string, dirPath: string): int {
+    return FhHMove(path, dirPath)
 }

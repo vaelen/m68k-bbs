@@ -248,3 +248,133 @@ func rtFhClose(h: int) {
     }
     rtFhDevClose(h)
 }
+
+// rtFhExists: true for an existing file or folder; never touches
+// lastError (spec %3 -- existence is a question, not a failure).
+func rtFhExists(path: string): bool {
+    return rtFhDevStat(path)
+}
+
+// rtFhInfo: one device stat, then the seven scalar getters -- the device
+// layer never sees FileInfo (spec %4.3), so fileh_c.cla/fileh_68k.cla
+// stay layout-blind. On failure every field keeps its zero default and
+// lastError is set.
+func rtFhInfo(path: string): FileInfo {
+    var fi: FileInfo
+
+    if not rtFhDevStat(path) {
+        rtSetLastErr(rtFhDevLastOSErr(), "info failed")
+        return fi
+    }
+    fi.size = rtFhDevStatSize()
+    fi.rsrcSize = rtFhDevStatRsrcSize()
+    fi.type = rtFhDevStatType()
+    fi.creator = rtFhDevStatCreator()
+    fi.created = rtFhDevStatCreated()
+    fi.modified = rtFhDevStatModified()
+    fi.isDir = rtFhDevStatIsDir()
+    return fi
+}
+
+// rtFhMakeDir/Delete/List/SetInfo/Rename/Move (filesystem-api Task 4, spec
+// %3): the directory/catalog surface -- each the same three-line shape as
+// rtFhOpen/rtFhExists/rtFhInfo above: call the rtFhDev* twin, on failure
+// rtSetLastErr(rtFhDevLastOSErr(), "<op> failed").
+func rtFhMakeDir(path: string): bool {
+    if rtFhDevMakeDir(path) != 0 {
+        rtSetLastErr(rtFhDevLastOSErr(), "makeDir failed")
+        return false
+    }
+    return true
+}
+
+func rtFhDelete(path: string): bool {
+    if rtFhDevDelete(path) != 0 {
+        rtSetLastErr(rtFhDevLastOSErr(), "delete failed")
+        return false
+    }
+    return true
+}
+
+// rtFhList: names is a reference (list), so filling it here reaches the
+// caller (Ch7). One listing at a time -- the device cursor is a single
+// module-level slot on each lane (spec %4.3). Fix round 1: ListNext's
+// "" return means either "done" OR "a real read error happened" (its own
+// documented 1-vs--1 distinction) -- rtFhDevListFailed() tells them apart
+// after the loop, so a genuine failure reports false + lastError instead
+// of a silently truncated true.
+func rtFhList(path: string, names: list of string): bool {
+    var name: string
+
+    names.clear()
+    if not rtFhDevListBegin(path) {
+        rtSetLastErr(rtFhDevLastOSErr(), "list failed")
+        return false
+    }
+    name = rtFhDevListNext()
+    while name != "" {
+        names.add(name)
+        name = rtFhDevListNext()
+    }
+    rtFhDevListEnd()
+    if rtFhDevListFailed() {
+        // final-review wave, Minor 8: a mid-listing failure left `names`
+        // holding whatever was appended before the failing ListNext call
+        // -- clear it so a caller sees the documented "on failure `names`
+        // is empty" contract rather than a partial listing.
+        names.clear()
+        rtSetLastErr(rtFhDevLastOSErr(), "list failed")
+        return false
+    }
+    return true
+}
+
+func rtFhSetInfo(path: string, ftype: string, fcreator: string, created: int, modified: int): bool {
+    if rtFhDevSetInfo(path, ftype, fcreator, created, modified) != 0 {
+        rtSetLastErr(rtFhDevLastOSErr(), "setInfo failed")
+        return false
+    }
+    return true
+}
+
+// rtFhRename: `newName` must be a bare leaf name (reference: "not a
+// path"), not just for native's own PBHRenameSync convention -- the
+// host lane's rt_ext_FhHRename runs `newName` through path_to_cstr too,
+// so an unguarded `newName` containing ':' silently MOVES the file
+// there (final-review wave, Important 2) instead of failing the way
+// native's PBHRenameSync already does (bdNamErr). Checked once here, at
+// the shared lane-neutral waist, so both device layers stay unreachable
+// with a path-shaped newName -- -37 is bdNamErr (MacErrors.h: "Bad name;
+// or fnfErr, or name in use"), the same OSErr PBHRenameSync itself
+// returns for a leaf name containing a colon; fileh.cla can't include
+// toolbox/files.cla's own const (lane-neutral, no catalog dependency),
+// so the literal is used directly.
+func rtFhRename(path: string, newName: string): bool {
+    var i: int
+
+    if newName == "" {
+        rtSetLastErr(-37, "rename failed")
+        return false
+    }
+    i = 0
+    while i < newName.length {
+        if newName[i] == ':' {
+            rtSetLastErr(-37, "rename failed")
+            return false
+        }
+        i = i + 1
+    }
+    if rtFhDevRename(path, newName) != 0 {
+        rtSetLastErr(rtFhDevLastOSErr(), "rename failed")
+        return false
+    }
+    return true
+}
+
+func rtFhMove(path: string, dirPath: string): bool {
+    if rtFhDevMove(path, dirPath) != 0 {
+        rtSetLastErr(rtFhDevLastOSErr(), "move failed")
+        return false
+    }
+    return true
+}

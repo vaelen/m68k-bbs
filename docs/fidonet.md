@@ -171,18 +171,24 @@ Packet header time is local time at creation. Dates convert with
 
 Files:
 
-- `:FTN:`, `:FTN:In:`, `:FTN:Out:` beside the app, created on first
-  use.
-- Inbound files keep the names the bridge sends (`<8-hex>.pkt`).
+- `:FTN:`, `:FTN:In:`, `:FTN:Out:`, `:FTN:Tmp:` beside the app,
+  created on first use — each guarded by `file.exists` and made with
+  one `file.makeDir` call, parent first (`makeDir` is one level and
+  fails on an existing folder).
+- Inbound files are **received into `:FTN:Tmp:`** under the names the
+  bridge sends (`<8-hex>.pkt`) and **moved into `:FTN:In:`**
+  (`file.move`) when their ZEOF is acknowledged. So `:FTN:In:` only
+  ever holds complete packets, and a partial stays in `:FTN:Tmp:`
+  where the ZMODEM receiver's ZCRC resume looks for it.
 - Outbound is `:FTN:Out:<nn>.pkt` per network ID, rebuilt by every
-  scan and deleted after an acknowledged send.
+  scan and deleted after an acknowledged send (handle closed first —
+  `file.delete` fails on an open file on the Macintosh).
 
 ## Toss (`ftntoss.cla`)
 
 Runs after a poll, with the line idle. For every file in `:FTN:In:`:
 
-1. Skip (leave in place) a file whose last two bytes are not `00 00`
-   — an interrupted receive awaiting ZCRC resume.
+1. Skip folders (`file.info(path).isDir`); `file.list` returns both.
 2. Header sanity: type 2, dest address equals our address on some
    enabled network, packet password matches ours if set. Else log,
    skip the file.
@@ -196,8 +202,8 @@ Runs after a poll, with the line idle. For every file in `:FTN:In:`:
      unknown recipient → delivered to the sysop (user 1) with the
      original name kept in `toName`. `fromUserId = 0`, `fromAddr`,
      `toAddr`, `msgidCrc` set. AreaFix replies arrive this way.
-4. Delete the file. Log `tossed n echomail, m netmail, d dupes,
-   u unknown areas`.
+4. `pktClose()`, then delete the file. Log `tossed n echomail,
+   m netmail, d dupes, u unknown areas`.
 
 A crash mid-toss re-tosses the file next time; dupe checking makes that
 safe.
@@ -280,8 +286,9 @@ Output goes through `xferOut`.
 5. **Send**: the caller goes first. `zmodemSendStart` on the outbound
    packet, or an **empty batch** (ZRQINIT → ZRINIT → ZFIN → `OO`) when
    nothing is pending — the one addition the ZMODEM sender needs.
-6. **Receive**: `zmodemRecvStart(":FTN:In:")` until the peer's ZFIN.
-   ZCRC resume covers a file cut off last time.
+6. **Receive**: `zmodemRecvStart(":FTN:Tmp:")` until the peer's ZFIN;
+   `xferReceived` moves each completed file into `:FTN:In:`. ZCRC
+   resume covers a file cut off last time.
 7. **Hang up** via `hangupPhase` (`+++`, `ATH`); `NO CARRIER` resets
    the line.
 8. **After**: toss; delete the outbound packet and advance the marks if
@@ -357,19 +364,33 @@ through a wrapper: `fnmailer --once` → `fnemsi --answer` →
 
 ## Language features required
 
-Added to Clarus before implementation (no workarounds in the design):
+All shipped in the Clarus filesystem-api phase (2026-08-26) and in the
+pinned toolchain; the as-shipped shapes and what the design does about
+them:
 
-- `file.makeDir(path)` — `:FTN:`, `:FTN:In:`, `:FTN:Out:`.
-- `file.delete(path)` — tossed inbound packets, sent outbound packets.
-- `file.list(path, entries)` — directory enumeration so toss processes
-  whatever is in `:FTN:In:`.
+- `file.makeDir(path): bool` — one level, parent must exist, existing
+  folder is a failure → guard with `file.exists`, create parent first.
+- `file.delete(path): bool` — fails on an open file (Mac) → close
+  handles before deleting.
+- `file.list(path, names: list of string): bool` — leaf names of files
+  and folders, catalog order → toss skips `isDir` entries.
+- `file.move(path, dirPath): bool` — completed inbound packets move
+  from `:FTN:Tmp:` to `:FTN:In:`, replacing any "is this file
+  complete?" heuristic.
+- `file.exists`, `file.info` — folder guards; `isDir`; a pending
+  outbound packet is simply `file.exists(":FTN:Out:<nn>.pkt")`.
 
-To verify (spikes, not features): `file.open` on nested partial paths
-(`:FTN:In:x.pkt`); host-lane C glue for `SecondsToDate`/`DateToSeconds`.
+Spikes, now answered (Clarus filesystem-api phase, Task 1, 2026-08-26):
+`file.open` on nested partial paths (`:FTN:In:x.pkt`) opens natively
+with no code changes — verified on Mini vMac/System 6. Host-lane C
+glue for `ReadDateTime`/`SecondsToDate`/`DateToSeconds` shipped the
+same phase (Task 6), so a host-lane toss/scan build links against all
+three.
 
 ## Build order
 
-1. Language features + spikes.
+1. ~~Language features + spikes~~ — done (toolchain pin refreshed
+   2026-08-26).
 2. Data: Networks DB, Boards/Posts/Mail layouts, `ftnaddr.cla`, sysop
    Networks tree and board fields.
 3. `ftnpkt.cla` + toss/scan, MSGID/REPLY generation, `^A` hiding,

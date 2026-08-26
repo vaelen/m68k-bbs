@@ -33,6 +33,9 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <dirent.h>
+#include <sys/time.h>
+#include <libgen.h>
 
 static int rt_fh_errno = 0;
 
@@ -195,4 +198,189 @@ void rt_ext_FhHClose(int32_t h) {
 
 int32_t rt_ext_FhHErrno(void) {
     return (int32_t)rt_fh_errno;
+}
+
+/* rt_fh_stat_buf: the single cached catalog record FhHStat fills and
+ * FhHStatField reads back out of -- fileh.cla's own rtFhInfo issues
+ * exactly one rtFhDevStat per file.info(path) call, then reads all seven
+ * scalars from it (filesystem-api Task 3 spec %4.3: "the device layer
+ * never sees FileInfo"). */
+static struct stat rt_fh_stat_buf;
+
+/* rt_fh_mac_time: Unix seconds -> Mac-epoch LOCAL seconds, the identical
+ * conversion rt_dt_now_mac (rt_ext_host.inc, included earlier in rt.c so
+ * RT_MAC_EPOCH_DELTA is already visible here) uses for "now" -- applied
+ * here to a file's stat times instead of the current time. */
+static int32_t rt_fh_mac_time(time_t t) {
+    struct tm tmv;
+    localtime_r(&t, &tmv);
+    return (int32_t)((unsigned long)t + (unsigned long)tmv.tm_gmtoff + RT_MAC_EPOCH_DELTA);
+}
+
+/* rt_fh_unix_time: rt_fh_mac_time's inverse (filesystem-api Task 4,
+ * FhHSetTimes) -- subtract RT_MAC_EPOCH_DELTA, then the local UTC offset.
+ * The offset itself depends on the instant (DST), so this is a two-step
+ * approximation: get a rough Unix time first, read ITS gmtoff, then
+ * apply that. ponytail: exact except right at a DST transition instant --
+ * fine for a Finder-style "restamp this file's dates" call, upgrade to a
+ * fixed-point iteration if that ever matters. */
+static time_t rt_fh_unix_time(int32_t mac) {
+    time_t approx;
+    struct tm tmv;
+
+    approx = (time_t)((unsigned long)mac - RT_MAC_EPOCH_DELTA);
+    localtime_r(&approx, &tmv);
+    return (time_t)((long)approx - tmv.tm_gmtoff);
+}
+
+/* rt_ext_FhHStat: stat by path; 0 on success (fields via FhHStatField),
+ * -1 + rt_fh_errno otherwise. Fix round 1 (Task 5 review, controller
+ * ruling): "" names the program's own folder for every folder-taking
+ * call on both lanes (spec %3's lane-parity rule), not just `list` --
+ * the native lane already synthesizes that hit directly (fileh_68k.cla's
+ * own rtFhDevStat); here the empty translated path is substituted with
+ * "." (the SAME substitution FhHListBegin below already makes) so
+ * stat("") -- which always fails -- doesn't diverge from that. Done only
+ * here, not inside path_to_cstr, so open("")/create("")/etc. keep
+ * failing exactly as before. */
+int32_t rt_ext_FhHStat(const uint8_t *path) {
+    char cpath[256];
+    path_to_cstr(cpath, path);
+    if (cpath[0] == '\0') { cpath[0] = '.'; cpath[1] = '\0'; }
+    if (stat(cpath, &rt_fh_stat_buf) != 0) {
+        rt_fh_errno = errno;
+        return -1;
+    }
+    return 0;
+}
+
+/* rt_ext_FhHStatField: 0 size, 2 created, 3 modified, 4 isDir -- from the
+ * last successful FhHStat. Mac-epoch seconds via RT_MAC_EPOCH_DELTA and
+ * the local-time offset, the same convention rt_dt_now_mac uses. macOS/BSD
+ * report a real file-creation time (st_birthtime); other hosts have none,
+ * so "created" falls back to st_ctime there (documented in the reference
+ * as "where the host reports one"). */
+int32_t rt_ext_FhHStatField(int32_t which) {
+    switch (which) {
+    case 0: return (int32_t)rt_fh_stat_buf.st_size;
+    case 2:
+#if defined(__APPLE__)
+        return rt_fh_mac_time(rt_fh_stat_buf.st_birthtime);
+#else
+        return rt_fh_mac_time(rt_fh_stat_buf.st_ctime);
+#endif
+    case 3: return rt_fh_mac_time(rt_fh_stat_buf.st_mtime);
+    case 4: return S_ISDIR(rt_fh_stat_buf.st_mode) ? 1 : 0;
+    default: return 0;
+    }
+}
+
+/* ==================== directory/catalog surface (filesystem-api Task 4) ====================
+ * makeDir/delete/list/setInfo/rename/move (spec %3): the six new file.*
+ * calls' host lane. path_to_cstr already applies the HFS->POSIX
+ * translation (rt.c's own rt_fh_posix_path hook), so every body below
+ * gets an ordinary relative/absolute POSIX path for free. */
+
+int32_t rt_ext_FhHMakeDir(const uint8_t *path) {
+    char cpath[256];
+    path_to_cstr(cpath, path);
+    if (mkdir(cpath, 0777) != 0) { rt_fh_errno = errno; return -1; }
+    return 0;
+}
+
+int32_t rt_ext_FhHDelete(const uint8_t *path) {
+    char cpath[256];
+    path_to_cstr(cpath, path);
+    if (remove(cpath) != 0) { rt_fh_errno = errno; return -1; }
+    return 0;
+}
+
+/* rt_fh_dir: one listing at a time (fileh.cla's rtFhList's own module-
+ * level cursor contract, spec %4.3) -- a fresh FhHListBegin closes any
+ * still-open previous DIR* first, so a caller that forgets ListEnd (it
+ * shouldn't -- rtFhList always calls it) can't leak past the next call. */
+static DIR *rt_fh_dir = NULL;
+
+int32_t rt_ext_FhHListBegin(const uint8_t *path) {
+    char cpath[256];
+    path_to_cstr(cpath, path);
+    if (cpath[0] == '\0') { cpath[0] = '.'; cpath[1] = '\0'; }
+    if (rt_fh_dir) closedir(rt_fh_dir);
+    rt_fh_dir = opendir(cpath);
+    if (!rt_fh_dir) { rt_fh_errno = errno; return -1; }
+    return 0;
+}
+
+/* 0 = wrote a Pascal-string name into buf (<= 255 bytes), 1 = done, -1 =
+ * error (fix round 1: readdir() signals a real failure by leaving errno
+ * nonzero when it returns NULL -- "no more entries" leaves errno
+ * untouched at the 0 this loop resets it to before each call, so the two
+ * cases are distinguishable). '.' and '..' are skipped, matching spec
+ * %3's "every file and folder directly inside path" (those two are not
+ * catalog entries on the Mac). */
+int32_t rt_ext_FhHListNext(void *buf) {
+    struct dirent *de;
+    size_t n;
+    if (!rt_fh_dir) return 1;
+    for (;;) {
+        errno = 0;
+        de = readdir(rt_fh_dir);
+        if (!de) {
+            if (errno != 0) { rt_fh_errno = errno; return -1; }
+            return 1;
+        }
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
+        n = strlen(de->d_name);
+        if (n > 255) n = 255;
+        ((uint8_t *)buf)[0] = (uint8_t)n;
+        memcpy((uint8_t *)buf + 1, de->d_name, n);
+        return 0;
+    }
+}
+
+void rt_ext_FhHListEnd(void) {
+    if (rt_fh_dir) { closedir(rt_fh_dir); rt_fh_dir = NULL; }
+}
+
+/* rt_ext_FhHSetTimes: created is ignored on POSIX (birth time is not
+ * settable); modified == 0 means "leave unchanged" (spec %3's own
+ * setInfo contract). */
+int32_t rt_ext_FhHSetTimes(const uint8_t *path, int32_t created, int32_t modified) {
+    char cpath[256];
+    struct timeval tv[2];
+    struct stat sb; /* final-review wave, Minor 5: a LOCAL stat buffer --
+                      * rt_fh_stat_buf is the shared FhHStat cache that
+                      * FhHStatField reads back from; stat()-ing into it
+                      * here would clobber a caller's still-pending
+                      * info() read for the atime this call only needs
+                      * internally. */
+    (void)created;
+    path_to_cstr(cpath, path);
+    if (modified == 0) return 0;
+    if (stat(cpath, &sb) != 0) { rt_fh_errno = errno; return -1; }
+    tv[0].tv_sec = sb.st_atime; tv[0].tv_usec = 0;
+    tv[1].tv_sec = rt_fh_unix_time(modified); tv[1].tv_usec = 0;
+    if (utimes(cpath, tv) != 0) { rt_fh_errno = errno; return -1; }
+    return 0;
+}
+
+int32_t rt_ext_FhHRename(const uint8_t *path, const uint8_t *newName) {
+    char cpath[256], cnew[256], target[512], dirbuf[256];
+    path_to_cstr(cpath, path);
+    path_to_cstr(cnew, newName);
+    strcpy(dirbuf, cpath);
+    snprintf(target, sizeof target, "%s/%s", dirname(dirbuf), cnew);
+    if (rename(cpath, target) != 0) { rt_fh_errno = errno; return -1; }
+    return 0;
+}
+
+int32_t rt_ext_FhHMove(const uint8_t *path, const uint8_t *dirPath) {
+    char cpath[256], cdir[256], target[512], basebuf[256];
+    path_to_cstr(cpath, path);
+    path_to_cstr(cdir, dirPath);
+    if (cdir[0] == '\0') { cdir[0] = '.'; cdir[1] = '\0'; }
+    strcpy(basebuf, cpath);
+    snprintf(target, sizeof target, "%s/%s", cdir, basename(basebuf));
+    if (rename(cpath, target) != 0) { rt_fh_errno = errno; return -1; }
+    return 0;
 }
