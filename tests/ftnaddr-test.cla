@@ -1,0 +1,59 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for ftnaddr.cla. Run by scripts/test.sh.
+// Exits 0 on pass, 1 on the first failure.
+
+include "../ftnaddr.cla"
+
+var failures: int = 0
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+on App.startCLI(args: list of string) {
+    var a: FtnAddress
+    var b: FtnAddress
+    var t: text
+
+    a = parseAddress("21:1/141")
+    expect(a.zone == 21 and a.net == 1 and a.node == 141 and a.point == 0, "parse 3D")
+    a = parseAddress("21:1/141.5")
+    expect(a.point == 5, "parse point")
+    expect(addressStr(a) == "21:1/141.5", "format with point")
+    a.point = 0
+    expect(addressStr(a) == "21:1/141", "format without point")
+    expect(address3D(parseAddress("2:240/1120.7")) == "2:240/1120", "3D form drops the point")
+    expect(netNodeStr(a) == "1/141", "2D form")
+    expect(addressIsZero(parseAddress("")), "empty is invalid")
+    expect(addressIsZero(parseAddress("1/141")), "zone required")
+    expect(addressIsZero(parseAddress("21:1")), "node required")
+    expect(addressIsZero(parseAddress("21:x/1")), "non-digits rejected")
+    expect(addressIsZero(parseAddress("0:1/1")), "zone 0 rejected")
+    expect(not addressIsZero(parseAddress("21:1/0")), "node 0 (a host) is valid")
+    expect(addressIsZero(parseAddress("21:1/70000")), "out of range rejected")
+    expect(digitsVal("") == -1 and digitsVal("12a") == -1 and digitsVal("042") == 42, "digitsVal")
+
+    b = parseAddress("21:1/141")
+    expect(addressEq(a, b), "equal addresses")
+    b.point = 1
+    expect(not addressEq(a, b), "point differs")
+
+    packAddress(t, parseAddress("21:1/141.5"))
+    expect(t.length == 8 and t.wordAt(0) == 21 and t.wordAt(2) == 1 and t.wordAt(4) == 141 and t.wordAt(6) == 5, "packed big-endian words")
+    b = addressAt(t, 0)
+    expect(addressStr(b) == "21:1/141.5", "unpack roundtrip")
+
+    if failures > 0 {
+        log("ftnaddr-test: FAILED")
+        quit 1
+    }
+    log("ftnaddr-test: all passed")
+    quit
+}

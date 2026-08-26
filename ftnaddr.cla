@@ -1,0 +1,92 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// FTN addresses (FRL-1028): zone:net/node[.point]. Pure -- parsing,
+// formatting and the 8-byte big-endian form vDB records store.
+
+include "btree.cla"   // btAppendWord
+
+record FtnAddress {
+    zone: int
+    net: int
+    node: int
+    point: int
+}
+
+func addressIsZero(a: FtnAddress): bool {
+    return a.zone == 0 and a.net == 0 and a.node == 0 and a.point == 0
+}
+
+func addressEq(a: FtnAddress, b: FtnAddress): bool {
+    return a.zone == b.zone and a.net == b.net and a.node == b.node and a.point == b.point
+}
+
+// "21:1/141" or "21:1/141.5" (the point only when nonzero).
+func addressStr(a: FtnAddress): string {
+    var s: string = string(a.zone) + ":" + string(a.net) + "/" + string(a.node)
+    if a.point != 0 { s = s + "." + string(a.point) }
+    return s
+}
+
+// "21:1/141" always -- INTL and packet headers carry no point.
+func address3D(a: FtnAddress): string {
+    return string(a.zone) + ":" + string(a.net) + "/" + string(a.node)
+}
+
+// "1/141" -- the 2D form SEEN-BY and PATH use.
+func netNodeStr(a: FtnAddress): string {
+    return string(a.net) + "/" + string(a.node)
+}
+
+// All-digit string as an int; -1 if empty or any non-digit.
+func digitsVal(s: string): int {
+    var v: int = 0
+    var i: int = 0
+    if s.length == 0 { return -1 }
+    while i < s.length {
+        if s[i] < '0' or s[i] > '9' { return -1 }
+        v = v * 10 + int(s[i]) - int('0')
+        i = i + 1
+    }
+    return v
+}
+
+// zone:net/node[.point]; a zero record when malformed. Zone and net
+// must be 1-65535, node and point 0-65535.
+func parseAddress(s: string): FtnAddress {
+    var a: FtnAddress
+    var none: FtnAddress
+    var colon: int = s.indexOf(':')
+    var slash: int = s.indexOf('/')
+    var dot: int = s.indexOf('.')
+    if colon < 1 or slash < colon + 2 { return none }
+    a.zone = digitsVal(s[0, colon])
+    a.net = digitsVal(s[colon + 1, slash - colon - 1])
+    if dot > slash {
+        a.node = digitsVal(s[slash + 1, dot - slash - 1])
+        a.point = digitsVal(s[dot + 1, s.length - dot - 1])
+    } else {
+        a.node = digitsVal(s[slash + 1, s.length - slash - 1])
+        a.point = 0
+    }
+    if a.zone < 1 or a.net < 1 or a.node < 0 or a.point < 0 { return none }
+    if a.zone > 65535 or a.net > 65535 or a.node > 65535 or a.point > 65535 { return none }
+    return a
+}
+
+// Append the 8-byte record form: zone, net, node, point as big-endian words.
+func packAddress(t: text, a: FtnAddress) {
+    btAppendWord(t, a.zone)
+    btAppendWord(t, a.net)
+    btAppendWord(t, a.node)
+    btAppendWord(t, a.point)
+}
+
+func addressAt(rec: text, off: int): FtnAddress {
+    var a: FtnAddress
+    a.zone = rec.wordAt(off)
+    a.net = rec.wordAt(off + 2)
+    a.node = rec.wordAt(off + 4)
+    a.point = rec.wordAt(off + 6)
+    return a
+}
