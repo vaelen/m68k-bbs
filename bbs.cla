@@ -386,6 +386,7 @@ func displayMenu() {
     case "sysopboards" { drawSysopBoardsMenu() }
     case "sysopareas"  { drawSysopAreasMenu() }
     case "sysopusers"  { drawSysopUsersMenu() }
+    case "sysopnets"   { drawSysopNetsMenu() }
     case "boards"      { drawBoardPicker() }
     case "areas"       { drawAreaPicker() }
     case "posts"       { drawPostsMenu() }
@@ -434,6 +435,7 @@ func lineScreen(s: string): bool {
     case "newboardname", "newboarddesc", "newboardnet", "newboardtag" { return true }
     case "newareaname", "newareadesc", "newareafolder" { return true }
     case "upname", "updesc", "editfiledesc" { return true }
+    case "shownet", "editnetid", "editnetval", "delnetid", "newnetname", "areafixreq" { return true }
     }
     return false
 }
@@ -501,6 +503,15 @@ func displayPrompt() {
     case "newareadesc"   { sendData("Description: ") }
     case "newareafolder" { sendData("Folder (Enter = app directory): ") }
     case "newareaaccess" { sendData("Access (A=all, S=sysop) [A]: ") }
+    case "sysopnets"   { sendData("Sysop:Networks> ") }
+    case "netlist"     { }
+    case "shownet", "editnetid", "delnetid" { sendData("Network ID or name: ") }
+    case "shownetkeys" { sendData("P)oll  A)reaFix  Q)uit: ") }
+    case "editnet"     { sendData("Field letter, S)ave, Q)uit: ") }
+    case "editnetval"  { editNetValuePrompt() }
+    case "delnetconfirm" { sendData("Delete this network? (Y/N): ") }
+    case "newnetname"  { sendData("Network name: ") }
+    case "areafixreq"  { sendData("AreaFix request (+TAG, -TAG, %LIST): ") }
     }
 }
 
@@ -654,6 +665,17 @@ func processInput(input: string) {
     case "newareadesc"   { newAreaDesc(input) }
     case "newareafolder" { newAreaFolder(input) }
     case "newareaaccess" { newAreaAccess(input) }
+    case "sysopnets"   { sysopNetsChoice(input) }
+    case "netlist"     { netListInput(input) }
+    case "shownet"     { showNetInput(input) }
+    case "shownetkeys" { showNetKeys(input) }
+    case "editnetid"   { editNetIdInput(input) }
+    case "editnet"     { editNetChoice(input) }
+    case "editnetval"  { editNetValue(input) }
+    case "delnetid"    { delNetIdInput(input) }
+    case "delnetconfirm" { delNetConfirm(input) }
+    case "newnetname"  { newNetName(input) }
+    case "areafixreq"  { areafixReqInput(input) }
     case "logoff"   { }   // ignore trailing input (e.g. the modem's OK)
     case "probe"    { }   // discard stray bytes during the telnet probe
     }

@@ -26,6 +26,7 @@ func drawSysopMenu() {
     sendLine("Sysop Menu:")
     sendLine("B) Message Boards")
     sendLine("F) File Areas")
+    sendLine("N) Networks")
     sendLine("U) Users")
     sendLine("Q) Return to Main Menu")
     sendLine("")
@@ -69,6 +70,7 @@ func sysopChoice(input: string) {
     }
     case "B" { gotoScreen("sysopboards") }
     case "F" { gotoScreen("sysopareas") }
+    case "N" { gotoScreen("sysopnets") }
     case "U" { gotoScreen("sysopusers") }
     case "Q" { gotoScreen("main") }
     else     { displayPrompt() }
@@ -1238,4 +1240,438 @@ func newAreaAccess(input: string) {
     drawAreaDetails()
     user.screen = "sysopareas"
     displayPrompt()
+}
+
+// --- Networks ------------------------------------------------------------
+// The board screens over the Networks database (networksdb.cla). New
+// asks for a name only and drops into the edit card; the detail card
+// offers P)oll (queued for after logoff -- the sysop is on the line)
+// and A)reaFix (a netmail to the robot).
+
+func drawSysopNetsMenu() {
+    sendLine("")
+    sendLine("Sysop - Networks:")
+    sendLine("L) List Networks")
+    sendLine("S) Show Network Details")
+    sendLine("E) Edit Network")
+    sendLine("N) New Network")
+    sendLine("D) Delete Network")
+    sendLine("Q) Return to Sysop Menu")
+    sendLine("")
+}
+
+func sysopNetsChoice(input: string) {
+    switch upperStr(input) {
+    case "?" {
+        displayMenu()
+        displayPrompt()
+    }
+    case "L" { startNetList() }
+    case "S" { startShowNet() }
+    case "E" { startEditNet() }
+    case "N" {
+        user.screen = "newnetname"
+        displayPrompt()
+    }
+    case "D" { startDeleteNet() }
+    case "Q" { gotoScreen("sysop") }
+    else     { displayPrompt() }
+    }
+}
+
+// Content widths: narrow is ID/Name (total 39), wide adds Address,
+// Uplink and Last poll (total 79).
+func netListWidths(w: list of int) {
+    w.clear()
+    w.add(4)
+    if terminal.columns < minimumWideTerminalWidth {
+        w.add(28)
+        return
+    }
+    w.add(16)
+    w.add(14)
+    w.add(14)
+    w.add(20)
+}
+
+func startNetList() {
+    user.screen = "netlist"
+    listFromId = 1
+    drawNetListPage()
+}
+
+func netListInput(input: string) {
+    if upperStr(input) == "Q" {
+        gotoScreen("sysopnets")
+    } else {
+        drawNetListPage()
+    }
+}
+
+func drawNetListPage() {
+    var w: list of int
+    var cells: list of string
+    var nextId: int = dbNextRecordId(networksDb)
+    var pageRows: int = terminal.rows - 8
+    var shown: int = 0
+    var id: int = 0
+    var rec: text
+
+    netListWidths(w)
+    cells.add("ID")
+    cells.add("Name")
+    if terminal.columns >= minimumWideTerminalWidth {
+        cells.add("Address")
+        cells.add("Uplink")
+        cells.add("Last poll")
+    }
+    sendTableHeader("Networks", cells, w)
+    id = listFromId
+    while id < nextId and shown < pageRows {
+        rec = dbFind(networksDb, id)
+        if rec.length == networkRecordSize {
+            cells.clear()
+            cells.add(intStr(id))
+            cells.add(dbExtractString(rec, nOffName))
+            if terminal.columns >= minimumWideTerminalWidth {
+                cells.add(addressStr(addressAt(rec, nOffAddr)))
+                cells.add(addressStr(addressAt(rec, nOffUplink)))
+                cells.add(pollResultName(int(rec[nOffLastResult])))
+            }
+            sendLine(rowLine(cells, w))
+            shown = shown + 1
+        }
+        id = id + 1
+    }
+    listFromId = id
+    finishListPage(networksDb, nextId, networkRecordSize, "sysopnets", w)
+}
+
+// ID or name; loads the network. Empty input -> 0 (cancel), unknown -> -1.
+func netFromInput(input: string): int {
+    var id: int
+    if input == "" { return 0 }
+    id = parseIntStr(input)
+    if id > 0 and loadNetwork(id) { return id }
+    if id == 0 {
+        id = findNetworkByName(input)
+        if id > 0 { return id }
+    }
+    return -1
+}
+
+func startShowNet() {
+    user.screen = "shownet"
+    displayPrompt()
+}
+
+func showNetInput(input: string) {
+    var id: int = netFromInput(input)
+    if id == 0 {
+        gotoScreen("sysopnets")
+        return
+    }
+    if id < 0 {
+        sendLine("No such network.")
+        displayPrompt()
+        return
+    }
+    drawNetDetails()
+    user.screen = "shownetkeys"
+    displayPrompt()
+}
+
+func onOff(b: bool): string {
+    if b { return "yes" }
+    return "no"
+}
+
+func lastPollStr(): string {
+    if network.lastPoll == 0 { return "never" }
+    return dateTimeStr(network.lastPoll) + " (" + pollResultName(network.lastResult) + ")"
+}
+
+// Renders the globally loaded `network`.
+func drawNetDetails() {
+    var w: list of int
+    var nid: int = network.id
+    var pending: string
+    pending = intStr(ftnPendingMail(nid)) + " netmail, " + intStr(ftnPendingPosts(nid)) + " posts"
+    loadNetwork(nid)          // the pending counts reload boards/mail/networks
+    detailWidths(w)
+    sendTableTitle("Network Details", w)
+    sendDetailRow("ID",          intStr(network.id), w)
+    sendDetailRow("Name",        network.name, w)
+    sendDetailRow("Domain",      network.domain, w)
+    sendDetailRow("Address",     addressStr(network.addr), w)
+    sendDetailRow("Uplink",      addressStr(network.uplink), w)
+    sendDetailRow("Dial",        network.dial, w)
+    sendDetailRow("UTC offset",  intStr(network.utcOffset) + " min", w)
+    sendDetailRow("Poll every",  intStr(network.pollInterval) + " min", w)
+    sendDetailRow("Enabled",     onOff(networkEnabled()), w)
+    sendDetailRow("Last poll",   lastPollStr(), w)
+    sendDetailRow("Pending",     pending, w)
+    sendRule(BottomLeft, BottomCenter, BottomRight, w)
+}
+
+func showNetKeys(input: string) {
+    switch upperStr(input) {
+    case "P" {
+        ftnQueuePoll(network.id)
+        sendLine("Poll queued -- it runs after you log off.")
+        gotoScreen("sysopnets")
+    }
+    case "A" {
+        user.screen = "areafixreq"
+        displayPrompt()
+    }
+    case "Q", "" { gotoScreen("sysopnets") }
+    else { displayPrompt() }
+    }
+}
+
+// One AreaFix request line as a netmail to the robot; the subject is
+// the AreaFix password (FSC-0057).
+func areafixReqInput(input: string) {
+    var body: text
+    var msgid: string = newMsgId(network.addr)
+    if input == "" {
+        gotoScreen("sysopnets")
+        return
+    }
+    body.append(ftnKludge)
+    body.append("MSGID: " + msgid)
+    body.append(ftnCR)
+    body.append(input)
+    body.append(ftnCR)
+    if sendMailFtn(user.name, user.id, network.addr, network.areafixName, 0, network.uplink, network.areafixPw, body, msgIdCrc(msgid), 0) >= 1 {
+        sendLine("Request queued for the next poll.")
+    } else {
+        sendLine("Queue failed: " + lastError.message)
+    }
+    gotoScreen("sysopnets")
+}
+
+func startEditNet() {
+    user.screen = "editnetid"
+    displayPrompt()
+}
+
+// Edits buffer in the global `network`; Q discards, S writes it back.
+func editNetIdInput(input: string) {
+    var id: int = netFromInput(input)
+    if id == 0 {
+        gotoScreen("sysopnets")
+        return
+    }
+    if id < 0 {
+        sendLine("No such network.")
+        displayPrompt()
+        return
+    }
+    user.screen = "editnet"
+    drawEditNetCard()
+    displayPrompt()
+}
+
+func drawEditNetCard() {
+    var w: list of int
+    editWidths(w)
+    sendTableTitle("Edit Network", w)
+    sendDetailRow("ID",                 intStr(network.id), w)
+    sendDetailRow("N) Name",            network.name, w)
+    sendDetailRow("D) Domain",          network.domain, w)
+    sendDetailRow("A) Our address",     addressStr(network.addr), w)
+    sendDetailRow("U) Uplink address",  addressStr(network.uplink), w)
+    sendDetailRow("W) Session passwd",  network.sessionPw, w)
+    sendDetailRow("P) Packet passwd",   network.packetPw, w)
+    sendDetailRow("X) AreaFix passwd",  network.areafixPw, w)
+    sendDetailRow("R) AreaFix robot",   network.areafixName, w)
+    sendDetailRow("T) Dial string",     network.dial, w)
+    sendDetailRow("Z) UTC offset min",  intStr(network.utcOffset), w)
+    sendDetailRow("I) Poll interval",   intStr(network.pollInterval), w)
+    sendDetailRow("E) Enabled",         onOff(networkEnabled()), w)
+    sendRule(BottomLeft, BottomCenter, BottomRight, w)
+}
+
+func editNetChoice(input: string) {
+    switch upperStr(input) {
+    case "N", "D", "A", "U", "W", "P", "X", "R", "T", "Z", "I", "E" {
+        editField = upperStr(input)[0]
+        user.screen = "editnetval"
+        displayPrompt()
+    }
+    case "S" {
+        if saveNetwork() {
+            sendLine("Saved.")
+        } else {
+            sendLine("Save failed: " + lastError.message)
+        }
+        gotoScreen("sysopnets")
+    }
+    case "Q" { gotoScreen("sysopnets") }
+    case "?" {
+        drawEditNetCard()
+        displayPrompt()
+    }
+    else { displayPrompt() }
+    }
+}
+
+func editNetValuePrompt() {
+    switch editField {
+    case 'N' { sendData("Name [" + network.name + "]: ") }
+    case 'D' { sendData("Domain [" + network.domain + "]: ") }
+    case 'A' { sendData("Our address [" + addressStr(network.addr) + "]: ") }
+    case 'U' { sendData("Uplink address [" + addressStr(network.uplink) + "]: ") }
+    case 'W' { sendData("Session password (- = none) [" + network.sessionPw + "]: ") }
+    case 'P' { sendData("Packet password (- = none) [" + network.packetPw + "]: ") }
+    case 'X' { sendData("AreaFix password (- = none) [" + network.areafixPw + "]: ") }
+    case 'R' { sendData("AreaFix robot [" + network.areafixName + "]: ") }
+    case 'T' { sendData("Dial string [" + network.dial + "]: ") }
+    case 'Z' { sendData("UTC offset in minutes, e.g. -300 or 540 [" + intStr(network.utcOffset) + "]: ") }
+    case 'I' { sendData("Poll interval in minutes, 0 = manual [" + intStr(network.pollInterval) + "]: ") }
+    case 'E' { sendData("Enabled (Y/N) [" + onOff(networkEnabled()) + "]: ") }
+    }
+}
+
+// A signed number: digits with an optional leading minus; the
+// smallest int when malformed (so callers can range-check).
+func signedVal(s: string): int {
+    var v: int
+    if s.length > 1 and s[0] == '-' {
+        v = digitsVal(s[1, s.length - 1])
+        if v < 0 { return 0 - 1000000 }
+        return 0 - v
+    }
+    v = digitsVal(s)
+    if v < 0 { return 0 - 1000000 }
+    return v
+}
+
+// Enter keeps the current value; "-" clears a password.
+func editNetValue(input: string) {
+    var ok: bool = true
+    var a: FtnAddress
+    var v: int
+    if input != "" {
+        switch editField {
+        case 'N' { if input.length > 31 { ok = false } else { network.name = input } }
+        case 'D' { if input.length > 31 { ok = false } else { network.domain = input } }
+        case 'A', 'U' {
+            a = parseAddress(trimStr(input))
+            if addressIsZero(a) {
+                sendLine("Enter an address like 21:1/141.")
+                ok = false
+            } else if editField == 'A' {
+                network.addr = a
+            } else {
+                network.uplink = a
+            }
+        }
+        case 'W' { if input == "-" { network.sessionPw = "" } else if input.length > 15 { ok = false } else { network.sessionPw = input } }
+        case 'P' { if input == "-" { network.packetPw = "" } else if input.length > 7 { ok = false } else { network.packetPw = input } }
+        case 'X' { if input == "-" { network.areafixPw = "" } else if input.length > 15 { ok = false } else { network.areafixPw = input } }
+        case 'R' { if input.length > 31 { ok = false } else { network.areafixName = input } }
+        case 'T' { if input.length > 31 { ok = false } else { network.dial = input } }
+        case 'Z' {
+            v = signedVal(input)
+            if v < 0 - 720 or v > 840 {
+                sendLine("Minutes between -720 and 840.")
+                ok = false
+            } else {
+                network.utcOffset = v
+            }
+        }
+        case 'I' {
+            v = digitsVal(input)
+            if v < 0 or v > 65535 { ok = false } else { network.pollInterval = v }
+        }
+        case 'E' {
+            switch upperStr(input) {
+            case "Y" { network.flags = network.flags | netFlagEnabled }
+            case "N" { network.flags = network.flags & (~netFlagEnabled) }
+            else { ok = false }
+            }
+        }
+        }
+    }
+    if not ok {
+        if editField != 'A' and editField != 'U' and editField != 'Z' { sendLine("Invalid value.") }
+        displayPrompt()
+        return
+    }
+    user.screen = "editnet"
+    drawEditNetCard()
+    displayPrompt()
+}
+
+func startDeleteNet() {
+    user.screen = "delnetid"
+    displayPrompt()
+}
+
+func delNetIdInput(input: string) {
+    var id: int = netFromInput(input)
+    if id == 0 {
+        gotoScreen("sysopnets")
+        return
+    }
+    if id < 0 {
+        sendLine("No such network.")
+        displayPrompt()
+        return
+    }
+    drawNetDetails()
+    user.screen = "delnetconfirm"
+    displayPrompt()
+}
+
+// ponytail: boards still pointing at a deleted network keep their
+// networkId; they simply never match a network at scan time.
+func delNetConfirm(input: string) {
+    if upperStr(input) == "Y" {
+        if dbDelete(networksDb, network.id) {
+            sendLine("Network deleted.")
+        } else {
+            sendLine("Delete failed: " + lastError.message)
+        }
+    } else {
+        sendLine("Cancelled.")
+    }
+    gotoScreen("sysopnets")
+}
+
+// New network: a name, then the edit card for everything else.
+func newNetName(input: string) {
+    var n: Network
+    var id: int
+    if input == "" {
+        sendLine("Cancelled.")
+        gotoScreen("sysopnets")
+        return
+    }
+    if input.length > 31 {
+        sendLine("Names are limited to 31 characters.")
+        displayPrompt()
+        return
+    }
+    n.name = input
+    n.areafixName = "AreaFix"
+    id = createNetwork(n)
+    if id < 1 {
+        sendLine("Create failed: " + lastError.message)
+        gotoScreen("sysopnets")
+        return
+    }
+    loadNetwork(id)
+    sendLine("Network " + intStr(id) + " created (disabled until E) is set).")
+    user.screen = "editnet"
+    drawEditNetCard()
+    displayPrompt()
+}
+
+// ponytail: stub until emsi.cla lands (Task 16 of the plan).
+func ftnQueuePoll(netId: int) {
+    log("Poll queued for network " + intStr(netId))
 }
