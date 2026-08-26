@@ -1288,9 +1288,9 @@ func netListWidths(w: list of int) {
         w.add(28)
         return
     }
-    w.add(16)
-    w.add(14)
-    w.add(14)
+    w.add(15)
+    w.add(12)
+    w.add(12)
     w.add(20)
 }
 
