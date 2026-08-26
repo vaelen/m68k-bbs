@@ -1,0 +1,557 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// FTN message text conventions and type-2+ packets (docs/fidonet.md:
+// "Message text conventions", "MSGID", "Packets"). Pure -- no
+// database knowledge; toss/scan live in ftntoss.cla.
+
+include "ftnaddr.cla"
+include "toolbox/osutils.cla"
+
+const ftnCR: char = '\x0D'
+const ftnLF: char = '\x0A'
+const ftnSoftCR: char = '\x8D'
+const ftnKludge: char = '\x01'
+const ftnHexDigits: string = "0123456789ABCDEF"
+
+func hex8(n: int): string {
+    var s: string
+    var i: int = 28
+    while i >= 0 {
+        s = s + ftnHexDigits[(n >> i) & 15]
+        i = i - 4
+    }
+    return s
+}
+
+func hex4(n: int): string {
+    var s: string
+    var i: int = 12
+    while i >= 0 {
+        s = s + ftnHexDigits[(n >> i) & 15]
+        i = i - 4
+    }
+    return s
+}
+
+// Hex string (either case) to int; -1 on a non-hex character or "".
+func hexVal(s: string): int {
+    var v: int = 0
+    var i: int = 0
+    var c: char
+    if s.length == 0 { return -1 }
+    while i < s.length {
+        c = s[i]
+        if c >= '0' and c <= '9' {
+            v = (v << 4) | (int(c) - int('0'))
+        } else if c >= 'a' and c <= 'f' {
+            v = (v << 4) | (int(c) - int('a') + 10)
+        } else if c >= 'A' and c <= 'F' {
+            v = (v << 4) | (int(c) - int('A') + 10)
+        } else {
+            return -1
+        }
+        i = i + 1
+    }
+    return v
+}
+
+// --- MSGID (FTS-0009) ----------------------------------------------------
+
+var ftnLastSerial: int = 0
+
+// Eight hex digits, unique per origin: now() bumped past the last one
+// handed out, so two messages in one second still differ.
+func ftnSerial(): string {
+    var n: int = now()
+    if ftnLastSerial != 0 and n - ftnLastSerial <= 0 { n = ftnLastSerial + 1 }
+    ftnLastSerial = n
+    return hex8(n)
+}
+
+func newMsgId(a: FtnAddress): string {
+    return addressStr(a) + " " + ftnSerial()
+}
+
+// CRC-32 of the MSGID text (init/final 0xFFFFFFFF); 0 for none.
+func msgIdCrc(msgid: string): int {
+    var t: text = msgid
+    if msgid.length == 0 { return 0 }
+    return t.crc32(0xFFFFFFFF, 0, t.length) ^ 0xFFFFFFFF
+}
+
+// --- Lines and kludges -----------------------------------------------------
+
+func ftnTrim(s: string): string {
+    var a: int = 0
+    var b: int = s.length
+    while a < b and s[a] == ' ' { a = a + 1 }
+    while b > a and s[b - 1] == ' ' { b = b - 1 }
+    return s[a, b - a]
+}
+
+var ftnLineEnd: int = 0     // set by ftnLine: index just past the line's CR
+
+// The line starting at pos, without its CR.
+func ftnLine(body: text, pos: int): text {
+    var out: text
+    var i: int = pos
+    while i < body.length and body[i] != ftnCR {
+        out.append(body[i])
+        i = i + 1
+    }
+    if i < body.length { i = i + 1 }
+    ftnLineEnd = i
+    return out
+}
+
+// "" unless line is "^A<name>..."; else the rest, trimmed and clamped
+// to 255 bytes. name includes its colon ("MSGID:") or trailing space
+// ("INTL ").
+func kludgeValue(line: text, name: string): string {
+    var n: int = name.length
+    var rest: int
+    if line.length < n + 1 or line[0] != ftnKludge { return "" }
+    if line[1, n] != name { return "" }
+    rest = line.length - n - 1
+    if rest > 255 { rest = 255 }
+    return ftnTrim(line[n + 1, rest])
+}
+
+func findKludge(body: text, name: string): string {
+    var pos: int = 0
+    var v: string
+    var line: text
+    while pos < body.length {
+        line = ftnLine(body, pos)
+        pos = ftnLineEnd
+        v = kludgeValue(line, name)
+        if v != "" { return v }
+    }
+    return ""
+}
+
+// The reader's view: every ^A line dropped.
+func stripKludges(body: text): text {
+    var out: text
+    var pos: int = 0
+    var line: text
+    while pos < body.length {
+        line = ftnLine(body, pos)
+        pos = ftnLineEnd
+        if line.length > 0 and line[0] == ftnKludge { continue }
+        out.append(line)
+        out.append(ftnCR)
+    }
+    return out
+}
+
+// v0.2 charset rule: nothing above 0x7F leaves or enters as itself.
+func ftnAscii(t: text) {
+    var i: int = 0
+    while i < t.length {
+        if int(t[i]) >= 128 { t[i] = '?' }
+        i = i + 1
+    }
+}
+
+// --- Dates (FTS-0001 "dd Mon yy  hh:mm:ss", FTS-4008 TZUTC) -----------------
+
+const ftnMonths: string = "JanFebMarAprMayJunJulAugSepOctNovDec"
+
+func ftnTwo(v: int): string {
+    if v < 10 { return "0" + string(v) }
+    return string(v)
+}
+
+func ftnDateStr(t: int): string {
+    var rec: DateTimeRec
+    var s: string
+    SecondsToDate(t, rec)
+    s = ftnTwo(rec.day) + " " + ftnMonths[(rec.month - 1) * 3, 3] + " " + ftnTwo(rec.year mod 100)
+    s = s + "  " + ftnTwo(rec.hour) + ":" + ftnTwo(rec.minute) + ":" + ftnTwo(rec.second)
+    return s
+}
+
+// 1-12, or 0 for an unknown month name (case-sensitive, as written).
+func ftnMonthIndex(m: string): int {
+    var i: int = 0
+    while i < 12 {
+        if ftnMonths[i * 3, 3] == m { return i + 1 }
+        i = i + 1
+    }
+    return 0
+}
+
+// Mac-epoch seconds for "dd Mon yy  hh:mm:ss" (local time as written);
+// 0 if malformed. Two-digit years: 00-79 are 20xx (FRL-1011).
+func ftnDateParse(s: string): int {
+    var rec: DateTimeRec
+    var m: int
+    var yy: int
+    var d: int
+    var h: int
+    var mi: int
+    var sec: int
+    if s.length < 19 { return 0 }
+    d = digitsVal(ftnTrim(s[0, 2]))
+    m = ftnMonthIndex(s[3, 3])
+    yy = digitsVal(s[7, 2])
+    h = digitsVal(s[11, 2])
+    mi = digitsVal(s[14, 2])
+    sec = digitsVal(s[17, 2])
+    if d < 1 or m == 0 or yy < 0 or h < 0 or mi < 0 or sec < 0 { return 0 }
+    if yy < 80 { yy = yy + 2000 } else { yy = yy + 1900 }
+    rec.year = yy
+    rec.month = m
+    rec.day = d
+    rec.hour = h
+    rec.minute = mi
+    rec.second = sec
+    rec.dayOfWeek = 1
+    return DateToSeconds(rec)
+}
+
+// "-0400" / "0900" / "+0130" -> signed minutes; anything else -> 0.
+func tzMinutes(tz: string): int {
+    var s: string = tz
+    var neg: bool = false
+    var hh: int
+    var mm: int
+    if s.length > 0 and (s[0] == '-' or s[0] == '+') {
+        neg = s[0] == '-'
+        s = s[1, s.length - 1]
+    }
+    if s.length != 4 { return 0 }
+    hh = digitsVal(s[0, 2])
+    mm = digitsVal(s[2, 2])
+    if hh < 0 or mm < 0 { return 0 }
+    if neg { return 0 - (hh * 60 + mm) }
+    return hh * 60 + mm
+}
+
+func tzStr(minutes: int): string {
+    var m: int = minutes
+    var s: string = ""
+    if m < 0 {
+        s = "-"
+        m = 0 - m
+    }
+    return s + ftnTwo(m / 60) + ftnTwo(m mod 60)
+}
+
+// --- Packets (FTS-0001 type 2, FSC-0048 type 2+) ----------------------------
+// Header (58 bytes, little-endian words): 0 origNode, 2 destNode,
+// 4 year, 6 month (0-11), 8 day, 10 hour, 12 minute, 14 second,
+// 16 baud, 18 type (2), 20 origNet, 22 destNet, 24 prodCode lo,
+// 25 revision major, 26 password (8, NUL padded), 34 origZone,
+// 36 destZone, 38 auxNet, 40 capValid (byte-swapped capWord),
+// 42 prodCode hi, 43 revision minor, 44 capWord, 46 origZone,
+// 48 destZone, 50 origPoint, 52 destPoint, 54 prodData; messages
+// from 58; trailer 00 00. Packed message: 0 type (2), 2 origNode,
+// 4 destNode, 6 origNet, 8 destNet, 10 attr, 12 cost, 14 date (20,
+// NUL padded), then To, From, Subject, Text -- each NUL-terminated.
+
+record PktMsg {
+    fromName: string(35)
+    toName: string(35)
+    subject: string(71)
+    orig: FtnAddress
+    dest: FtnAddress
+    attr: int
+    date: string(19)
+    area: string(63)
+    msgid: string(79)
+    reply: string(79)
+    tzutc: string(5)
+}
+
+const pktAttrPrivate: int = 0x0001
+const pktAttrLocal: int = 0x0100
+
+var pktFile: filehandle
+var pktHave: bool = false
+var pktWriting: bool = false
+var pktPos: int = 0
+var pktOk: bool = true
+var pktOrig: FtnAddress
+var pktDest: FtnAddress
+var pktPassword: string(8)
+var pktMsg: PktMsg
+var pktBody: text
+var pktChunk: text
+
+// NUL-terminated string within a fixed field of t.
+func pktZString(t: text, off: int, max: int): string {
+    var s: string
+    var i: int = 0
+    while i < max and t[off + i] != '\x00' {
+        s = s + t[off + i]
+        i = i + 1
+    }
+    return s
+}
+
+func pktOpenRead(path: string): bool {
+    var hdr: text
+    pktClose()
+    pktFile = file.open(path)
+    if pktFile == nil { return false }
+    pktHave = true
+    pktWriting = false
+    if not pktFile.readAt(0, 58, hdr) or hdr.length != 58 or hdr.wordAtLE(18) != 2 {
+        pktClose()
+        return false
+    }
+    pktOrig.node = hdr.wordAtLE(0)
+    pktDest.node = hdr.wordAtLE(2)
+    pktOrig.net = hdr.wordAtLE(20)
+    pktDest.net = hdr.wordAtLE(22)
+    if hdr.wordAtLE(44) == 1 and hdr.wordAtLE(40) == 0x0100 {
+        pktOrig.zone = hdr.wordAtLE(46)     // type 2+
+        pktDest.zone = hdr.wordAtLE(48)
+        pktOrig.point = hdr.wordAtLE(50)
+        pktDest.point = hdr.wordAtLE(52)
+    } else {
+        pktOrig.zone = hdr.wordAtLE(34)     // stone-age type 2 (QMail zones)
+        pktDest.zone = hdr.wordAtLE(36)
+        pktOrig.point = 0
+        pktDest.point = 0
+    }
+    pktPassword = pktZString(hdr, 26, 8)
+    pktPos = 58
+    return true
+}
+
+// The NUL-terminated field at pktPos (NUL consumed); clears pktOk at EOF.
+func pktReadZ(): text {
+    var out: text
+    var i: int
+    while pktOk {
+        if not pktFile.readAt(pktPos, 256, pktChunk) or pktChunk.length == 0 {
+            pktOk = false
+            return out
+        }
+        i = pktChunk.indexOf('\x00')
+        if i < 0 {
+            out.append(pktChunk)
+            pktPos = pktPos + pktChunk.length
+        } else {
+            if i > 0 { out.append(pktChunk[0, i]) }
+            pktPos = pktPos + i + 1
+            return out
+        }
+    }
+    return out
+}
+
+func pktClamp(t: text, n: int): string {
+    if t.length <= n { return t[0, t.length] }
+    return t[0, n]
+}
+
+// Next packed message into pktMsg/pktBody; false at the trailer/EOF.
+func pktNextMsg(): bool {
+    var h: text
+    var raw: text
+    if not pktHave or pktWriting { return false }
+    if not pktFile.readAt(pktPos, 34, h) or h.length < 2 { return false }
+    if h.wordAtLE(0) != 2 or h.length < 34 { return false }
+    pktMsg = new PktMsg
+    pktMsg.orig.node = h.wordAtLE(2)
+    pktMsg.dest.node = h.wordAtLE(4)
+    pktMsg.orig.net = h.wordAtLE(6)
+    pktMsg.dest.net = h.wordAtLE(8)
+    pktMsg.attr = h.wordAtLE(10)
+    pktMsg.date = pktZString(h, 14, 19)
+    pktMsg.orig.zone = pktOrig.zone
+    pktMsg.dest.zone = pktDest.zone
+    pktPos = pktPos + 34
+    pktOk = true
+    pktMsg.toName = pktClamp(pktReadZ(), 35)
+    pktMsg.fromName = pktClamp(pktReadZ(), 35)
+    pktMsg.subject = pktClamp(pktReadZ(), 71)
+    raw = pktReadZ()
+    if not pktOk { return false }
+    pktBody = ftnNormalize(raw)
+    return true
+}
+
+// One raw line: stops at CR, drops LF and soft-CR, ASCII-fies.
+func ftnRawLine(raw: text, pos: int): text {
+    var out: text
+    var i: int = pos
+    var c: char
+    while i < raw.length and raw[i] != ftnCR {
+        c = raw[i]
+        if c != ftnLF and c != ftnSoftCR {
+            if int(c) >= 128 { c = '?' }
+            out.append(c)
+        }
+        i = i + 1
+    }
+    if i < raw.length { i = i + 1 }
+    ftnLineEnd = i
+    return out
+}
+
+// Inbound message text -> stored body (docs/fidonet.md, "Message text
+// conventions"), harvesting the addressing/identity kludges into pktMsg.
+func ftnNormalize(raw: text): text {
+    var out: text
+    var line: text
+    var pos: int = 0
+    var first: bool = true
+    var v: string
+    var sp: int
+    var a: FtnAddress
+    while pos < raw.length {
+        line = ftnRawLine(raw, pos)
+        pos = ftnLineEnd
+        if first and line.length > 5 and line[0, 5] == "AREA:" {
+            pktMsg.area = ftnTrim(line[5, line.length - 5])
+            first = false
+            continue
+        }
+        first = false
+        if line.length >= 8 and line[0, 8] == "SEEN-BY:" { continue }
+        if line.length > 0 and line[0] == ftnKludge {
+            if line.length >= 6 and line[1, 5] == "PATH:" { continue }
+            v = kludgeValue(line, "MSGID:")
+            if v != "" { pktMsg.msgid = v }
+            v = kludgeValue(line, "REPLY:")
+            if v != "" { pktMsg.reply = v }
+            v = kludgeValue(line, "TZUTC:")
+            if v != "" { pktMsg.tzutc = v }
+            v = kludgeValue(line, "INTL ")
+            if v != "" {
+                sp = v.indexOf(' ')
+                if sp > 0 {
+                    a = parseAddress(v[0, sp])
+                    if not addressIsZero(a) { pktMsg.dest.zone = a.zone }
+                    a = parseAddress(v[sp + 1, v.length - sp - 1])
+                    if not addressIsZero(a) { pktMsg.orig.zone = a.zone }
+                }
+            }
+            v = kludgeValue(line, "FMPT ")
+            if v != "" and digitsVal(v) > 0 { pktMsg.orig.point = digitsVal(v) }
+            v = kludgeValue(line, "TOPT ")
+            if v != "" and digitsVal(v) > 0 { pktMsg.dest.point = digitsVal(v) }
+        }
+        out.append(line)
+        out.append(ftnCR)
+    }
+    return out
+}
+
+func pktClose() {
+    var z: text
+    if not pktHave { return }
+    if pktWriting {
+        z.append('\x00')
+        z.append('\x00')
+        pktFile.writeAt(pktPos, z)
+        pktFile.flush()
+    }
+    pktFile.close()
+    pktFile = nil
+    pktHave = false
+    pktWriting = false
+}
+
+// --- Writing ---------------------------------------------------------------
+
+func pktWord(t: text, v: int) {
+    t.append(char(v & 255))
+    t.append(char((v >> 8) & 255))
+}
+
+// s (clamped to n-1 bytes) then NULs up to n bytes.
+func pktFixedZ(t: text, s: string, n: int) {
+    var v: string = s
+    var i: int
+    if v.length > n - 1 { v = v[0, n - 1] }
+    t.append(v)
+    i = v.length
+    while i < n {
+        t.append('\x00')
+        i = i + 1
+    }
+}
+
+func pktCreate(path: string, orig: FtnAddress, dest: FtnAddress, password: string): bool {
+    var h: text
+    var rec: DateTimeRec
+    pktClose()
+    pktFile = file.create(path, "BINA", "68BB")
+    if pktFile == nil { return false }
+    pktHave = true
+    pktWriting = true
+    SecondsToDate(now(), rec)
+    pktWord(h, orig.node)
+    pktWord(h, dest.node)
+    pktWord(h, rec.year)
+    pktWord(h, rec.month - 1)
+    pktWord(h, rec.day)
+    pktWord(h, rec.hour)
+    pktWord(h, rec.minute)
+    pktWord(h, rec.second)
+    pktWord(h, 0)               // baud
+    pktWord(h, 2)               // packet type
+    pktWord(h, orig.net)
+    pktWord(h, dest.net)
+    h.append('\x00')            // product code (low): unregistered
+    h.append('\x00')            // revision major
+    pktFixedZ(h, password, 8)
+    pktWord(h, orig.zone)       // QMail zones
+    pktWord(h, dest.zone)
+    pktWord(h, 0)               // auxNet
+    pktWord(h, 0x0100)          // capValid: capWord byte-swapped
+    h.append('\x00')            // product code (high)
+    h.append('\x02')            // revision minor (0.2)
+    pktWord(h, 1)               // capWord: type 2+
+    pktWord(h, orig.zone)
+    pktWord(h, dest.zone)
+    pktWord(h, orig.point)
+    pktWord(h, dest.point)
+    pktWord(h, 0)               // product data
+    pktWord(h, 0)
+    if not pktFile.writeAt(0, h) {
+        pktClose()
+        return false
+    }
+    pktPos = 58
+    return true
+}
+
+// Append one packed message. body is the finished text (kludges,
+// text, tearline, origin, SEEN-BY, PATH as the caller composed it);
+// the AREA line is added here from m.area.
+func pktAddMsg(m: PktMsg, body: text): bool {
+    var t: text
+    if not pktHave or not pktWriting { return false }
+    pktWord(t, 2)
+    pktWord(t, m.orig.node)
+    pktWord(t, m.dest.node)
+    pktWord(t, m.orig.net)
+    pktWord(t, m.dest.net)
+    pktWord(t, m.attr)
+    pktWord(t, 0)               // cost
+    pktFixedZ(t, m.date, 20)
+    t.append(m.toName)
+    t.append('\x00')
+    t.append(m.fromName)
+    t.append('\x00')
+    t.append(m.subject)
+    t.append('\x00')
+    if m.area != "" {
+        t.append("AREA:")
+        t.append(m.area)
+        t.append(ftnCR)
+    }
+    t.append(body)
+    t.append('\x00')
+    if not pktFile.writeAt(pktPos, t) { return false }
+    pktPos = pktPos + t.length
+    return true
+}

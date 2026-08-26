@@ -1,0 +1,161 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for ftnpkt.cla: text conventions, dates, packets.
+// Run by scripts/test.sh from a scratch directory that holds the
+// fixture packets (tests/fixtures/*.pkt, copied there by the runner).
+// Exits 0 on pass, 1 on the first failure.
+
+include "../ftnpkt.cla"
+
+var failures: int = 0
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+func textTests() {
+    var body: text
+    var s1: string
+    var s2: string
+    var t: text
+    var out: text
+
+    expect(hex8(0) == "00000000" and hex8(0x1234ABCD) == "1234ABCD" and hex8(0 - 1) == "FFFFFFFF", "hex8")
+    expect(hex4(0xC816) == "C816" and hexVal("c816") == 0xC816 and hexVal("zz") == -1, "hex4/hexVal")
+    s1 = ftnSerial()
+    s2 = ftnSerial()
+    expect(s1.length == 8 and s2.length == 8 and s1 != s2, "serials are 8 hex and unique")
+    expect(newMsgId(parseAddress("21:1/141")).length == 8 + 9, "MSGID shape: address, space, serial")
+    expect(msgIdCrc("") == 0, "empty MSGID has crc 0")
+    expect(msgIdCrc("21:1/100 689ed8ce") != 0 and msgIdCrc("21:1/100 689ed8ce") == msgIdCrc("21:1/100 689ed8ce"), "crc stable")
+    expect(msgIdCrc("a") != msgIdCrc("b"), "crc differs")
+    expect(ftnTrim("  x y  ") == "x y" and ftnTrim("") == "", "trim")
+
+    body = "\x01MSGID: 21:1/100 689ed8ce\n\x01REPLY: 1:2/3 0000abcd\nHello\nthere\n"
+    expect(ftnLine(body, 0) == "\x01MSGID: 21:1/100 689ed8ce" and ftnLineEnd == 26, "first line and its end")
+    expect(ftnLine(body, ftnLineEnd) == "\x01REPLY: 1:2/3 0000abcd", "second line")
+    expect(findKludge(body, "MSGID:") == "21:1/100 689ed8ce", "find MSGID")
+    expect(findKludge(body, "REPLY:") == "1:2/3 0000abcd", "find REPLY")
+    expect(findKludge(body, "TZUTC:") == "", "absent kludge")
+    t = "\x01INTL 21:1/141 21:1/100"
+    expect(kludgeValue(t, "INTL ") == "21:1/141 21:1/100", "kludge without colon")
+    out = stripKludges(body)
+    expect(out == "Hello\nthere\n", "reader view hides ^A lines")
+    t = "caf\xE9 ok"
+    ftnAscii(t)
+    expect(t == "caf? ok", "high bytes become ?")
+}
+
+func dateTests() {
+    var rec: DateTimeRec
+    var t: int
+    var s: string
+    rec.year = 2025
+    rec.month = 8
+    rec.day = 15
+    rec.hour = 18
+    rec.minute = 50
+    rec.second = 54
+    rec.dayOfWeek = 1
+    t = DateToSeconds(rec)
+    s = ftnDateStr(t)
+    expect(s == "15 Aug 25  18:50:54", "FTS-0001 date format: " + s)
+    expect(ftnDateParse(s) == t, "parse roundtrip")
+    expect(ftnDateParse("01 Jan 99  00:00:00") != 0, "1999 parses")
+    expect(ftnDateParse("bogus") == 0 and ftnDateParse("15 Xyz 25  18:50:54") == 0, "malformed dates are 0")
+    expect(ftnDateParse("15 Aug 25  18:50:54") - ftnDateParse("15 Aug 25  17:50:54") == 3600, "hour arithmetic")
+    expect(tzMinutes("-0400") == 0 - 240 and tzMinutes("0900") == 540 and tzMinutes("+0130") == 90, "TZUTC to minutes")
+    expect(tzMinutes("") == 0 and tzMinutes("abc") == 0, "bad TZUTC is 0")
+    expect(tzStr(0 - 240) == "-0400" and tzStr(540) == "0900" and tzStr(0) == "0000", "minutes to TZUTC")
+}
+
+func readTests() {
+    expect(not pktOpenRead("nope.pkt"), "missing packet fails to open")
+    expect(pktOpenRead("netmail.pkt"), "open netmail fixture")
+    expect(addressStr(pktOrig) == "21:1/100" and addressStr(pktDest) == "21:1/141", "type-2+ header addresses")
+    expect(pktPassword == "", "no packet password")
+    expect(pktNextMsg(), "first netmail message")
+    expect(pktMsg.fromName == "Areafix" and pktMsg.toName == "vaelen", "names")
+    expect(pktMsg.subject == "Areafix reply: link information", "subject")
+    expect(pktMsg.attr == 1 and pktMsg.area == "", "private netmail, no AREA")
+    expect(pktMsg.date == "15 Aug 25  18:50:54", "date field")
+    expect(pktMsg.msgid == "21:1/100 689ed8ce" and pktMsg.reply == "", "MSGID/REPLY")
+    expect(addressStr(pktMsg.orig) == "21:1/100" and addressStr(pktMsg.dest) == "21:1/141", "INTL sets zones")
+    expect(findKludge(pktBody, "MSGID:") == "21:1/100 689ed8ce", "kludges kept in the body")
+    expect(pktBody.indexOf("Your address: 21:1/141") >= 0, "body text present")
+    expect(pktBody.indexOf('\x0A') < 0, "no LF in the normalized body")
+    expect(not pktNextMsg(), "trailer ends the packet")
+    pktClose()
+
+    expect(pktOpenRead("echomail.pkt") and pktNextMsg(), "open echomail fixture")
+    expect(pktMsg.area == "FSX_ADS", "AREA line")
+    expect(pktMsg.fromName == "Rixter" and pktMsg.toName == "All" and pktMsg.subject == "Rick's BBS", "echomail names")
+    expect(pktMsg.tzutc == "-0400", "TZUTC")
+    expect(pktMsg.msgid == "4768.fsx_adq@21:1/242 2d03f962", "MSGID with a domain-style serial")
+    expect(pktBody.indexOf("AREA:") < 0 and pktBody.indexOf("SEEN-BY:") < 0 and pktBody.indexOf("\x01PATH:") < 0, "AREA/SEEN-BY/PATH dropped")
+    expect(pktBody.indexOf("\x01CHRS: ASCII 1") >= 0, "CHRS kept")
+    expect(pktBody.indexOf("telnet://ricksbbs.synchro.net:23") >= 0, "body text kept")
+    expect(not pktNextMsg(), "one message in the echomail fixture")
+    pktClose()
+}
+
+func writeTests() {
+    var m: PktMsg
+    var body: text
+    var hdr: text
+    var f: filehandle
+    m.fromName = "andrew"
+    m.toName = "All"
+    m.subject = "Hello from a Mac"
+    m.orig = parseAddress("21:1/141")
+    m.dest = parseAddress("21:1/100")
+    m.attr = 0
+    m.date = "26 Aug 26  12:00:00"
+    m.area = "FSX_TEST"
+    body = "\x01MSGID: 21:1/141 00000001\nBody line one\n--- 68kBBS 0.2\n"
+    expect(pktCreate("out.pkt", parseAddress("21:1/141"), parseAddress("21:1/100"), "pw"), "create packet")
+    expect(pktAddMsg(m, body), "add echomail")
+    m.area = ""
+    m.toName = "Sysop"
+    m.attr = pktAttrPrivate | pktAttrLocal
+    body = "\x01INTL 21:1/100 21:1/141\nnetmail body\n"
+    expect(pktAddMsg(m, body), "add netmail")
+    pktClose()
+
+    f = file.open("out.pkt")
+    expect(f != nil, "packet exists")
+    f.readAt(0, 58, hdr)
+    f.close()
+    expect(hdr.wordAtLE(18) == 2 and hdr.wordAtLE(44) == 1 and hdr.wordAtLE(40) == 0x0100, "type 2+ header")
+    expect(hdr.wordAtLE(0) == 141 and hdr.wordAtLE(2) == 100 and hdr.wordAtLE(20) == 1 and hdr.wordAtLE(46) == 21 and hdr.wordAtLE(48) == 21, "header addresses")
+    expect(hdr[26] == 'p' and hdr[27] == 'w' and hdr[28] == '\x00', "packet password, NUL padded")
+    expect(hdr.wordAtLE(6) < 12, "month is 0-11")
+
+    expect(pktOpenRead("out.pkt"), "reopen our packet")
+    expect(pktNextMsg() and pktMsg.area == "FSX_TEST" and pktMsg.fromName == "andrew" and pktMsg.subject == "Hello from a Mac", "echomail roundtrip")
+    expect(pktMsg.date == "26 Aug 26  12:00:00" and pktMsg.msgid == "21:1/141 00000001", "date/MSGID roundtrip")
+    expect(pktBody.indexOf("Body line one") >= 0 and pktBody.indexOf("AREA:") < 0, "body roundtrip, AREA stripped on read")
+    expect(pktNextMsg() and pktMsg.area == "" and pktMsg.toName == "Sysop" and pktMsg.attr == (pktAttrPrivate | pktAttrLocal), "netmail roundtrip")
+    expect(addressStr(pktMsg.dest) == "21:1/100", "INTL zone on read")
+    expect(not pktNextMsg(), "trailer written")
+    pktClose()
+}
+
+on App.startCLI(args: list of string) {
+    textTests()
+    dateTests()
+    readTests()
+    writeTests()
+    if failures > 0 {
+        log("ftnpkt-test: FAILED")
+        quit 1
+    }
+    log("ftnpkt-test: all passed")
+    quit
+}

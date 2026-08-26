@@ -6,6 +6,7 @@ set -e
 cd "$(dirname "$0")/.."
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
+cp tests/fixtures/* "$WORK"/    # packets the ftn tests read
 for t in tests/*.cla; do
     echo "== $t"
     bin/clarusc emit --rtdir vendor/runtime/clarus/ -o "$WORK/main.c" "$t"
