@@ -1,0 +1,416 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// Toss (inbound packets -> boards and mail) and scan (local posts and
+// netmail -> the outbound packet) for a leaf node: docs/fidonet.md,
+// "Toss" and "Scan". Runs with no caller on the line.
+
+include "networksdb.cla"
+include "boardsdb.cla"
+include "postsdb.cla"
+include "maildb.cla"
+include "user.cla"
+include "usersdb.cla"
+include "ftnpkt.cla"
+
+const ftnFolder: string = ":FTN"
+const ftnIn: string = ":FTN:In"
+const ftnOut: string = ":FTN:Out"
+const ftnTmp: string = ":FTN:Tmp"
+const ftnSystemName: string = "68kBBS"   // ponytail: the Origin line's system name; a sysop setting later
+const ftnVersion: string = "0.2"
+
+var tossEcho: int = 0
+var tossNet: int = 0
+var tossDupes: int = 0
+var tossUnknown: int = 0
+
+func ftnEnsureDir(p: string): bool {
+    if file.exists(p) { return true }
+    return file.makeDir(p)
+}
+
+// :FTN and its In/Out/Tmp, one level at a time (makeDir is one level).
+func ftnEnsureFolders(): bool {
+    if not ftnEnsureDir(ftnFolder) { return false }
+    if not ftnEnsureDir(ftnIn) { return false }
+    if not ftnEnsureDir(ftnOut) { return false }
+    return ftnEnsureDir(ftnTmp)
+}
+
+func ftnOutPath(netId: int): string {
+    return ftnOut + ":" + string(netId) + ".pkt"
+}
+
+// --- Tag cache: every networked board's tag, loaded once per toss ------------
+
+var tagBoards: list of int
+var tagNets: list of int
+var tagNames: list of string
+
+func loadTagCache() {
+    var id: int = 1
+    var last: int = boardsNextId()
+    tagBoards.clear()
+    tagNets.clear()
+    tagNames.clear()
+    while id < last {
+        if loadBoard(id) and boardNetworked() {
+            tagBoards.add(id)
+            tagNets.add(board.networkId)
+            tagNames.add(board.tag)
+        }
+        id = id + 1
+    }
+}
+
+func boardForTag(netId: int, tag: string): int {
+    var i: int = 0
+    while i < tagBoards.count {
+        if tagNets[i] == netId and dbStrEqCI(tagNames[i], tag) { return tagBoards[i] }
+        i = i + 1
+    }
+    return 0
+}
+
+// --- Toss --------------------------------------------------------------------
+
+// The enabled network the open packet is addressed to (loaded); 0 if none.
+func networkForPacket(): int {
+    var id: int = 1
+    var last: int = networksNextId()
+    while id < last {
+        if loadNetwork(id) and networkEnabled() and addressEq(network.addr, pktDest) { return id }
+        id = id + 1
+    }
+    return 0
+}
+
+// The message's own time in our local clock: its date is the sender's
+// local time; TZUTC (if any) takes it to UTC, our offset brings it here.
+func tossCreated(): int {
+    var t: int = ftnDateParse(pktMsg.date)
+    if t == 0 { return now() }
+    if pktMsg.tzutc != "" { t = t - tzMinutes(pktMsg.tzutc) * 60 + network.utcOffset * 60 }
+    return t
+}
+
+func tossSubject(): string {
+    if pktMsg.subject.length > 63 { return pktMsg.subject[0, 63] }
+    return pktMsg.subject
+}
+
+func tossEchomail(netId: int) {
+    var bid: int = boardForTag(netId, pktMsg.area)
+    var crc: int
+    var parent: int
+    var thread: int = 0
+    if bid == 0 {
+        tossUnknown = tossUnknown + 1
+        return
+    }
+    if not postsOpen(bid) {
+        log("Toss: cannot open board " + string(bid) + ": " + lastError.message)
+        return
+    }
+    crc = msgIdCrc(pktMsg.msgid)
+    if findPostByMsgId(crc) > 0 {
+        tossDupes = tossDupes + 1
+        return
+    }
+    if pktMsg.reply != "" {
+        parent = findPostByMsgId(msgIdCrc(pktMsg.reply))
+        if parent > 0 and loadPost(parent) {
+            if post.threadId == 0 { thread = parent } else { thread = post.threadId }
+        }
+    }
+    if addPostFtn(pktMsg.fromName, tossCreated(), thread, tossSubject(), pktBody, crc, pktMsg.orig, postFlagInbound) < 1 {
+        log("Toss: post add failed: " + lastError.message)
+        return
+    }
+    tossEcho = tossEcho + 1
+}
+
+// Netmail: to the named local user, else to the sysop (user 1) with
+// the original name kept in toName.
+func tossNetmail(netId: int) {
+    var uid: int = findUserId(pktMsg.toName)
+    if uid < 1 { uid = 1 }
+    if sendMailFtn(pktMsg.fromName, 0, pktMsg.orig, pktMsg.toName, uid, pktMsg.dest, tossSubject(), pktBody, msgIdCrc(pktMsg.msgid), tossCreated()) < 1 {
+        log("Toss: mail add failed: " + lastError.message)
+        return
+    }
+    tossNet = tossNet + 1
+}
+
+// One packet: header checks, then every message. False leaves the
+// file in place (logged) -- a packet we can't read or that isn't ours.
+func tossFile(path: string): bool {
+    var netId: int
+    if not pktOpenRead(path) {
+        log("Toss: not a packet: " + path)
+        return false
+    }
+    netId = networkForPacket()
+    if netId == 0 {
+        log("Toss: " + path + " is for " + addressStr(pktDest) + ", not us; left in place.")
+        pktClose()
+        return false
+    }
+    if network.packetPw != "" and not dbStrEqCI(pktPassword, network.packetPw) {
+        log("Toss: " + path + ": wrong packet password; left in place.")
+        pktClose()
+        return false
+    }
+    while pktNextMsg() {
+        if pktMsg.area != "" {
+            tossEchomail(netId)
+        } else {
+            tossNetmail(netId)
+        }
+    }
+    pktClose()
+    return true
+}
+
+// Every packet in :FTN:In, deleted once tossed. Returns the count.
+func tossInbound(): int {
+    var names: list of string
+    var fi: FileInfo
+    var i: int = 0
+    var n: int = 0
+    var p: string
+    tossEcho = 0
+    tossNet = 0
+    tossDupes = 0
+    tossUnknown = 0
+    loadTagCache()
+    if not file.list(ftnIn, names) {
+        log("Toss: cannot list " + ftnIn + ": " + lastError.message)
+        return 0
+    }
+    while i < names.count {
+        p = ftnIn + ":" + names[i]
+        fi = file.info(p)
+        if not fi.isDir {
+            if tossFile(p) {
+                n = n + 1
+                if not file.delete(p) { log("Toss: cannot delete " + p + ": " + lastError.message) }
+            }
+        }
+        i = i + 1
+    }
+    postsClose()
+    log("Tossed " + string(n) + " packet(s): " + string(tossEcho) + " echomail, " + string(tossNet) + " netmail, " + string(tossDupes) + " dupes, " + string(tossUnknown) + " unknown areas.")
+    return n
+}
+
+// --- Scan --------------------------------------------------------------------
+// One outbound packet per network per poll, rebuilt from scratch: every
+// local post past each board's lastExported and every unsent outbound
+// netmail on this network. Marks move only in scanCommit, after the
+// send was acknowledged.
+
+var scanBoards: list of int     // boards exported this scan
+var scanHigh: list of int       // their new lastExported values
+var scanMail: list of int       // netmail IDs exported
+var scanCount: int = 0
+
+func scanClamp(s: string, n: int): string {
+    if s.length > n { return s[0, n] }
+    return s
+}
+
+func scanKludge(t: text, s: string) {
+    t.append(ftnKludge)
+    t.append(s)
+    t.append(ftnCR)
+}
+
+func scanEndLine(t: text) {
+    if t.length > 0 and t[t.length - 1] != ftnCR { t.append(ftnCR) }
+}
+
+// The common kludges every outbound message carries.
+func scanCommonKludges(t: text) {
+    scanKludge(t, "TZUTC: " + tzStr(network.utcOffset))
+    scanKludge(t, "PID: " + ftnSystemName + " " + ftnVersion)
+    scanKludge(t, "CHRS: ASCII 1")
+}
+
+func scanTearline(t: text) {
+    scanEndLine(t)
+    t.append("--- " + ftnSystemName + " " + ftnVersion)
+    t.append(ftnCR)
+}
+
+// SEEN-BY wants ascending 2D addresses.
+func scanSeenBy(): string {
+    var a: FtnAddress = network.addr
+    var b: FtnAddress = network.uplink
+    if b.net < a.net or (b.net == a.net and b.node < a.node) {
+        return "SEEN-BY: " + netNodeStr(b) + " " + netNodeStr(a)
+    }
+    return "SEEN-BY: " + netNodeStr(a) + " " + netNodeStr(b)
+}
+
+func scanEchoBody(pid: int): text {
+    var t: text
+    scanCommonKludges(t)
+    t.append(postBody(pid))         // its own MSGID/REPLY lead the stored body
+    ftnAscii(t)
+    scanTearline(t)
+    t.append(" * Origin: " + ftnSystemName + " (" + addressStr(network.addr) + ")")
+    t.append(ftnCR)
+    t.append(scanSeenBy())
+    t.append(ftnCR)
+    scanKludge(t, "PATH: " + netNodeStr(network.addr))
+    return t
+}
+
+// The loaded board's unexported local posts into the open packet.
+func scanBoard() {
+    var pid: int = board.lastExported + 1
+    var last: int
+    var m: PktMsg
+    if not postsOpen(board.id) {
+        log("Scan: cannot open board " + string(board.id) + ": " + lastError.message)
+        return
+    }
+    last = postsNextId()
+    while pid < last {
+        if loadPost(pid) and (post.flags & postFlagInbound) == 0 {
+            m = new PktMsg
+            m.fromName = scanClamp(post.sender, 35)
+            m.toName = "All"
+            m.subject = scanClamp(post.subject, 71)
+            m.orig = network.addr
+            m.dest = network.uplink
+            m.attr = 0
+            m.date = ftnDateStr(post.created)
+            m.area = board.tag
+            if pktAddMsg(m, scanEchoBody(pid)) { scanCount = scanCount + 1 }
+        }
+        pid = pid + 1
+    }
+    scanBoards.add(board.id)
+    scanHigh.add(last - 1)
+}
+
+// The loaded outbound message into the open packet.
+func scanMailMsg() {
+    var m: PktMsg
+    var t: text
+    m.fromName = scanClamp(message.fromName, 35)
+    m.toName = scanClamp(message.toName, 35)
+    m.subject = scanClamp(message.subject, 71)
+    m.orig = network.addr
+    m.dest = message.toAddr
+    m.attr = pktAttrPrivate | pktAttrLocal
+    m.date = ftnDateStr(message.created)
+    m.area = ""
+    scanKludge(t, "INTL " + address3D(message.toAddr) + " " + address3D(network.addr))
+    if message.toAddr.point != 0 { scanKludge(t, "TOPT " + string(message.toAddr.point)) }
+    if network.addr.point != 0 { scanKludge(t, "FMPT " + string(network.addr.point)) }
+    scanCommonKludges(t)
+    t.append(messageBody(message.id))
+    ftnAscii(t)
+    scanTearline(t)
+    if pktAddMsg(m, t) {
+        scanCount = scanCount + 1
+        scanMail.add(message.id)
+    }
+}
+
+// Build :FTN:Out:<id>.pkt for network netId; returns the message
+// count (0 = nothing pending, no file left behind).
+func scanNetwork(netId: int): int {
+    var ids: list of int
+    var id: int = 1
+    var last: int
+    var i: int = 0
+    scanBoards.clear()
+    scanHigh.clear()
+    scanMail.clear()
+    scanCount = 0
+    if not loadNetwork(netId) { return 0 }
+    if not pktCreate(ftnOutPath(netId), network.addr, network.uplink, network.packetPw) {
+        log("Scan: cannot create " + ftnOutPath(netId) + ": " + lastError.message)
+        return 0
+    }
+    last = boardsNextId()
+    while id < last {
+        if loadBoard(id) and boardNetworked() and board.networkId == netId { scanBoard() }
+        id = id + 1
+    }
+    postsClose()
+    outboundMailIds(ids)
+    while i < ids.count {
+        if loadMessage(ids[i]) and addressEq(message.fromAddr, network.addr) { scanMailMsg() }
+        i = i + 1
+    }
+    pktClose()
+    if scanCount == 0 {
+        file.delete(ftnOutPath(netId))
+        scanBoards.clear()
+        scanHigh.clear()
+        scanMail.clear()
+    }
+    return scanCount
+}
+
+// The packet was acknowledged: move the marks and drop the file.
+func scanCommit(netId: int) {
+    var i: int = 0
+    while i < scanBoards.count {
+        if loadBoard(scanBoards[i]) {
+            board.lastExported = scanHigh[i]
+            if not saveBoard() { log("Scan: mark save failed: " + lastError.message) }
+        }
+        i = i + 1
+    }
+    i = 0
+    while i < scanMail.count {
+        markSent(scanMail[i])
+        i = i + 1
+    }
+    if file.exists(ftnOutPath(netId)) { file.delete(ftnOutPath(netId)) }
+    scanBoards.clear()
+    scanHigh.clear()
+    scanMail.clear()
+}
+
+// Counts for the sysop's network card.
+func ftnPendingPosts(netId: int): int {
+    var id: int = 1
+    var last: int = boardsNextId()
+    var pid: int
+    var plast: int
+    var n: int = 0
+    while id < last {
+        if loadBoard(id) and boardNetworked() and board.networkId == netId and postsOpen(id) {
+            pid = board.lastExported + 1
+            plast = postsNextId()
+            while pid < plast {
+                if loadPost(pid) and (post.flags & postFlagInbound) == 0 { n = n + 1 }
+                pid = pid + 1
+            }
+        }
+        id = id + 1
+    }
+    postsClose()
+    return n
+}
+
+func ftnPendingMail(netId: int): int {
+    var ids: list of int
+    var i: int = 0
+    var n: int = 0
+    if not loadNetwork(netId) { return 0 }
+    outboundMailIds(ids)
+    while i < ids.count {
+        if loadMessage(ids[i]) and addressEq(message.fromAddr, network.addr) { n = n + 1 }
+        i = i + 1
+    }
+    return n
+}

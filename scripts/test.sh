@@ -6,12 +6,15 @@ set -e
 cd "$(dirname "$0")/.."
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-cp tests/fixtures/* "$WORK"/    # packets the ftn tests read
 for t in tests/*.cla; do
     echo "== $t"
-    bin/clarusc emit --rtdir vendor/runtime/clarus/ -o "$WORK/main.c" "$t"
-    cc -O1 -I vendor/runtime/host -o "$WORK/prog" "$WORK/main.c" vendor/runtime/host/rt.c
-    # run from the scratch dir so tests that create files stay out of the repo
-    (cd "$WORK" && ./prog)
+    # each suite gets its own fresh directory (databases and files it
+    # creates never leak into the next suite), seeded with the fixtures
+    D="$WORK/$(basename "$t" .cla)"
+    mkdir -p "$D"
+    cp tests/fixtures/* "$D"/
+    bin/clarusc emit --rtdir vendor/runtime/clarus/ -o "$D/main.c" "$t"
+    cc -O1 -I vendor/runtime/host -o "$D/prog" "$D/main.c" vendor/runtime/host/rt.c
+    (cd "$D" && ./prog)
 done
 echo "all test suites passed"

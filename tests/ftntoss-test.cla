@@ -1,0 +1,196 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for ftntoss.cla: fixture packets into boards and
+// mail, then local traffic back out. Run by scripts/test.sh from a
+// scratch directory holding tests/fixtures/*.pkt.
+// Exits 0 on pass, 1 on the first failure.
+
+include "../ftntoss.cla"
+
+var failures: int = 0
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+func copyFile(src: string, dst: string): bool {
+    var f: filehandle = file.open(src)
+    var g: filehandle
+    var t: text
+    if f == nil { return false }
+    f.readAt(0, f.size(), t)
+    f.close()
+    g = file.create(dst, "BINA", "68BB")
+    if g == nil { return false }
+    g.writeAt(0, t)
+    g.close()
+    return true
+}
+
+func countIn(): int {
+    var names: list of string
+    file.list(ftnIn, names)
+    return names.count
+}
+
+func rawContains(path: string, needle: string): bool {
+    var f: filehandle = file.open(path)
+    var t: text
+    if f == nil { return false }
+    f.readAt(0, f.size(), t)
+    f.close()
+    return t.indexOf(needle) >= 0
+}
+
+func deleteUserForTest(id: int): bool {
+    return dbDelete(usersDb, id)
+}
+
+func seed() {
+    var n: Network
+    expect(usersOpen() and boardsOpen() and mailOpen() and networksOpen(), "databases open")
+    user.name = "sysop"
+    user.access = accessSysop
+    expect(createUser() == 1, "sysop is user 1")
+    user.name = "vaelen"
+    user.access = accessUser
+    expect(createUser() == 2, "vaelen is user 2")
+    n.name = "fsxNet"
+    n.addr = parseAddress("21:1/141")
+    n.uplink = parseAddress("21:1/100")
+    n.sessionPw = "SESSION"
+    n.utcOffset = 540          // JST: the fixture's -0400 dates shift by 13 h
+    n.flags = netFlagEnabled
+    expect(createNetwork(n) == 1, "network 1")
+    expect(createBoard("General", "local talk", "", 0) == 1, "board 1 local")
+    expect(createBoard("fsxNet Ads", "adverts", "fsx_ads", 1) == 2, "board 2 = FSX_ADS (tag stored lowercase to prove the CI match)")
+}
+
+func tossTests() {
+    var ids: list of int
+    expect(ftnEnsureFolders(), "folders created")
+    expect(file.exists(ftnIn) and file.exists(ftnTmp) and file.exists(ftnOut), "In/Out/Tmp exist")
+    expect(ftnEnsureFolders(), "second call is a no-op")
+    expect(copyFile("echomail.pkt", ftnIn + ":9e9f2d64.pkt"), "stage echomail")
+    expect(copyFile("netmail.pkt", ftnIn + ":9e9f3a5b.pkt"), "stage netmail")
+    expect(file.makeDir(ftnIn + ":junkdir"), "a folder in In is ignored")
+
+    expect(tossInbound() == 2, "two packets tossed")
+    expect(tossEcho == 1 and tossNet == 1 and tossDupes == 0 and tossUnknown == 0, "counters")
+    expect(countIn() == 1, "packets deleted, folder left")
+
+    expect(postsOpen(2) and postCount() == 1, "echomail landed in board 2")
+    expect(loadPost(1) and post.sender == "Rixter" and post.subject == "Rick's BBS", "post header")
+    expect((post.flags & postFlagInbound) != 0 and addressStr(post.origin) == "21:1/100", "inbound flag and origin (packet's orig net/node)")
+    expect(post.msgidCrc == msgIdCrc("4768.fsx_adq@21:1/242 2d03f962"), "MSGID crc stored")
+    expect(post.created == ftnDateParse("15 Aug 25  00:00:02") + 4 * 3600 + 9 * 3600, "created = local + 4h (UTC) + 9h (our offset)")
+    expect(findKludge(postBody(1), "MSGID:") != "" and stripKludges(postBody(1)).indexOf("telnet://") >= 0, "body kept with kludges")
+    postsClose()
+    expect(postsOpen(1) and postCount() == 0, "local board untouched")
+    postsClose()
+
+    inboxIds(2, ids)
+    expect(ids.count == 1, "netmail to vaelen (user 2)")
+    expect(loadMessage(ids[0]) and message.fromName == "Areafix" and message.fromUserId == 0, "inbound netmail header")
+    expect(addressStr(message.fromAddr) == "21:1/100" and addressStr(message.toAddr) == "21:1/141", "netmail addresses")
+    expect(message.subject == "Areafix reply: link information", "netmail subject")
+    expect(message.created == ftnDateParse("15 Aug 25  18:50:54"), "no TZUTC: taken as local")
+
+    // dupes: the same echomail again is dropped
+    expect(copyFile("echomail.pkt", ftnIn + ":again.pkt"), "stage the echomail again")
+    expect(tossInbound() == 1 and tossDupes == 1 and tossEcho == 0, "dupe dropped")
+    expect(postsOpen(2) and postCount() == 1, "still one post")
+    postsClose()
+
+    // unknown area: retag the board and toss once more
+    expect(loadBoard(2), "load board 2")
+    board.tag = "FSX_OTHER"
+    expect(saveBoard(), "retag")
+    expect(copyFile("echomail.pkt", ftnIn + ":unknown.pkt"), "stage for unknown-area")
+    expect(tossInbound() == 1 and tossUnknown == 1, "unknown area counted")
+
+    // unknown recipient goes to the sysop with the name kept
+    expect(loadBoard(2), "reload board 2")
+    board.tag = "FSX_ADS"
+    expect(saveBoard(), "restore tag")
+    expect(deleteUserForTest(2), "remove vaelen")
+    expect(copyFile("netmail.pkt", ftnIn + ":nobody.pkt"), "stage netmail for a missing user")
+    expect(tossInbound() == 1 and tossNet == 1, "netmail tossed")
+    inboxIds(1, ids)
+    expect(ids.count == 1 and loadMessage(ids[0]) and message.toName == "vaelen", "sysop got it, original name kept")
+
+    // a packet not addressed to us stays put
+    expect(loadNetwork(1), "load network")
+    network.addr = parseAddress("21:1/999")
+    expect(saveNetwork(), "change our address")
+    expect(copyFile("netmail.pkt", ftnIn + ":notours.pkt"), "stage foreign packet")
+    expect(tossInbound() == 0 and countIn() == 2, "foreign packet skipped and left in place")
+    network.addr = parseAddress("21:1/141")
+    expect(saveNetwork(), "restore address")
+    expect(file.delete(ftnIn + ":notours.pkt"), "cleanup")
+}
+
+func scanTests() {
+    var body: text
+    var ids: list of int
+    var n: int
+    expect(loadNetwork(1), "network 1")
+    // nothing pending: no packet
+    expect(scanNetwork(1) == 0 and not file.exists(ftnOutPath(1)), "empty scan writes no packet")
+
+    // a local post on the networked board (the inbound one must not go out)
+    expect(postsOpen(2), "open board 2")
+    body = "\x01MSGID: 21:1/141 0000abcd\nHi from the Mac\n"
+    expect(addPostFtn("andrew", 0, 0, "Test post", body, msgIdCrc("21:1/141 0000abcd"), parseAddress("21:1/141"), 0) == 2, "local post 2")
+    postsClose()
+    expect(sendMailFtn("andrew", 1, parseAddress("21:1/141"), "Areafix", 0, parseAddress("21:1/100"), "AFIXPW", "%LIST\n", msgIdCrc("x"), 0) == 3, "outbound netmail")
+    expect(ftnPendingPosts(1) == 1 and ftnPendingMail(1) == 1, "pending counts")
+
+    n = scanNetwork(1)
+    expect(n == 2, "two messages scanned")
+    expect(file.exists(ftnOutPath(1)), "outbound packet on disk")
+    expect(pktOpenRead(ftnOutPath(1)), "outbound packet readable")
+    expect(addressStr(pktOrig) == "21:1/141" and addressStr(pktDest) == "21:1/100", "packet addressed to the uplink")
+    expect(pktNextMsg() and pktMsg.area == "FSX_ADS" and pktMsg.fromName == "andrew" and pktMsg.toName == "All", "echomail message")
+    expect(pktMsg.msgid == "21:1/141 0000abcd" and pktMsg.tzutc == "0900", "MSGID and TZUTC kludges")
+    expect(pktBody.indexOf("\x01PID: 68kBBS 0.2") >= 0 and pktBody.indexOf("\x01CHRS: ASCII 1") >= 0, "PID/CHRS")
+    expect(pktBody.indexOf("--- 68kBBS 0.2\n * Origin: 68kBBS (21:1/141)\n") >= 0, "tearline and origin")
+    expect(pktBody.indexOf("Hi from the Mac") >= 0, "text")
+    expect(pktNextMsg() and pktMsg.area == "" and pktMsg.toName == "Areafix" and pktMsg.subject == "AFIXPW", "netmail message")
+    expect(pktMsg.attr == (pktAttrPrivate | pktAttrLocal) and addressStr(pktMsg.dest) == "21:1/100", "netmail attributes/dest")
+    expect(findKludge(pktBody, "INTL ") == "21:1/100 21:1/141", "INTL kludge")
+    expect(not pktNextMsg(), "two messages only")
+    pktClose()
+
+    // the raw packet keeps SEEN-BY and PATH (our reader strips them)
+    expect(rawContains(ftnOutPath(1), "SEEN-BY: 1/100 1/141\x0D") and rawContains(ftnOutPath(1), "\x01PATH: 1/141\x0D"), "SEEN-BY/PATH written")
+
+    // marks untouched until commit; a rescan reproduces the packet
+    expect(loadBoard(2) and board.lastExported == 0, "lastExported untouched")
+    expect(scanNetwork(1) == 2, "rescan repeats")
+    scanCommit(1)
+    expect(loadBoard(2) and board.lastExported == 2, "lastExported advanced past the inbound post too")
+    outboundMailIds(ids)
+    expect(ids.count == 0, "netmail marked sent")
+    expect(not file.exists(ftnOutPath(1)), "packet deleted on commit")
+    expect(scanNetwork(1) == 0, "nothing left to scan")
+    expect(ftnPendingPosts(1) == 0 and ftnPendingMail(1) == 0, "pending counts zero")
+}
+
+on App.startCLI(args: list of string) {
+    seed()
+    tossTests()
+    scanTests()
+    if failures > 0 {
+        log("ftntoss-test: FAILED")
+        quit 1
+    }
+    log("ftntoss-test: all passed")
+    quit
+}
