@@ -570,6 +570,18 @@ func zmodemSendStart(path: string, name: string) {
     zmSend()
 }
 
+// A batch with no files (an FTN poll with nothing outbound): the
+// receiver's ZRINIT gets ZFIN straight away.
+func zmodemSendEmpty() {
+    zsHave = false
+    zsOk = false
+    zmBegin('S')
+    zsState = zsWaitRinit
+    zmWire = "rz\x0D"
+    zmHexHeader(zmZRQINIT, 0)
+    zmSend()
+}
+
 func zsHeader() {
     zmTimer = 0
     switch zmHdrType {
@@ -581,6 +593,9 @@ func zsHeader() {
             zsSendFin()
         } else if zsState == zsWaitFin {
             zmResend()
+        } else if not zsHave {
+            zsOk = true
+            zsSendFin()
         } else {
             zsSendFile()
         }

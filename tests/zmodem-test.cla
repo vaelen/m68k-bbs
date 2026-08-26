@@ -540,6 +540,17 @@ on App.startCLI(args: list of string) {
     peerData(zmZFILE, zmZCBIN << 24, t, zmZCRCW, true)
     expect(isHex(mark, zmZRPOS, 0) and zrState == zrWaitData and zrResumeLen == 0, "recv: 0-byte leftover -> fresh ZRPOS(0), no ZCRC")
 
+    // 10. Empty batch: nothing to send, the receiver's ZRINIT is answered with ZFIN
+    reset()
+    zmodemSendEmpty()
+    expect(sent.indexOf("rz\x0D") == 0, "empty batch: rz + ZRQINIT")
+    expect(sentEndsWithHex(zmZRQINIT, 0), "empty batch: ZRQINIT sent")
+    peerHex(zmZRINIT, (zmCANFDX | zmCANFC32) << 24)
+    expect(sentEndsWithHex(zmZFIN, 0), "empty batch: ZRINIT -> ZFIN, no ZFILE")
+    peerHex(zmZFIN, 0)
+    expect(sent[sent.length - 2, 2] == "OO" and doneCalls == 1 and doneOk, "empty batch: OO and done ok")
+    expect(zmDir == ' ', "empty batch: engine released")
+
     if failures == 0 {
         log("zmodem: all passed")
         quit
