@@ -119,7 +119,9 @@ Full background: `docs/snow-hdd-howto.md`.
 Before an e2e test run against the emulator, delete all database files
 from the image (while Snow is stopped) so every run starts from the
 same baseline: `hdel` the vDB files — `Users.*`, `Boards.*`, `BRD*`,
-`Mail.*`, `Areas.*`, `ARE*` — and `Logins.txt`, then reseed. The vDB format is identical on both lanes (big-endian),
+`Mail.*`, `Areas.*`, `ARE*`, `Networks.*` — plus `Logins.txt` and the
+`FTN` folder (empty `FTN:In`, `FTN:Out`, `FTN:Tmp`, then `hrmdir`),
+then reseed. The vDB format is identical on both lanes (big-endian),
 so seed data can be built with a host-lane CLI program and `hcopy -r`'d
 onto the image (file type/creator don't matter; the app opens by name).
 
@@ -171,17 +173,29 @@ inputChar (bbs.cla) → processInput`.
   design: `docs/vdb.md`). `usersdb.cla` — the "Users" vDB database
   (160-byte records: username/hash/email/access/created/lastSeen;
   vDB record ID = user ID; username indexed case-insensitively).
-  `boardsdb.cla` — the "Boards" database (name/description/network,
-  record ID = board ID). `postsdb.cla` — one board's posts at a time
+  `boardsdb.cla` — the "Boards" database (256-byte records:
+  name/description/echo tag/networkId — 0 = local — /lastExported —
+  the scan high-water mark — /flags, record ID = board ID;
+  `boardNetworked()`). `postsdb.cla` — one board's posts at a time
   (`postsOpen(boardId)`): header records in `BRD<nn>.*` (sender/
   created/threadId/subject, thread ID indexed; 0 = thread starter,
-  else the starter's post ID) plus exact-fit bodies in an append-only
-  `BRD<nn>.MSG` heap, written and flushed before the journaled header
-  add so a crash only orphans heap bytes. `maildb.cla` — the "Mail"
-  database (256-byte header records: from/to names, from/to user IDs
-  with the recipient indexed, created, flags bit 0 = read) plus an
-  append-only `Mail.MSG` body heap, same write ordering as posts
-  (`docs/mail.md`). `areasdb.cla` — the "Areas" database (256-byte
+  else the starter's post ID; plus the FTN fields msgidCrc — indexed,
+  `findPostByMsgId` — origin address and flags bit 0 = inbound;
+  `addPostFtn` takes them, `addPost` zeroes them) plus exact-fit
+  bodies in an append-only `BRD<nn>.MSG` heap, written and flushed
+  before the journaled header add so a crash only orphans heap bytes.
+  `maildb.cla` — the "Mail" database (256-byte header records: from/to
+  names, from/to user IDs with the recipient indexed, created, flags
+  bit 0 = read, bit 1 = sent; from/to FTN addresses and msgidCrc at
+  214+ — `toUserId` 0 with a `toAddr` is outbound netmail, `fromUserId`
+  0 with a `fromAddr` inbound; `sendMailFtn`, `markSent`,
+  `outboundMailIds`) plus an append-only `Mail.MSG` body heap, same
+  write ordering as posts (`docs/mail.md`). `networksdb.cla` — the
+  "Networks" database (256-byte records: name/domain/our address/uplink
+  address/session, packet and AreaFix passwords/AreaFix robot/dial
+  string/UTC offset/poll interval/flags bit 0 = enabled/lastPoll/
+  lastResult; `findNetworkByZone`, `findNetworkByName`;
+  `docs/fidonet.md`). `areasdb.cla` — the "Areas" database (256-byte
   records: name/description/folder path/access byte, record ID =
   area ID). `filesdb.cla` — one area's file entries at a time
   (`filesOpen(areaId)`): header records in `ARE<nn>.*` (filename
@@ -355,6 +369,42 @@ inputChar (bbs.cla) → processInput`.
   `zrWaitCrc`). Multi-file uploads loop the receiver over each `ZFILE`.
   `tests/zmodem-test.cla`; the e2e script's `Z`/`RZ`, multi-upload and
   resume legs. Deferred: tag-and-download multi-file (`TODO.md`).
+- FidoNet (`docs/fidonet.md` — the design, record layouts and
+  protocol rules; read it before touching any of these). `ftnaddr.cla`
+  — `FtnAddress` (zone/net/node/point), `parseAddress`/`addressStr`/
+  `address3D`/`netNodeStr`, the 8-byte big-endian record form.
+  `ftnpkt.cla` — pure text conventions and packets: `^A` kludges
+  (`findKludge`, `kludgeValue`, `stripKludges` — readers hide `^A`
+  lines), MSGID serials (`newMsgId`, `msgIdCrc`), FTS-0001 dates and
+  TZUTC (`ftnDateStr`/`ftnDateParse`/`tzMinutes`/`tzStr`), and a
+  type-2+ packet reader/writer over a `filehandle` (`pktOpenRead`/
+  `pktNextMsg` into the globals `pktMsg`/`pktBody`, `pktCreate`/
+  `pktAddMsg`/`pktClose`; `ftnNormalize` keeps kludges, drops
+  `AREA:`/`SEEN-BY:`/`^APATH:`, ASCII-fies). `ftntoss.cla` — toss
+  (`tossInbound`: every packet in `:FTN:In`, echomail to the board
+  with that tag on that network with MSGID dupe check and REPLY
+  threading, netmail to the named user or the sysop, then deleted) and
+  scan (`scanNetwork(netId)` rebuilds `:FTN:Out:<id>.pkt` from posts
+  past `lastExported` and unsent netmail; `scanCommit` moves the marks
+  only after an acknowledged send). `emsi.cla` — the poll: `ftnPollRequest`/
+  `ftnPollAll`/`ftnSchedule` queue polls (`ftnQueue`), `ftnPollStart`
+  scans and dials, then the EMSI caller handshake (FSC-0056), a ZMODEM
+  send of the packet (or `zmodemSendEmpty`), a ZMODEM receive into
+  `:FTN:Tmp` (complete files moved to `:FTN:In`), hang-up via
+  `hangupPhase`, and on NO CARRIER `emsiDisconnected` tosses, commits
+  and records `lastPoll`/`lastResult`. Hooks the program provides:
+  `ftnModemSend`, `ftnSysopName`, `xferOut`, and `files.cla`'s
+  `xferDone`/`xferReceived`/`xferAcceptName` branch to the `emsi*`
+  versions while `ftnPolling`. In `bbs.cla` the poll is screen
+  `"ftn"` (`inputChar` → `emsiChar`), the 30-tick timer calls
+  `emsiTick` and `ftnSchedule` once a minute, `connected()`/
+  `disconnected()` branch on `ftnPolling`, and the `FidoNet > Poll
+  All Networks` menu polls from the Mac; the remote sysop's `P` on the
+  network card queues one for after logoff. Local posts on a
+  networked board and outbound netmail get their MSGID/REPLY kludges
+  at creation (`editKludges` in `editor.cla`). `scripts/ftn-e2e.sh`
+  runs a whole poll on the host against `scripts/emsi-peer.py` (a
+  Python EMSI answerer driving `lrz`/`lsz`) — the bridge's stand-in.
 - `loginlog.cla` — the login log, `Logins.txt` (TEXT/ttxt): one
   65-byte fixed-width, tab-delimited text line per session — new flag
   (`*`/space), name padded to 31, `dateTimeStr` of the login, padded
@@ -393,12 +443,12 @@ toolbox include resolution via rtdir, connection-typed parameters, the
 68k string-temp cap) shipped and is in the pinned toolchain. vDB
 (`~/repos/libvdb/db.md`) is implementable in pure Clarus.
 
-The **next** file-area steps (sysop import, area-folder management,
-deletion cleanup, MacBinary preservation) do need runtime features
-that are not there yet — directory listing, file metadata
-query, file delete, arbitrary-file resource-fork bytes, set
-type/creator, mkdir, rename. Plain data-fork transfers need none of
-them. The full list, with what each unlocks, is `docs/language-gaps.md`.
+The filesystem API the file-area follow-ups needed — `file.list`,
+`file.info`, `file.exists`, `file.delete`, `file.makeDir` (one level),
+`file.rename`, `file.move` — shipped in the 2026-08-26 pin and the
+FidoNet code uses it (`ftntoss.cla`, `emsi.cla`). The one gap left is
+arbitrary-file resource-fork bytes (MacBinary preservation). The full
+list, with what each unlocks, is `docs/language-gaps.md`.
 
 ## Commits
 
@@ -417,15 +467,21 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
   file list, framed file view, XMODEM download
 - `xmodem.cla` — XMODEM / XMODEM-1K / YMODEM sender and receiver
 - `zmodem.cla` — ZMODEM sender and receiver (CRC-32/CRC-16 framing)
-- `mail.cla` — private mail: inbox, message view, compose/reply
+- `ftnaddr.cla`, `ftnpkt.cla`, `ftntoss.cla`, `emsi.cla` — FidoNet:
+  addresses, packets/kludges, toss/scan, the EMSI poll
+- `mail.cla` — private mail and netmail: inbox, message view,
+  compose/reply
 - `editor.cla` — line editor for new posts, replies, and mail (/S /A
   /L /D /E /I /R)
 - `loginlog.cla` — fixed-width text login log + newest-N reader
 - `scanner.cla`, `telnet.cla`, `user.cla`, `usersdb.cla`, `boardsdb.cla`,
   `postsdb.cla`, `maildb.cla`, `areasdb.cla`, `filesdb.cla`,
-  `terminal.cla`, `termio.cla`, `btree.cla`, `vdb.cla` — modules above
-- `tests/` — host-lane test suites; `scripts/` — build/test/deploy,
-  `xmodem-e2e.sh` (lrz over socat, raw and via `telnet-shim.py`)
+  `networksdb.cla`, `terminal.cla`, `termio.cla`, `btree.cla`,
+  `vdb.cla` — modules above
+- `tests/` — host-lane test suites (`tests/fixtures/` — real fsxNet
+  packets); `scripts/` — build/test/deploy, `xmodem-e2e.sh` (lrz over
+  socat, raw and via `telnet-shim.py`), `ftn-e2e.sh` (a poll against
+  `emsi-peer.py`)
 - `bin/`, `vendor/` — pinned compiler + runtime/toolbox snapshot
 - `docs/` — language reference + Snow how-to (symlinks), language-gaps.md,
   telnet-negotiation-reference.md and vt100.codes.txt (protocol notes)

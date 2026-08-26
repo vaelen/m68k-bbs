@@ -48,3 +48,30 @@ do BINARY still can't transfer those. Not needed by SyncTERM, which
 negotiates BINARY at connect; add if some other client turns up that
 won't. `zmodem.cla` receiver's `ZRINIT` builder, plus a unit case in
 `tests/zmodem-test.cla` (the parser side already handles ESCCTL).
+
+## FidoNet follow-ups (docs/fidonet.md, "Scope")
+
+Deferred from v0.2, none blocked on a language feature:
+
+- **Charset tables.** Inbound and outbound text is ASCII-only (bytes
+  above 0x7F become `?`, outbound carries `^ACHRS: ASCII 1`). Add
+  CP437/LATIN-1/UTF-8 <-> MacRoman tables in `ftnpkt.cla` keyed on the
+  stored `CHRS` kludge, so old messages re-render once the table lands.
+- **ARCmail bundles.** The uplink link must send uncompressed `.pkt`s
+  (no packer). Either an `inflate` in Clarus (~300 lines, ZIP stored
+  blocks outbound) or unpacking in the bridge.
+- **Bridge as caller.** Crash mail needs the Mac's EMSI *answer* side
+  and a `RING` from the modem emulator; today the Mac only polls.
+- **Outbound netmail queue screen.** Unsent netmail is only visible as
+  a count on the network card; a list with delete would help debugging.
+- **Per-user netmail gate.** Any authenticated user may send netmail.
+- **FTSC product code.** Packets and EMSI carry product code `00`;
+  register one (FSC-0090) and put it in `ftnpkt.cla`/`emsi.cla`.
+- **System name.** The Origin line and EMSI IDENT use the constant
+  `ftnSystemName` ("68kBBS"); make it a sysop setting.
+- **Deleted networks.** Boards keep a dangling `networkId`; the sysop
+  board card shows `#n (missing)`. Clear or block on delete.
+- **Bridge (libftn).** `fnemsi` + modem-emulator `ATDT`/`exec:` targets
+  per docs/fidonet.md "Bridge contract"; `scripts/ftn-e2e.sh` then
+  swaps its Python peer for the real bridge. libftn does not currently
+  build on this machine (`ftn.c`, 6 errors).

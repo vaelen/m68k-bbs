@@ -400,3 +400,20 @@ three.
    poll.
 5. Bridge: modem emulator dialing; `fnemsi` in libftn (own spec);
    `scripts/ftn-e2e.sh`.
+
+## Status (2026-08-26)
+
+The Mac side is built: `ftnaddr.cla`, `networksdb.cla`, `ftnpkt.cla`,
+`ftntoss.cla`, `emsi.cla`, the record changes in `boardsdb.cla`/
+`postsdb.cla`/`maildb.cla`, netmail in `mail.cla`, the sysop Networks
+tree in `sysop.cla`, and the poll wiring in `bbs.cla` (screen `"ftn"`,
+the `FidoNet > Poll All Networks` menu, the scheduler). Host-lane
+suites cover every module, and `scripts/ftn-e2e.sh` runs a whole poll
+against a Python stand-in for the bridge (`scripts/emsi-peer.py`) with
+real `lrz`/`lsz`. Two deviations from the text above: the Mac menu is
+named `FidoNet` (a `Network` menu would clash with the `Network`
+record type), and the wire name of our outbound packet is
+`<8-hex of now()>.pkt` rather than `<nn>.pkt`, so the bridge never sees
+two polls' packets under one name. The bridge (`fnemsi` in libftn and
+the modem emulator's dialing) is the remaining piece; the deferrals are
+in `TODO.md`.
