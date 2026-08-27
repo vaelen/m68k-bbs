@@ -18,6 +18,18 @@ modem port:
 - Requires a binkp bridge on the host (`docs/fidonet.md`, "Bridge
   contract") — in progress in libftn.
 
+Also in this release:
+
+- Banned usernames (`Banned.txt`): signup refuses them, a banned name
+  at the login prompt hangs up; Sysop menu `X` edits the list.
+- The Wall (`W`): short messages from callers, newest first, paged;
+  shown after login with a "Sign the wall?" prompt.
+- Message of the Day (`D`): sysop-edited in the line editor (Sysop
+  menu `M`), shown after the wall at login.
+- The main menu is grouped (boards/files/mail/games, then the
+  informational screens, then quit) with `G) Games` as an empty
+  placeholder.
+
 ## v0.1 — 2026-08-26
 
 The first fully working BBS. Runs on a 68k Macintosh (System 6/7),

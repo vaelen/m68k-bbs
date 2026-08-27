@@ -104,5 +104,5 @@ keeps its resume point in `wallIndex` (entry) and `wallRow` (row within
 it, nonzero only for a split entry), the page's line count in
 `wallLines`, and whether a joint rule is due before the next entry in
 `wallPageHasEntry`. `wallDone()` goes back to
-the main menu when `wallFromMenu` is set (main-menu `G`), otherwise on
+the main menu when `wallFromMenu` is set (main-menu `W`), otherwise on
 to `postLoginMotd()` in bbs.cla.

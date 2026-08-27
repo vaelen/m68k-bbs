@@ -4,7 +4,7 @@ How the BBS renders boxed tables (like the sysop user list) on ASCII,
 ANSI, and VT100 terminals. The primitives live in `terminal.cla` (pure,
 host-testable — exact-byte assertions in `tests/terminal-test.cla`),
 the connection-facing sender in `termio.cla`, and a full worked example
-in `bbs.cla` (`drawUserListPage`).
+in `sysop.cla` (`drawUserListPage`).
 
 **Single-byte encodings only. Never emit Unicode.** Source files are
 MacRoman; high bytes are written as `\xHH` escapes.

@@ -57,14 +57,26 @@ Early development. Working today:
   lines: new-account flag, name, timestamp, duration) appended when a
   caller disconnects, with an `L) Recent Logins` main-menu table of
   the last 20
+- Banned usernames (`Banned.txt`, sysop-editable): signup refuses
+  them and a banned name at the login prompt hangs up straight away
+  (`docs/banned.md`)
+- The Wall: a graffiti wall of short (120-character) messages shown
+  newest-first as a paged table after login and from `W) Wall`, with
+  a one-line "Sign the wall?" prompt (`docs/wall.md`)
+- Message of the Day: a sysop-edited text (Sysop menu `M`, using the
+  line editor) shown after the wall at login and from `D) Message of
+  the Day` (`docs/motd.md`)
+- A post-login chain: welcome banner → the wall → the MOTD → new
+  mail and pending-upload counts → the main menu, each pausing for a
+  key; `G) Games` is a placeholder menu with nothing in it yet
 - Terminal-aware rendering at 40 or 80 columns (never writing the
   last column, so SyncTERM/DOS auto-wrap and Unix terminals agree) for ASCII, ANSI
   (cp437), and VT100 (DEC Special Graphics) callers: box-drawn
   tables, paged views, color helpers (`docs/tables.md`)
 
-Planned: Fidonet-style echomail and netmail (the message base and the
-mail database are laid out for them), message search, and full-screen
-ANSI niceties.
+Planned: door games, message search, and full-screen ANSI niceties.
+Fidonet-style echomail and netmail are in (`docs/fidonet.md`) and wait
+on the host-side bridge.
 
 ## Building
 
