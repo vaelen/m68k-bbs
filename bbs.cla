@@ -573,13 +573,13 @@ func drawMainMenu() {
     sendLine("?) Display This Menu")
     sendLine("B) Bulletin Boards")
     sendLine("F) File Areas")
-    sendLine("W) Wall")
-    sendLine("D) Message of the Day")
     if unreadCount(user.id) > 0 {
         sendLine("M) Mail (" + intStr(unreadCount(user.id)) + " new)")
     } else {
         sendLine("M) Mail")
     }
+    sendLine("W) Wall")
+    sendLine("D) Message of the Day")
     sendLine("L) Recent Logins")
     if user.access == accessSysop {
         sendLine("S) Sysop Menu")
