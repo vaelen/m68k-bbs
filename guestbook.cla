@@ -1,0 +1,188 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// The guestbook screens: a paged table of the newest entries, the
+// add-entry question and the entry prompt. Runs after the welcome in
+// bbs.cla's post-login chain (then on to the MOTD) and from main-menu
+// G (then back to main). Screens: "gbmore" (Display More?), "gbask"
+// (add one?), "gbentry" (the line prompt).
+
+include "guestbookdb.cla"
+
+const gbRecent: int = 20
+
+var gbIds: list of int
+var gbIndex: int = 0          // entry being drawn (index into gbIds)
+var gbRow: int = 0            // next row of that entry (the resume point)
+var gbLines: int = 0          // lines sent since the last prompt
+var gbFromMenu: bool = false  // main-menu G: back to main afterwards
+var gbDate: string(17)        // the current entry's cells
+var gbBody: list of string
+
+// Wide: Date | Name | Message (79). Narrow: Who | Message (39), the
+// name and date stacked in the first cell.
+func guestbookWidths(w: list of int) {
+    w.clear()
+    if terminal.columns < minimumWideTerminalWidth {
+        w.add(12)
+        w.add(20)
+        return
+    }
+    w.add(17)
+    w.add(16)
+    w.add(34)
+}
+
+// Open the table and draw from the top.
+func startGuestbook() {
+    var w: list of int
+    var cells: list of string
+    guestbookWidths(w)
+    if w.count == 2 {
+        cells.add("Who")
+    } else {
+        cells.add("Date")
+        cells.add("Name")
+    }
+    cells.add("Message")
+    recentGuestbookIds(gbRecent, gbIds)
+    sendTableHeader("Guestbook", cells, w)
+    gbLines = 6                // sendTableHeader's lines
+    gbIndex = 0
+    gbRow = 0
+    drawGuestbook()
+}
+
+// Line `i` of a cell's lines, or "" past its end.
+func gbCell(lines: list of string, i: int): string {
+    if i < lines.count { return lines[i] }
+    return ""
+}
+
+// Draw from the resume point until the entries run out (then the
+// add-entry question) or the screen fills (then Display More?).
+func drawGuestbook() {
+    var w: list of int
+    var span: list of int
+    var cells: list of string
+    var msg: text
+    var empty: text
+    var rows: int = 0
+    var limit: int = terminal.rows - 2
+    guestbookWidths(w)
+    if gbIds.count == 0 {
+        span.add(spanWidth(w))
+        cells.add("No entries yet.")
+        sendLine(rowLine(cells, span))
+        sendRule(BottomLeft, BottomCenter, BottomRight, span)
+        user.screen = "gbask"
+        displayPrompt()
+        return
+    }
+    while gbIndex < gbIds.count {
+        if gbRow == 0 {
+            if not loadGuestbookEntry(gbIds[gbIndex]) {
+                gbIndex = gbIndex + 1
+                continue
+            }
+            gbDate = dateTimeStr(gbCreated)
+            msg = empty
+            msg.append(gbMessage)
+            wrapText(msg, w[w.count - 1], gbBody)
+        }
+        rows = gbBody.count
+        if w.count == 2 and rows < 2 { rows = 2 }   // name + date stacked
+        if rows < 1 { rows = 1 }
+        while gbRow < rows {
+            if gbLines >= limit {
+                user.screen = "gbmore"
+                displayPrompt()
+                return
+            }
+            cells.clear()
+            if w.count == 2 {
+                if gbRow == 0 {
+                    cells.add(gbName)
+                } else if gbRow == 1 {
+                    cells.add(gbDate)
+                } else {
+                    cells.add("")
+                }
+            } else {
+                if gbRow == 0 {
+                    cells.add(gbDate)
+                    cells.add(gbName)
+                } else {
+                    cells.add("")
+                    cells.add("")
+                }
+            }
+            cells.add(gbCell(gbBody, gbRow))
+            sendLine(rowLine(cells, w))
+            gbLines = gbLines + 1
+            gbRow = gbRow + 1
+        }
+        gbIndex = gbIndex + 1
+        gbRow = 0
+        if gbIndex < gbIds.count {
+            sendRule(CenterLeft, Center, CenterRight, w)
+            gbLines = gbLines + 1
+        }
+    }
+    finishGuestbook()
+}
+
+// Close the table and ask about a new entry.
+func finishGuestbook() {
+    var w: list of int
+    guestbookWidths(w)
+    sendRule(BottomLeft, BottomCenter, BottomRight, w)
+    user.screen = "gbask"
+    displayPrompt()
+}
+
+// "gbmore": Y keeps drawing, anything else closes the table.
+func guestbookMoreChoice(input: string) {
+    if upperStr(input) == "Y" {
+        gbLines = 0
+        drawGuestbook()
+    } else {
+        finishGuestbook()
+    }
+}
+
+// "gbask": Y opens the entry prompt, anything else moves on.
+func guestbookAskChoice(input: string) {
+    if upperStr(input) == "Y" {
+        user.screen = "gbentry"
+        displayPrompt()
+    } else {
+        guestbookDone()
+    }
+}
+
+// "gbentry": empty cancels; over-long re-prompts.
+func guestbookEntryInput(input: string) {
+    if input.length > gbMessageMax {
+        sendLine("Entries are limited to " + intStr(gbMessageMax) + " characters.")
+        displayPrompt()
+        return
+    }
+    if input == "" {
+        sendLine("No entry added.")
+    } else if addGuestbookEntry(user.name, input) >= 1 {
+        sendLine("Thanks! Your entry has been added.")
+    } else {
+        sendLine("Could not add your entry: " + lastError.message)
+    }
+    guestbookDone()
+}
+
+// Where the chain goes next: back to the menu, or on to the MOTD.
+func guestbookDone() {
+    if gbFromMenu {
+        gotoScreen("main")
+    } else {
+        postLoginMotd()
+    }
+}

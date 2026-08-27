@@ -24,6 +24,8 @@ include "files.cla"
 include "editor.cla"
 include "loginlog.cla"
 include "banned.cla"
+include "guestbook.cla"
+include "motd.cla"
 include "xmodem.cla"
 include "zmodem.cla"
 include "ftntoss.cla"
@@ -161,6 +163,9 @@ var sessionStart: int = 0
 var sessionNew: bool = false
 var previousSeen: int = 0   // that account's lastSeen before this login (Mac seconds can be
                             // negative as an int past 2^31, so no sentinel value -- hence the bool)
+var postLogin: bool = false // just logged in or signed up: run the
+                            // welcome -> guestbook -> MOTD chain once
+var pauseNext: string(15)   // what the "pause" screen's keypress runs
 
 
 const BS:  char = '\x08'
@@ -460,6 +465,7 @@ func lineScreen(s: string): bool {
     case "newareaname", "newareadesc", "newareafolder" { return true }
     case "upname", "updesc", "editfiledesc" { return true }
     case "shownet", "editnetid", "editnetval", "delnetid", "newnetname", "areafixreq" { return true }
+    case "gbentry" { return true }
     }
     return false
 }
@@ -539,6 +545,10 @@ func displayPrompt() {
     case "delnetconfirm" { sendData("Delete this network? (Y/N): ") }
     case "newnetname"  { sendData("Network name: ") }
     case "areafixreq"  { sendData("AreaFix request (+TAG, -TAG, %LIST): ") }
+    case "pause"   { sendData("Press any key to continue... ") }
+    case "gbmore"  { sendData("Display More? (Y/[N]) ") }
+    case "gbask"   { sendData("Add a guestbook entry? (Y/[N]) ") }
+    case "gbentry" { sendData("Your entry (" + intStr(gbMessageMax) + " chars max): ") }
     }
 }
 
@@ -563,6 +573,8 @@ func drawMainMenu() {
     sendLine("?) Display This Menu")
     sendLine("B) Bulletin Boards")
     sendLine("F) File Areas")
+    sendLine("G) Guestbook")
+    sendLine("D) Message of the Day")
     if unreadCount(user.id) > 0 {
         sendLine("M) Mail (" + intStr(unreadCount(user.id)) + " new)")
     } else {
@@ -630,6 +642,10 @@ func processInput(input: string) {
     case "newpass"  { newPass(input) }
     case "newpass2" { newPass2(input) }
     case "newemail" { newEmail(input) }
+    case "pause"   { pauseChoice(input) }
+    case "gbmore"  { guestbookMoreChoice(input) }
+    case "gbask"   { guestbookAskChoice(input) }
+    case "gbentry" { guestbookEntryInput(input) }
     case "terminal"    { terminalChoice(input) }
     case "main"        { mainChoice(input) }
     case "sysop"       { sysopChoice(input) }
@@ -750,6 +766,7 @@ func loginOk() {
     user.authenticated = true
     log("User logged in: " + user.name + " (#" + intStr(user.id) + ")")
     returning = true
+    postLogin = true
     previousSeen = user.lastSeen
     user.lastSeen = now()
     saveUser()
@@ -831,6 +848,7 @@ func newEmail(input: string) {
         sendLine("You are the first user, so you have sysop access.")
     }
     user.authenticated = true
+    postLogin = true
     gotoScreen("terminal")
 }
 
@@ -845,7 +863,6 @@ func termTypeName(t: TerminalType): string {
 
 func applyTerminal(t: TerminalType, cols: int, colorOn: bool) {
     var msg: string
-    var pf: int = 0
     terminal.type = t
     setColumns(cols)
     setRows(24)
@@ -855,23 +872,79 @@ func applyTerminal(t: TerminalType, cols: int, colorOn: bool) {
     msg = "User: " + user.name + ", Terminal: " + termTypeName(t)
     msg = msg + " " + intStr(cols) + "x" + intStr(terminal.rows)
     log(msg)
-    if returning {
-        // welcome-back banner, shown once, after the terminal is known
+    if postLogin {
+        // the once-per-login chain: welcome, guestbook, MOTD, counts
+        postLogin = false
         sendLine("")
-        sendLine("Welcome back, " + user.name + "!")
-        if previousSeen != 0 {
-            sendLine("Last on: " + dateTimeStr(previousSeen))
-        }
-        if unreadCount(user.id) > 0 {
-            sendLine("You have " + intStr(unreadCount(user.id)) + " new message(s).")
-        }
-        if user.access == accessSysop {
-            pf = pendingFileCount()
-            if pf > 0 {
-                sendLine(intStr(pf) + " file(s) are awaiting approval.")
+        if returning {
+            sendLine("Welcome back, " + user.name + "!")
+            if previousSeen != 0 {
+                sendLine("Last on: " + dateTimeStr(previousSeen))
             }
+        } else {
+            sendLine("Welcome, " + user.name + "!")
         }
         returning = false
+        showPause("guestbook")
+        return
+    }
+    gotoScreen("main")
+}
+
+// --- Post-login chain --------------------------------------------------
+// applyTerminal -> pause -> guestbook (guestbook.cla) -> MOTD -> pause
+// -> new-message/pending-file counts -> main menu. "pause" swallows one
+// key and runs pauseNext.
+
+func showPause(next: string) {
+    pauseNext = next
+    user.screen = "pause"
+    displayPrompt()
+}
+
+func pauseChoice(input: string) {
+    switch pauseNext {
+    case "guestbook" {
+        gbFromMenu = false
+        startGuestbook()
+    }
+    case "counts" { postLoginCounts() }
+    else          { gotoScreen("main") }
+    }
+}
+
+// The MOTD wrapped to the caller's width, blank line above and below.
+func showMotd() {
+    var lines: list of string
+    wrapText(motdText, terminal.columns, lines)
+    sendLine("")
+    for l in lines {
+        sendLine(l)
+    }
+    sendLine("")
+}
+
+// After the guestbook: the MOTD and its pause, skipped when empty.
+func postLoginMotd() {
+    if motdText.length == 0 {
+        postLoginCounts()
+        return
+    }
+    showMotd()
+    showPause("counts")
+}
+
+func postLoginCounts() {
+    var pf: int = 0
+    sendLine("")
+    if unreadCount(user.id) > 0 {
+        sendLine("You have " + intStr(unreadCount(user.id)) + " new message(s).")
+    }
+    if user.access == accessSysop {
+        pf = pendingFileCount()
+        if pf > 0 {
+            sendLine(intStr(pf) + " file(s) are awaiting approval.")
+        }
     }
     gotoScreen("main")
 }
@@ -897,6 +970,18 @@ func mainChoice(input: string) {
     }
     case "B" { gotoScreen("boards") }
     case "F" { gotoScreen("areas") }
+    case "G" {
+        gbFromMenu = true
+        startGuestbook()
+    }
+    case "D" {
+        if motdText.length == 0 {
+            sendLine("No message of the day.")
+        } else {
+            showMotd()
+        }
+        showPause("main")
+    }
     case "M" {
         mailPage = 1
         user.screen = "mail"
@@ -985,6 +1070,7 @@ func connected() {
     pendingId = 0
     pendingHash = 0
     returning = false
+    postLogin = false
     sessionName = ""
     if ftnPolling {
         // our own outbound call: the mailer answered, not a caller
@@ -1057,6 +1143,11 @@ on App.launch {
     } else {
         log("Banned names unavailable: " + lastError.message)
     }
+    if motdLoad() {
+        log("Message of the day loaded (" + intStr(motdText.length) + " bytes).")
+    } else {
+        log("Message of the day unavailable: " + lastError.message)
+    }
     if usersOpen() {
         log("Users database open (" + intStr(userCount()) + " users).")
     } else {
@@ -1081,6 +1172,11 @@ on App.launch {
         log("Areas database open (" + intStr(areaCount()) + " file areas).")
     } else {
         log("Areas database unavailable: " + lastError.message)
+    }
+    if guestbookOpen() {
+        log("Guestbook database open (" + intStr(guestbookCount()) + " entries).")
+    } else {
+        log("Guestbook database unavailable: " + lastError.message)
     }
     if not ftnEnsureFolders() {
         log("FTN folders unavailable: " + lastError.message)
@@ -1112,6 +1208,7 @@ extend File {
         mailClose()
         areasClose()
         filesClose()
+        guestbookClose()
         quit
     }
 }
@@ -1133,6 +1230,7 @@ extend Main {
         mailClose()
         areasClose()
         filesClose()
+        guestbookClose()
         quit
     }
 }
