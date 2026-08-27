@@ -578,8 +578,8 @@ func drawMainMenu() {
     } else {
         sendLine("M) Mail")
     }
-    sendLine("W) Wall")
     sendLine("D) Message of the Day")
+    sendLine("W) Wall")
     sendLine("L) Recent Logins")
     if user.access == accessSysop {
         sendLine("S) Sysop Menu")
