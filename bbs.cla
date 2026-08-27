@@ -572,7 +572,6 @@ func drawTerminalMenu() {
 
 func drawMainMenu() {
     sendLine("")
-    sendLine("?) Display This Menu")
     sendLine("B) Bulletin Boards")
     sendLine("F) File Areas")
     if unreadCount(user.id) > 0 {
@@ -581,6 +580,7 @@ func drawMainMenu() {
         sendLine("M) Mail")
     }
     sendLine("G) Games")
+    sendLine("")
     sendLine("D) Message of the Day")
     sendLine("W) Wall")
     sendLine("L) Recent Logins")
@@ -588,7 +588,9 @@ func drawMainMenu() {
         sendLine("S) Sysop Menu")
     }
     sendLine("T) Terminal Settings")
+    sendLine("")
     sendLine("Q) Quit (Logoff)")
+    sendLine("?) Display This Menu")
     sendLine("")
 }
 
