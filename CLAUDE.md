@@ -119,8 +119,8 @@ Full background: `docs/snow-hdd-howto.md`.
 Before an e2e test run against the emulator, delete all database files
 from the image (while Snow is stopped) so every run starts from the
 same baseline: `hdel` the vDB files — `Users.*`, `Boards.*`, `BRD*`,
-`Mail.*`, `Areas.*`, `ARE*`, `Networks.*` — plus `Logins.txt` and the
-`FTN` folder (empty `FTN:In`, `FTN:Out`, `FTN:Tmp`, then `hrmdir`),
+`Mail.*`, `Areas.*`, `ARE*`, `Networks.*`, `Guestbook.*` — plus
+`Logins.txt`, `MOTD.txt` and the `FTN` folder (empty `FTN:In`, `FTN:Out`, `FTN:Tmp`, then `hrmdir`),
 then reseed. The vDB format is identical on both lanes (big-endian),
 so seed data can be built with a host-lane CLI program and `hcopy -r`'d
 onto the image (file type/creator don't matter; the app opens by name).
@@ -252,14 +252,20 @@ inputChar (bbs.cla) → processInput`.
   enters the signup flow (newname → newpass → newpass2 → newemail,
   empty name cancels; first account gets sysop access). Logins are
   checked against the Users database (case-insensitive; wrong
-  password returns to login). Last-seen is updated at login; the
-  "Welcome back / Last on / You have N new message(s)" banner (plus,
-  for sysops, "N file(s) are awaiting approval." via
-  `pendingFileCount`) is
-  printed by `applyTerminal` once the terminal type is known, just
-  before the main menu (`returning`/`previousSeen` carry it across).
+  password returns to login). Last-seen is updated at login. Once the
+  terminal type is known, `applyTerminal` runs the once-per-login
+  chain when `postLogin` is set (`loginOk`/`newEmail`): "Welcome back
+  / Last on" (or "Welcome" for a new account) → `pause` → the
+  guestbook table → "Add a guestbook entry?" → the MOTD and another
+  `pause` (both skipped when `motdText` is empty) → "You have N new
+  message(s)" (plus, for sysops, "N file(s) are awaiting approval."
+  via `pendingFileCount`) → main menu (`returning`/`previousSeen`
+  carry the banner across). `showPause(next)` parks on the
+  input-swallowing `"pause"` screen and `pauseChoice` runs
+  `pauseNext`. Main-menu `G` runs the guestbook (`gbFromMenu`, back to
+  main after), `D` shows the MOTD then a pause.
   Main-menu `T` returns to the terminal-type menu; `applyTerminal`
-  re-sends the VT100 init and comes back to the main menu. Main-menu
+  re-sends the VT100 init and comes back to the main menu (no chain). Main-menu
   `L` draws the last 20 sessions from the login log
   (`drawRecentLogins`); `sessionName`/`sessionStart`/`sessionNew`
   are set at login/signup and `disconnected()` appends the record.
@@ -412,6 +418,24 @@ inputChar (bbs.cla) → processInput`.
   Signup refuses a banned name ("That username is not allowed."); a
   banned name at the login prompt hangs up straight away (`hangupPhase`,
   no message, no login-log record). Sysop menu `X` lists/adds/deletes.
+  `docs/banned.md`.
+- `guestbookdb.cla` — the "Guestbook" vDB (160-byte records:
+  name/created/message ≤120 chars — `gbMessageMax`; no indexes, ID
+  order is time order; `addGuestbookEntry`, `loadGuestbookEntry` into
+  `gbName/gbCreated/gbMessage`, `recentGuestbookIds(n, ids)`).
+  `guestbook.cla` — the screens: `startGuestbook` draws the newest
+  `gbRecent` (20) as a table (wide Date·Name·Message 17·16·34; narrow
+  Who·Message 12·20 with name and date — no time — stacked), message cells wrapped
+  by `wrapText` and rows expanded to fit, a joint rule between entries;
+  `gbLines` counts lines and at `terminal.rows - 2` parks on `gbmore`
+  ("Display More? (Y/[N])", resuming at `gbIndex`/`gbRow`); then
+  `gbask` (Y → `gbentry`, a line prompt capped at 120) and
+  `guestbookDone` (main menu or `postLoginMotd`). `docs/guestbook.md`.
+- `motd.cla` — the Message of the Day, `MOTD.txt` (TEXT/ttxt):
+  `motdText` loaded at launch (`motdLoad`, missing → empty), `motdSave`
+  writes and updates it; shown wrapped by `showMotd` (bbs.cla). Sysop
+  menu `M` edits it in the line editor (`editTarget 'D'`).
+  `docs/motd.md`.
 - `loginlog.cla` — the login log, `Logins.txt` (TEXT/ttxt): one
   65-byte fixed-width, tab-delimited text line per session — new flag
   (`*`/space), name padded to 31, `dateTimeStr` of the login, padded
@@ -419,10 +443,11 @@ inputChar (bbs.cla) → processInput`.
   reads the newest n in one positioned read, newest first; field
   offsets are the `login*At` consts.
 - `editor.cla` — WWIV-style line editor for new posts, replies,
-  private mail, and file long descriptions (`editTarget` picks the
-  save target; `'F'` routes /S and /A to files.cla's
-  `fileDescSave`/`fileDescAbort`, and `seedEditorBody(body)` pre-loads
-  the rows from an existing body for edits). Each numbered
+  private mail, file long descriptions, and the MOTD (`editTarget`
+  picks the save target; `'F'` routes /S and /A to files.cla's
+  `fileDescSave`/`fileDescAbort`, `'D'` to `motdSave` / back to the
+  sysop menu, and `seedEditorBody(body)` pre-loads the rows from an
+  existing body for edits). Each numbered
   line is one display row (`lineLimit = terminal.columns - 5`, set by
   `editBodyPrompt`): typing past the end of a row starts the next row
   with no newline in the text (`inputSoft`), Enter ends a row with a
@@ -482,6 +507,8 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
   /L /D /E /I /R)
 - `loginlog.cla` — fixed-width text login log + newest-N reader
 - `banned.cla` — banned-username list (`Banned.txt`), sysop-editable
+- `guestbookdb.cla`, `guestbook.cla` — guestbook database and screens
+- `motd.cla` — Message of the Day file
 - `scanner.cla`, `telnet.cla`, `user.cla`, `usersdb.cla`, `boardsdb.cla`,
   `postsdb.cla`, `maildb.cla`, `areasdb.cla`, `filesdb.cla`,
   `networksdb.cla`, `terminal.cla`, `termio.cla`, `btree.cla`,
