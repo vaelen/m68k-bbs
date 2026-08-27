@@ -1,0 +1,54 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for the banned-name list. Run on the host from a
+// scratch directory (it writes Banned.txt).
+
+include "../banned.cla"
+
+var failures: int = 0
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+on App.startCLI(args: list of string) {
+    var f: filehandle
+
+    expect(bannedLoad(), "missing file loads defaults")
+    expect(bannedNames.count == 31, "31 default names")
+    expect(file.exists(bannedFileName), "defaults written to Banned.txt")
+    expect(isBanned("root") and isBanned("ROOT") and isBanned("SysOp"), "match is case-insensitive")
+    expect(isBanned("\"admin") and isBanned("mailer-daemon"), "quoted and hyphenated defaults")
+    expect(not isBanned("andrew") and not isBanned(""), "ordinary names pass")
+
+    expect(bannedAdd("Spammer"), "add a name")
+    expect(not bannedAdd("SPAMMER"), "duplicate add refused")
+    expect(not bannedAdd(""), "empty add refused")
+    expect(bannedRemove("Guest"), "remove by other case")
+    expect(not bannedRemove("guest"), "second remove refused")
+    expect(bannedNames.count == 31, "count after add and remove")
+
+    bannedNames.clear()
+    expect(bannedLoad(), "reload from file")
+    expect(bannedNames.count == 31 and isBanned("spammer") and not isBanned("guest"), "changes persisted")
+
+    // A hand-edited file: LF line endings, a blank line, no final newline.
+    f = file.create(bannedFileName, "TEXT", "ttxt")
+    expect(f != nil and f.writeAt(0, "one\x0A\x0Atwo\n\x0Athree"), "write hand-edited file")
+    f.close()
+    expect(bannedLoad() and bannedNames.count == 3, "LF, CRLF and unterminated lines read")
+    expect(isBanned("three") and isBanned("Two"), "hand-edited names honored")
+
+    if failures > 0 {
+        log("banned-test: FAILED")
+        quit 1
+    }
+    log("banned-test: all passed")
+    quit
+}

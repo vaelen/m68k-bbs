@@ -28,6 +28,7 @@ func drawSysopMenu() {
     sendLine("F) File Areas")
     sendLine("N) Networks")
     sendLine("U) Users")
+    sendLine("X) Banned Names")
     sendLine("Q) Return to Main Menu")
     sendLine("")
 }
@@ -72,6 +73,7 @@ func sysopChoice(input: string) {
     case "F" { gotoScreen("sysopareas") }
     case "N" { gotoScreen("sysopnets") }
     case "U" { gotoScreen("sysopusers") }
+    case "X" { gotoScreen("sysopbanned") }
     case "Q" { gotoScreen("main") }
     else     { displayPrompt() }
     }
@@ -106,6 +108,80 @@ func sysopUsersChoice(input: string) {
     case "Q" { gotoScreen("sysop") }
     else     { displayPrompt() }
     }
+}
+
+// --- Banned names -------------------------------------------------------
+// The list itself is the menu: names flow across the terminal width,
+// then A)dd / D)elete prompt for one name each and save at once.
+
+func drawSysopBannedMenu() {
+    var line: string
+    sendLine("")
+    sendLine("Sysop - Banned Names (" + intStr(bannedNames.count) + "):")
+    for n in bannedNames {
+        if line.length + n.length + 2 > terminal.columns {
+            sendLine(line)
+            line = ""
+        }
+        line = line + n + "  "
+    }
+    if line != "" { sendLine(line) }
+    sendLine("")
+    sendLine("A) Add Name")
+    sendLine("D) Delete Name")
+    sendLine("Q) Return to Sysop Menu")
+    sendLine("")
+}
+
+func sysopBannedChoice(input: string) {
+    switch upperStr(input) {
+    case "?" {
+        displayMenu()
+        displayPrompt()
+    }
+    case "A" {
+        user.screen = "banadd"
+        displayPrompt()
+    }
+    case "D" {
+        user.screen = "bandel"
+        displayPrompt()
+    }
+    case "Q" { gotoScreen("sysop") }
+    else     { displayPrompt() }
+    }
+}
+
+func banAddInput(input: string) {
+    var name: string = trimStr(input)
+    if name == "" {
+        sendLine("Cancelled.")
+    } else if name.length > 31 {
+        sendLine("Names are limited to 31 characters.")
+        displayPrompt()
+        return
+    } else if isBanned(name) {
+        sendLine("Already banned.")
+    } else if bannedAdd(name) {
+        sendLine("Banned: " + name)
+    } else {
+        sendLine("Save failed: " + lastError.message)
+    }
+    gotoScreen("sysopbanned")
+}
+
+func banDelInput(input: string) {
+    var name: string = trimStr(input)
+    if name == "" {
+        sendLine("Cancelled.")
+    } else if not isBanned(name) {
+        sendLine("Not on the list.")
+    } else if bannedRemove(name) {
+        sendLine("Removed: " + name)
+    } else {
+        sendLine("Save failed: " + lastError.message)
+    }
+    gotoScreen("sysopbanned")
 }
 
 // --- Shared helpers ----------------------------------------------------

@@ -405,6 +405,13 @@ inputChar (bbs.cla) → processInput`.
   at creation (`editKludges` in `editor.cla`). `scripts/ftn-e2e.sh`
   runs a whole poll on the host against `scripts/emsi-peer.py` (a
   Python EMSI answerer driving `lrz`/`lsz`) — the bridge's stand-in.
+- `banned.cla` — banned usernames, `Banned.txt` (TEXT/ttxt, one name
+  per CR line; hand-editable, LF tolerated): loaded into `bannedNames`
+  at launch (`bannedLoad`; missing file → the 31 defaults written out),
+  `isBanned` case-insensitive, `bannedAdd`/`bannedRemove` save at once.
+  Signup refuses a banned name ("That username is not allowed."); a
+  banned name at the login prompt hangs up straight away (`hangupPhase`,
+  no message, no login-log record). Sysop menu `X` lists/adds/deletes.
 - `loginlog.cla` — the login log, `Logins.txt` (TEXT/ttxt): one
   65-byte fixed-width, tab-delimited text line per session — new flag
   (`*`/space), name padded to 31, `dateTimeStr` of the login, padded
@@ -474,6 +481,7 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
 - `editor.cla` — line editor for new posts, replies, and mail (/S /A
   /L /D /E /I /R)
 - `loginlog.cla` — fixed-width text login log + newest-N reader
+- `banned.cla` — banned-username list (`Banned.txt`), sysop-editable
 - `scanner.cla`, `telnet.cla`, `user.cla`, `usersdb.cla`, `boardsdb.cla`,
   `postsdb.cla`, `maildb.cla`, `areasdb.cla`, `filesdb.cla`,
   `networksdb.cla`, `terminal.cla`, `termio.cla`, `btree.cla`,

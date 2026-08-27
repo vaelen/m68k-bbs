@@ -1,0 +1,139 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// Banned usernames: names a caller may not sign up with, and that hang
+// up the line when typed at the login prompt. Kept in Banned.txt, one
+// name per CR-terminated line, so the sysop can edit it in any text
+// editor as well as from the Sysop menu. A missing file is seeded with
+// the defaults below; every Sysop-menu change is written back at once.
+
+const bannedFileName: string = "Banned.txt"
+
+var bannedNames: list of string
+
+func bannedDefaults() {
+    bannedNames.clear()
+    bannedNames.add("admin")
+    bannedNames.add("administrator")
+    bannedNames.add("\"admin")
+    bannedNames.add("admin1")
+    bannedNames.add("client")
+    bannedNames.add("contact")
+    bannedNames.add("daemon")
+    bannedNames.add("default")
+    bannedNames.add("enable")
+    bannedNames.add("fraud")
+    bannedNames.add("guest")
+    bannedNames.add("help")
+    bannedNames.add("hostmaster")
+    bannedNames.add("mailer-daemon")
+    bannedNames.add("moderator")
+    bannedNames.add("moderators")
+    bannedNames.add("nobody")
+    bannedNames.add("notme")
+    bannedNames.add("postmaster")
+    bannedNames.add("root")
+    bannedNames.add("\"root")
+    bannedNames.add("security")
+    bannedNames.add("server")
+    bannedNames.add("support")
+    bannedNames.add("sventek")
+    bannedNames.add("sysop")
+    bannedNames.add("system")
+    bannedNames.add("test")
+    bannedNames.add("ubnt")
+    bannedNames.add("unknown")
+    bannedNames.add("webmaster")
+}
+
+// Lowercase ASCII copy, for the case-insensitive match.
+func bannedFold(s: string): string {
+    var r: string = s
+    var i: int = 0
+    while i < r.length {
+        if r[i] >= 'A' and r[i] <= 'Z' { r[i] = char(int(r[i]) + 32) }
+        i = i + 1
+    }
+    return r
+}
+
+// Index of `name` in the list (case-insensitive), or -1.
+func bannedIndex(name: string): int {
+    var key: string = bannedFold(name)
+    var i: int = 0
+    while i < bannedNames.count {
+        if bannedFold(bannedNames[i]) == key { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+func isBanned(name: string): bool {
+    return bannedIndex(name) >= 0
+}
+
+// Write the list out. Returns false (with lastError) on failure.
+func bannedSave(): bool {
+    var f: filehandle = file.create(bannedFileName, "TEXT", "ttxt")
+    var data: text
+    var ok: bool
+    if f == nil { return false }
+    for n in bannedNames {
+        data.append(n)
+        data.append('\n')
+    }
+    ok = f.writeAt(0, data)
+    if ok { ok = f.flush() }
+    f.close()
+    return ok
+}
+
+// Load Banned.txt; a missing file means the defaults, written out so
+// the sysop has something to edit. Blank lines are skipped and a
+// trailing LF (a host editor's line ending) is dropped.
+func bannedLoad(): bool {
+    var f: filehandle = file.open(bannedFileName)
+    var data: text
+    var line: string
+    var start: int = 0
+    var i: int = 0
+    var c: char
+    if f == nil {
+        bannedDefaults()
+        return bannedSave()
+    }
+    if not f.readAt(0, f.size(), data) {
+        f.close()
+        return false
+    }
+    f.close()
+    bannedNames.clear()
+    while i <= data.length {
+        c = ' '
+        if i < data.length { c = data[i] }
+        if i == data.length or c == '\n' or c == '\x0A' {
+            if i - start > 0 and i - start < 256 {
+                line = data[start, i - start]
+                if line != "" { bannedNames.add(line) }
+            }
+            start = i + 1
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// Add / remove one name and save. Both return false when there was
+// nothing to do (already listed / not listed) or the save failed.
+func bannedAdd(name: string): bool {
+    if name == "" or bannedIndex(name) >= 0 { return false }
+    bannedNames.add(name)
+    return bannedSave()
+}
+
+func bannedRemove(name: string): bool {
+    var i: int = bannedIndex(name)
+    if i < 0 { return false }
+    bannedNames.remove(i)
+    return bannedSave()
+}

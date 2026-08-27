@@ -23,6 +23,7 @@ include "mail.cla"
 include "files.cla"
 include "editor.cla"
 include "loginlog.cla"
+include "banned.cla"
 include "xmodem.cla"
 include "zmodem.cla"
 include "ftntoss.cla"
@@ -408,6 +409,7 @@ func displayMenu() {
     case "sysopareas"  { drawSysopAreasMenu() }
     case "sysopusers"  { drawSysopUsersMenu() }
     case "sysopnets"   { drawSysopNetsMenu() }
+    case "sysopbanned" { drawSysopBannedMenu() }
     case "boards"      { drawBoardPicker() }
     case "areas"       { drawAreaPicker() }
     case "posts"       { drawPostsMenu() }
@@ -447,6 +449,7 @@ func promptNumber(screen: string, prefill: string) {
 func lineScreen(s: string): bool {
     switch s {
     case "login", "password", "newname", "newpass", "newpass2", "newemail" { return true }
+    case "banadd", "bandel" { return true }
     case "showuser", "showboard", "showarea" { return true }
     case "edituserid", "editboardid", "editareaid" { return true }
     case "edituserval", "editboardval", "editareaval" { return true }
@@ -525,6 +528,9 @@ func displayPrompt() {
     case "newareafolder" { sendData("Folder (Enter = app directory): ") }
     case "newareaaccess" { sendData("Access (A=all, S=sysop) [A]: ") }
     case "sysopnets"   { sendData("Sysop:Networks> ") }
+    case "sysopbanned" { sendData("Sysop:Banned> ") }
+    case "banadd"      { sendData("Name to ban (Enter = cancel): ") }
+    case "bandel"      { sendData("Name to remove (Enter = cancel): ") }
     case "netlist"     { }
     case "shownet", "editnetid", "delnetid" { sendData("Network ID or name: ") }
     case "shownetkeys" { sendData("P)oll  A)reaFix  Q)uit: ") }
@@ -687,6 +693,9 @@ func processInput(input: string) {
     case "newareafolder" { newAreaFolder(input) }
     case "newareaaccess" { newAreaAccess(input) }
     case "sysopnets"   { sysopNetsChoice(input) }
+    case "sysopbanned" { sysopBannedChoice(input) }
+    case "banadd"      { banAddInput(input) }
+    case "bandel"      { banDelInput(input) }
     case "netlist"     { netListInput(input) }
     case "shownet"     { showNetInput(input) }
     case "shownetkeys" { showNetKeys(input) }
@@ -711,6 +720,10 @@ func loginName(input: string) {
         displayPrompt()
     } else if upperStr(input) == "NEW" {
         gotoScreen("newname")
+    } else if isBanned(input) {
+        log("Banned name at login (" + input + "); hanging up.")
+        user.screen = "logoff"
+        hangupPhase = 1
     } else {
         pendingId = findUserId(input)
         if pendingId < 1 {
@@ -756,6 +769,9 @@ func newName(input: string) {
         gotoScreen("login")
     } else if input.length > 31 {
         sendLine("Names are limited to 31 characters.")
+        displayPrompt()
+    } else if isBanned(input) {
+        sendLine("That username is not allowed.")
         displayPrompt()
     } else if upperStr(input) == "NEW" or findUserId(input) >= 1 {
         sendLine("That name is taken.")
@@ -1036,6 +1052,11 @@ on App.log(line: string) {
 on App.launch {
     open Main
     log("68kBBS starting up.")
+    if bannedLoad() {
+        log("Banned names loaded (" + intStr(bannedNames.count) + ").")
+    } else {
+        log("Banned names unavailable: " + lastError.message)
+    }
     if usersOpen() {
         log("Users database open (" + intStr(userCount()) + " users).")
     } else {
