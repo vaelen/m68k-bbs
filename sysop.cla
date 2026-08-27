@@ -26,6 +26,7 @@ func drawSysopMenu() {
     sendLine("Sysop Menu:")
     sendLine("B) Message Boards")
     sendLine("F) File Areas")
+    sendLine("M) Message of the Day")
     sendLine("N) Networks")
     sendLine("U) Users")
     sendLine("X) Banned Names")
@@ -56,6 +57,20 @@ func drawSysopUsersMenu() {
     sendLine("")
 }
 
+// M) Message of the Day: the line editor over the current text;
+// /S writes MOTD.txt (editor.cla's 'D' target), /A discards.
+func startMotdEditor() {
+    editTarget = 'D'
+    editPending = ' '
+    seedEditorBody(motdText)
+    sendEditorBanner("Message of the Day")
+    sendLine("Enter the message, one line at a time.")
+    sendLine("/S saves, /A aborts, /? lists commands.")
+    if editLines.count > 0 { listEditLines() }
+    user.screen = "editbody"
+    displayPrompt()
+}
+
 // Not-yet-implemented options: echo the option name, then redraw.
 func stubOption(name: string) {
     sendLine(name)
@@ -71,6 +86,7 @@ func sysopChoice(input: string) {
     }
     case "B" { gotoScreen("sysopboards") }
     case "F" { gotoScreen("sysopareas") }
+    case "M" { startMotdEditor() }
     case "N" { gotoScreen("sysopnets") }
     case "U" { gotoScreen("sysopusers") }
     case "X" { gotoScreen("sysopbanned") }

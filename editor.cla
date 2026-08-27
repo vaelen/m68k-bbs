@@ -24,7 +24,8 @@ var editOriginal: string
 var editReplyMsgId: string(79)  // parent's MSGID for the REPLY kludge ("" = none)
 var editMsgId: string(79)       // MSGID given to the message being saved
 var editTarget: char = 'P'      // 'P' board post, 'M' private mail,
-                                // 'F' file long description (files.cla)
+                                // 'F' file long description (files.cla),
+                                // 'D' message of the day (sysop.cla)
 
 // ponytail: 100 lines max; raise if real posts ever hit it.
 const editMaxLines: int = 100
@@ -106,6 +107,11 @@ func editSubjectInput(input: string) {
 }
 
 func abortEditor() {
+    if editTarget == 'D' {
+        sendLine("Edit aborted.")
+        gotoScreen("sysop")
+        return
+    }
     if editTarget == 'F' {
         fileDescAbort()
         return
@@ -405,6 +411,15 @@ func saveEditor() {
     while i < editLines.count {
         body = body + editLines[i]   // rows carry their own newlines
         i = i + 1
+    }
+    if editTarget == 'D' {
+        if motdSave(body) {
+            sendLine("Message of the day saved.")
+        } else {
+            sendLine("Save failed: " + lastError.message)
+        }
+        gotoScreen("sysop")
+        return
     }
     if editTarget == 'F' {
         fileDescSave(body)
