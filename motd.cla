@@ -1,0 +1,40 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// Message of the Day: MOTD.txt (TEXT/ttxt, CR line ends), shown after
+// the guestbook at login and from main-menu D, edited from the Sysop
+// menu (M) with the line editor. A missing file is an empty message;
+// readers wrap it to the caller's width with wrapText.
+
+const motdFileName: string = "MOTD.txt"
+
+var motdText: text
+
+// Load MOTD.txt into motdText. A missing file is an empty message
+// (true); false + lastError only when the file exists but can't be read.
+func motdLoad(): bool {
+    var f: filehandle = file.open(motdFileName)
+    var data: text
+    motdText = data
+    if f == nil { return true }
+    if not f.readAt(0, f.size(), data) {
+        f.close()
+        return false
+    }
+    f.close()
+    motdText = data
+    return true
+}
+
+// Write `body` out and make it the current message. False (with
+// lastError) on failure, leaving motdText unchanged.
+func motdSave(body: text): bool {
+    var f: filehandle = file.create(motdFileName, "TEXT", "ttxt")
+    var ok: bool
+    if f == nil { return false }
+    ok = f.writeAt(0, body)
+    if ok { ok = f.flush() }
+    f.close()
+    if ok { motdText = body }
+    return ok
+}

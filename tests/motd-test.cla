@@ -1,0 +1,45 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for the Message of the Day file (motd.cla). Run on
+// the host from a scratch directory (it writes MOTD.txt).
+
+include "../motd.cla"
+
+var failures: int = 0
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+on App.startCLI(args: list of string) {
+    var body: text
+    var empty: text
+
+    expect(motdLoad(), "missing file loads")
+    expect(motdText.length == 0, "missing file is an empty message")
+    expect(not file.exists(motdFileName), "missing file is not created")
+
+    body.append("Welcome to the board.\nBe excellent.\n")
+    expect(motdSave(body), "save a message")
+    expect(motdText.length == body.length, "save updates motdText")
+    expect(file.exists(motdFileName), "MOTD.txt written")
+    motdText = empty
+    expect(motdLoad() and motdText.length == body.length, "reload matches")
+    expect(motdText[0, 7] == "Welcome", "reload content")
+
+    expect(motdSave(empty), "save an empty message")
+    expect(motdLoad() and motdText.length == 0, "empty message reloads empty")
+
+    if failures > 0 {
+        log("motd-test: FAILED")
+        quit 1
+    }
+    log("motd-test: all passed")
+    quit
+}
