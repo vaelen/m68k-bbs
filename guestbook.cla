@@ -20,7 +20,7 @@ var gbDate: string(17)        // the current entry's cells
 var gbBody: list of string
 
 // Wide: Date | Name | Message (79). Narrow: Who | Message (39), the
-// name and date stacked in the first cell.
+// name and the date (no time) stacked in the first cell.
 func guestbookWidths(w: list of int) {
     w.clear()
     if terminal.columns < minimumWideTerminalWidth {
@@ -66,7 +66,6 @@ func drawGuestbook() {
     var span: list of int
     var cells: list of string
     var msg: text
-    var empty: text
     var rows: int = 0
     var limit: int = terminal.rows - 2
     guestbookWidths(w)
@@ -86,8 +85,8 @@ func drawGuestbook() {
                 continue
             }
             gbDate = dateTimeStr(gbCreated)
-            msg = empty
-            msg.append(gbMessage)
+            if w.count == 2 { gbDate = gbDate[0, 8] }   // date only fits Who
+            msg = gbMessage                             // a fresh text copy
             wrapText(msg, w[w.count - 1], gbBody)
         }
         rows = gbBody.count
