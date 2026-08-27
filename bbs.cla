@@ -24,7 +24,7 @@ include "files.cla"
 include "editor.cla"
 include "loginlog.cla"
 include "banned.cla"
-include "guestbook.cla"
+include "wall.cla"
 include "motd.cla"
 include "xmodem.cla"
 include "zmodem.cla"
@@ -164,7 +164,7 @@ var sessionNew: bool = false
 var previousSeen: int = 0   // that account's lastSeen before this login (Mac seconds can be
                             // negative as an int past 2^31, so no sentinel value -- hence the bool)
 var postLogin: bool = false // just logged in or signed up: run the
-                            // welcome -> guestbook -> MOTD chain once
+                            // welcome -> wall -> MOTD chain once
 var pauseNext: string(15)   // what the "pause" screen's keypress runs
 
 
@@ -465,7 +465,7 @@ func lineScreen(s: string): bool {
     case "newareaname", "newareadesc", "newareafolder" { return true }
     case "upname", "updesc", "editfiledesc" { return true }
     case "shownet", "editnetid", "editnetval", "delnetid", "newnetname", "areafixreq" { return true }
-    case "gbentry" { return true }
+    case "wallentry" { return true }
     }
     return false
 }
@@ -546,9 +546,9 @@ func displayPrompt() {
     case "newnetname"  { sendData("Network name: ") }
     case "areafixreq"  { sendData("AreaFix request (+TAG, -TAG, %LIST): ") }
     case "pause"   { sendData("Press any key to continue... ") }
-    case "gbmore"  { sendData("Display More? (Y/[N]) ") }
-    case "gbask"   { sendData("Add a guestbook entry? (Y/[N]) ") }
-    case "gbentry" { sendData("Your entry (" + intStr(gbMessageMax) + " chars max): ") }
+    case "wallmore"  { sendData("Display More? (Y/[N]) ") }
+    case "wallask"   { sendData("Sign the wall? (Y/[N]) ") }
+    case "wallentry" { sendData("Your message (" + intStr(wallMessageMax) + " chars max): ") }
     }
 }
 
@@ -573,7 +573,7 @@ func drawMainMenu() {
     sendLine("?) Display This Menu")
     sendLine("B) Bulletin Boards")
     sendLine("F) File Areas")
-    sendLine("G) Guestbook")
+    sendLine("W) Wall")
     sendLine("D) Message of the Day")
     if unreadCount(user.id) > 0 {
         sendLine("M) Mail (" + intStr(unreadCount(user.id)) + " new)")
@@ -643,9 +643,9 @@ func processInput(input: string) {
     case "newpass2" { newPass2(input) }
     case "newemail" { newEmail(input) }
     case "pause"   { pauseChoice(input) }
-    case "gbmore"  { guestbookMoreChoice(input) }
-    case "gbask"   { guestbookAskChoice(input) }
-    case "gbentry" { guestbookEntryInput(input) }
+    case "wallmore"  { wallMoreChoice(input) }
+    case "wallask"   { wallAskChoice(input) }
+    case "wallentry" { wallEntryInput(input) }
     case "terminal"    { terminalChoice(input) }
     case "main"        { mainChoice(input) }
     case "sysop"       { sysopChoice(input) }
@@ -873,7 +873,7 @@ func applyTerminal(t: TerminalType, cols: int, colorOn: bool) {
     msg = msg + " " + intStr(cols) + "x" + intStr(terminal.rows)
     log(msg)
     if postLogin {
-        // the once-per-login chain: welcome, guestbook, MOTD, counts
+        // the once-per-login chain: welcome, wall, MOTD, counts
         postLogin = false
         sendLine("")
         if returning {
@@ -885,14 +885,14 @@ func applyTerminal(t: TerminalType, cols: int, colorOn: bool) {
             sendLine("Welcome, " + user.name + "!")
         }
         returning = false
-        showPause("guestbook")
+        showPause("wall")
         return
     }
     gotoScreen("main")
 }
 
 // --- Post-login chain --------------------------------------------------
-// applyTerminal -> pause -> guestbook (guestbook.cla) -> MOTD -> pause
+// applyTerminal -> pause -> wall (wall.cla) -> MOTD -> pause
 // -> new-message/pending-file counts -> main menu. "pause" swallows one
 // key and runs pauseNext.
 
@@ -904,9 +904,9 @@ func showPause(next: string) {
 
 func pauseChoice(input: string) {
     switch pauseNext {
-    case "guestbook" {
-        gbFromMenu = false
-        startGuestbook()
+    case "wall" {
+        wallFromMenu = false
+        startWall()
     }
     case "counts" { postLoginCounts() }
     else          { gotoScreen("main") }
@@ -924,7 +924,7 @@ func showMotd() {
     sendLine("")
 }
 
-// After the guestbook: the MOTD and its pause, skipped when empty.
+// After the wall: the MOTD and its pause, skipped when empty.
 func postLoginMotd() {
     if motdText.length == 0 {
         postLoginCounts()
@@ -970,9 +970,9 @@ func mainChoice(input: string) {
     }
     case "B" { gotoScreen("boards") }
     case "F" { gotoScreen("areas") }
-    case "G" {
-        gbFromMenu = true
-        startGuestbook()
+    case "W" {
+        wallFromMenu = true
+        startWall()
     }
     case "D" {
         if motdText.length == 0 {
@@ -1173,10 +1173,10 @@ on App.launch {
     } else {
         log("Areas database unavailable: " + lastError.message)
     }
-    if guestbookOpen() {
-        log("Guestbook database open (" + intStr(guestbookCount()) + " entries).")
+    if wallOpen() {
+        log("Wall database open (" + intStr(wallCount()) + " messages).")
     } else {
-        log("Guestbook database unavailable: " + lastError.message)
+        log("Wall database unavailable: " + lastError.message)
     }
     if not ftnEnsureFolders() {
         log("FTN folders unavailable: " + lastError.message)
@@ -1208,7 +1208,7 @@ extend File {
         mailClose()
         areasClose()
         filesClose()
-        guestbookClose()
+        wallClose()
         quit
     }
 }
@@ -1230,7 +1230,7 @@ extend Main {
         mailClose()
         areasClose()
         filesClose()
-        guestbookClose()
+        wallClose()
         quit
     }
 }

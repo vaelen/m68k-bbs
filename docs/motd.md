@@ -1,13 +1,13 @@
 # Message of the Day
 
 A block of text the sysop writes that every caller sees after the
-guestbook at login, and that main-menu `D) Message of the Day` shows
+wall at login, and that main-menu `D) Message of the Day` shows
 again. Storage is one text file (`motd.cla`); editing reuses the line
 editor (`editor.cla`).
 
 ## What the caller sees
 
-In the login chain, after the guestbook's add-entry question:
+In the login chain, after the wall's `Sign the wall?` question:
 
 ```
 Welcome to the 68kBBS test board.
@@ -25,7 +25,7 @@ The text is word-wrapped to the caller's terminal width with
 `wrapText` — CRs in the file are paragraph breaks (blank lines kept),
 LFs are ignored — so one file serves 80- and 40-column callers. It is
 not paged: keep it short. (If a long MOTD is ever wanted, the
-guestbook's line-counting pager is the thing to reuse.)
+wall's line-counting pager is the thing to reuse.)
 
 ## Editing (Sysop menu `M`)
 

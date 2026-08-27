@@ -1,0 +1,88 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// The Wall database: short, timestamped shoutouts from callers,
+// shown newest first after login and from the main menu.
+//
+// On-disk record ("Wall" database, 160 bytes, record ID = entry ID):
+//   0    name, 32-byte Pascal field
+//   32   created (i32, Mac-epoch seconds)
+//   36   message, 121-byte Pascal field (<= wallMessageMax chars)
+//   157+ slack
+//
+// No indexes: IDs are monotonic, so descending ID is descending time.
+
+include "vdb.cla"
+
+const wallRecordSize: int = 160
+const wallMessageMax: int = 120
+
+const wallOffName: int = 0
+const wallOffCreated: int = 32
+const wallOffMessage: int = 36
+
+var wallDb: Database
+
+// The entry last loaded by loadWallEntry.
+var wallName: string(31)
+var wallCreated: int = 0
+var wallMessage: string(120)
+
+// Open the Wall database, creating it on first run.
+func wallOpen(): bool {
+    wallDb = dbOpen("Wall", "68BB")
+    if dbIsOpen(wallDb) { return true }
+    wallDb = dbCreate("Wall", wallRecordSize, "68BB")
+    return dbIsOpen(wallDb)
+}
+
+func wallClose() {
+    if dbIsOpen(wallDb) { dbClose(wallDb) }
+    wallDb = new Database
+}
+
+func wallCount(): int {
+    return dbRecordCount(wallDb)
+}
+
+// Add an entry stamped now(); name and message are truncated to their
+// fields. Returns the new ID, or -1 (lastError).
+func addWallEntry(name: string, msg: string): int {
+    var t: text
+    var n: string = name
+    var m: string = msg
+    if n.length > 31 { n = n[0, 31] }
+    if m.length > wallMessageMax { m = m[0, wallMessageMax] }
+    t.append(char(n.length))
+    t.append(n)
+    while t.length < wallOffCreated {
+        t.append(char(0))
+    }
+    btAppendInt(t, now())
+    t.append(char(m.length))
+    t.append(m)
+    return dbAdd(wallDb, t)
+}
+
+// Load entry `id` into wallName/wallCreated/wallMessage.
+func loadWallEntry(id: int): bool {
+    var rec: text = dbFind(wallDb, id)
+    if rec.length != wallRecordSize { return false }
+    wallName = dbExtractString(rec, wallOffName)
+    wallCreated = rec.intAt(wallOffCreated)
+    wallMessage = rec.stringAt(wallOffMessage)   // dbExtractString caps at 63
+    return true
+}
+
+// The newest n entry IDs, newest first: probe down from the last
+// assigned ID (deleted IDs miss), the walk drawPostList uses.
+func recentWallIds(n: int, ids: list of int) {
+    var id: int = dbNextRecordId(wallDb) - 1
+    var rec: text
+    ids.clear()
+    while id >= 1 and ids.count < n {
+        rec = dbFind(wallDb, id)
+        if rec.length == wallRecordSize { ids.add(id) }
+        id = id - 1
+    }
+}

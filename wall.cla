@@ -1,0 +1,187 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// The wall screens: a paged table of the newest entries, the
+// add-entry question and the entry prompt. Runs after the welcome in
+// bbs.cla's post-login chain (then on to the MOTD) and from main-menu
+// W (then back to main). Screens: "wallmore" (Display More?), "wallask"
+// (add one?), "wallentry" (the line prompt).
+
+include "walldb.cla"
+
+const wallRecent: int = 20
+
+var wallIds: list of int
+var wallIndex: int = 0          // entry being drawn (index into wallIds)
+var wallRow: int = 0            // next row of that entry (the resume point)
+var wallLines: int = 0          // lines sent since the last prompt
+var wallFromMenu: bool = false  // main-menu G: back to main afterwards
+var wallDate: string(17)        // the current entry's cells
+var wallBody: list of string
+
+// Wide: Date | Name | Message (79). Narrow: Who | Message (39), the
+// name and the date (no time) stacked in the first cell.
+func wallWidths(w: list of int) {
+    w.clear()
+    if terminal.columns < minimumWideTerminalWidth {
+        w.add(12)
+        w.add(20)
+        return
+    }
+    w.add(17)
+    w.add(16)
+    w.add(34)
+}
+
+// Open the table and draw from the top.
+func startWall() {
+    var w: list of int
+    var cells: list of string
+    wallWidths(w)
+    if w.count == 2 {
+        cells.add("Who")
+    } else {
+        cells.add("Date")
+        cells.add("Name")
+    }
+    cells.add("Message")
+    recentWallIds(wallRecent, wallIds)
+    sendTableHeader("The Wall", cells, w)
+    wallLines = 6                // sendTableHeader's lines
+    wallIndex = 0
+    wallRow = 0
+    drawWall()
+}
+
+// Line `i` of a cell's lines, or "" past its end.
+func wallCell(lines: list of string, i: int): string {
+    if i < lines.count { return lines[i] }
+    return ""
+}
+
+// Draw from the resume point until the entries run out (then the
+// add-entry question) or the screen fills (then Display More?).
+func drawWall() {
+    var w: list of int
+    var span: list of int
+    var cells: list of string
+    var msg: text
+    var rows: int = 0
+    var limit: int = terminal.rows - 2
+    wallWidths(w)
+    if wallIds.count == 0 {
+        span.add(spanWidth(w))
+        cells.add("Nothing on the wall yet.")
+        sendLine(rowLine(cells, span))
+        sendRule(BottomLeft, BottomCenter, BottomRight, span)
+        user.screen = "wallask"
+        displayPrompt()
+        return
+    }
+    while wallIndex < wallIds.count {
+        if wallRow == 0 {
+            if not loadWallEntry(wallIds[wallIndex]) {
+                wallIndex = wallIndex + 1
+                continue
+            }
+            wallDate = dateTimeStr(wallCreated)
+            if w.count == 2 { wallDate = wallDate[0, 8] }   // date only fits Who
+            msg = wallMessage                             // a fresh text copy
+            wrapText(msg, w[w.count - 1], wallBody)
+        }
+        rows = wallBody.count
+        if w.count == 2 and rows < 2 { rows = 2 }   // name + date stacked
+        if rows < 1 { rows = 1 }
+        while wallRow < rows {
+            if wallLines >= limit {
+                user.screen = "wallmore"
+                displayPrompt()
+                return
+            }
+            cells.clear()
+            if w.count == 2 {
+                if wallRow == 0 {
+                    cells.add(wallName)
+                } else if wallRow == 1 {
+                    cells.add(wallDate)
+                } else {
+                    cells.add("")
+                }
+            } else {
+                if wallRow == 0 {
+                    cells.add(wallDate)
+                    cells.add(wallName)
+                } else {
+                    cells.add("")
+                    cells.add("")
+                }
+            }
+            cells.add(wallCell(wallBody, wallRow))
+            sendLine(rowLine(cells, w))
+            wallLines = wallLines + 1
+            wallRow = wallRow + 1
+        }
+        wallIndex = wallIndex + 1
+        wallRow = 0
+        if wallIndex < wallIds.count {
+            sendRule(CenterLeft, Center, CenterRight, w)
+            wallLines = wallLines + 1
+        }
+    }
+    finishWall()
+}
+
+// Close the table and ask about a new entry.
+func finishWall() {
+    var w: list of int
+    wallWidths(w)
+    sendRule(BottomLeft, BottomCenter, BottomRight, w)
+    user.screen = "wallask"
+    displayPrompt()
+}
+
+// "wallmore": Y keeps drawing, anything else closes the table.
+func wallMoreChoice(input: string) {
+    if upperStr(input) == "Y" {
+        wallLines = 0
+        drawWall()
+    } else {
+        finishWall()
+    }
+}
+
+// "wallask": Y opens the entry prompt, anything else moves on.
+func wallAskChoice(input: string) {
+    if upperStr(input) == "Y" {
+        user.screen = "wallentry"
+        displayPrompt()
+    } else {
+        wallDone()
+    }
+}
+
+// "wallentry": empty cancels; over-long re-prompts.
+func wallEntryInput(input: string) {
+    if input.length > wallMessageMax {
+        sendLine("Messages are limited to " + intStr(wallMessageMax) + " characters.")
+        displayPrompt()
+        return
+    }
+    if input == "" {
+        sendLine("Nothing added.")
+    } else if addWallEntry(user.name, input) >= 1 {
+        sendLine("Thanks! Your message is on the wall.")
+    } else {
+        sendLine("Could not add your message: " + lastError.message)
+    }
+    wallDone()
+}
+
+// Where the chain goes next: back to the menu, or on to the MOTD.
+func wallDone() {
+    if wallFromMenu {
+        gotoScreen("main")
+    } else {
+        postLoginMotd()
+    }
+}

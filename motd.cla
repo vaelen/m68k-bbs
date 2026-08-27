@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // Message of the Day: MOTD.txt (TEXT/ttxt, CR line ends), shown after
-// the guestbook at login and from main-menu D, edited from the Sysop
+// the wall at login and from main-menu D, edited from the Sysop
 // menu (M) with the line editor. A missing file is an empty message;
 // readers wrap it to the caller's width with wrapText.
 
