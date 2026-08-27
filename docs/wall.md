@@ -41,10 +41,12 @@ the same table and question and returns to the menu.
   17 · 16 · 34. Narrow (39): Who · Message, 12 · 20, with the name on
   the first row of the first cell and the date (`mm-dd-yy`, no time)
   on the second.
-- Paging: the drawer counts the lines it has sent; when the count
-  reaches `terminal.rows - 2` it stops and asks `Display More?
-  (Y/[N])`. `Y` continues from the next row of the same entry; any
-  other key closes the table (bottom rule) and asks about a new entry.
+- Paging: each page is a closed box of at most `terminal.rows - 1`
+  lines (its bottom rule included) with `Display More? (Y/[N])` on
+  the last row. An entry that would not fit starts the next page —
+  only an entry taller than a whole page is split. `Y` reopens the box
+  with a top rule and continues; any other key goes straight to the
+  `Sign the wall?` question.
 - `Sign the wall? (Y/[N])`: `Y` opens a single-line prompt.
   Empty input cancels ("Nothing added."); more than 120 characters
   is refused with `Messages are limited to 120 characters.` and the
@@ -99,6 +101,8 @@ newest-first order across a deleted record.
 
 `startWall()` draws the header and starts `drawWall()`, which
 keeps its resume point in `wallIndex` (entry) and `wallRow` (row within
-it) and the line count in `wallLines`. `wallDone()` goes back to
+it, nonzero only for a split entry), the page's line count in
+`wallLines`, and whether a joint rule is due before the next entry in
+`wallPageHasEntry`. `wallDone()` goes back to
 the main menu when `wallFromMenu` is set (main-menu `G`), otherwise on
 to `postLoginMotd()` in bbs.cla.

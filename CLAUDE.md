@@ -427,8 +427,10 @@ inputChar (bbs.cla) → processInput`.
   `wallRecent` (20) as a table (wide Date·Name·Message 17·16·34; narrow
   Who·Message 12·20 with name and date — no time — stacked), message cells wrapped
   by `wrapText` and rows expanded to fit, a joint rule between entries;
-  `wallLines` counts lines and at `terminal.rows - 2` parks on `wallmore`
-  ("Display More? (Y/[N])", resuming at `wallIndex`/`wallRow`); then
+  pages are closed boxes of `terminal.rows - 1` lines — an entry that
+  won't fit starts the next page — with `wallmore` ("Display More?
+  (Y/[N])") on the last row, `Y` reopening the box at `wallIndex`/
+  `wallRow`; then
   `wallask` (Y → `wallentry`, a line prompt capped at 120) and
   `wallDone` (main menu or `postLoginMotd`). `docs/wall.md`.
 - `motd.cla` — the Message of the Day, `MOTD.txt` (TEXT/ttxt):

@@ -14,7 +14,8 @@ const wallRecent: int = 20
 var wallIds: list of int
 var wallIndex: int = 0          // entry being drawn (index into wallIds)
 var wallRow: int = 0            // next row of that entry (the resume point)
-var wallLines: int = 0          // lines sent since the last prompt
+var wallLines: int = 0          // lines on this page so far
+var wallPageHasEntry: bool = false  // a joint rule precedes the next entry
 var wallFromMenu: bool = false  // main-menu G: back to main afterwards
 var wallDate: string(17)        // the current entry's cells
 var wallBody: list of string
@@ -48,6 +49,7 @@ func startWall() {
     recentWallIds(wallRecent, wallIds)
     sendTableHeader("The Wall", cells, w)
     wallLines = 6                // sendTableHeader's lines
+    wallPageHasEntry = false
     wallIndex = 0
     wallRow = 0
     drawWall()
@@ -60,14 +62,18 @@ func wallCell(lines: list of string, i: int): string {
 }
 
 // Draw from the resume point until the entries run out (then the
-// add-entry question) or the screen fills (then Display More?).
+// Sign the wall? question) or the page fills (then Display More?).
+// A page is a closed box: terminal.rows - 1 lines including its bottom
+// rule, then the prompt on the last row. An entry that won't fit
+// starts the next page; only one taller than a whole page is split.
 func drawWall() {
     var w: list of int
     var span: list of int
     var cells: list of string
     var msg: text
     var rows: int = 0
-    var limit: int = terminal.rows - 2
+    var need: int = 0
+    var limit: int = terminal.rows - 1
     wallWidths(w)
     if wallIds.count == 0 {
         span.add(spanWidth(w))
@@ -88,14 +94,22 @@ func drawWall() {
             if w.count == 2 { wallDate = wallDate[0, 8] }   // date only fits Who
             msg = wallMessage                             // a fresh text copy
             wrapText(msg, w[w.count - 1], wallBody)
+            need = wallEntryRows(w)
+            if wallPageHasEntry {
+                // joint rule + rows + closing rule must fit
+                if wallLines + need + 2 > limit {
+                    wallPageBreak(w)
+                    return
+                }
+                sendRule(CenterLeft, Center, CenterRight, w)
+                wallLines = wallLines + 1
+            }
+            wallPageHasEntry = true
         }
-        rows = wallBody.count
-        if w.count == 2 and rows < 2 { rows = 2 }   // name + date stacked
-        if rows < 1 { rows = 1 }
+        rows = wallEntryRows(w)
         while wallRow < rows {
-            if wallLines >= limit {
-                user.screen = "wallmore"
-                displayPrompt()
+            if wallLines + 2 > limit {   // this row + the closing rule
+                wallPageBreak(w)
                 return
             }
             cells.clear()
@@ -123,15 +137,27 @@ func drawWall() {
         }
         wallIndex = wallIndex + 1
         wallRow = 0
-        if wallIndex < wallIds.count {
-            sendRule(CenterLeft, Center, CenterRight, w)
-            wallLines = wallLines + 1
-        }
     }
     finishWall()
 }
 
-// Close the table and ask about a new entry.
+// Rows the loaded entry takes: its wrapped message, at least the
+// stacked name + date on narrow terminals.
+func wallEntryRows(w: list of int): int {
+    var rows: int = wallBody.count
+    if w.count == 2 and rows < 2 { rows = 2 }
+    if rows < 1 { rows = 1 }
+    return rows
+}
+
+// Close the page and ask whether to go on.
+func wallPageBreak(w: list of int) {
+    sendRule(BottomLeft, BottomCenter, BottomRight, w)
+    user.screen = "wallmore"
+    displayPrompt()
+}
+
+// Close the table and ask about a new message.
 func finishWall() {
     var w: list of int
     wallWidths(w)
@@ -140,13 +166,19 @@ func finishWall() {
     displayPrompt()
 }
 
-// "wallmore": Y keeps drawing, anything else closes the table.
+// "wallmore": Y reopens the box and keeps drawing; anything else
+// moves on (the page is already closed).
 func wallMoreChoice(input: string) {
+    var w: list of int
     if upperStr(input) == "Y" {
-        wallLines = 0
+        wallWidths(w)
+        sendRule(TopLeft, TopCenter, TopRight, w)
+        wallLines = 1
+        wallPageHasEntry = false
         drawWall()
     } else {
-        finishWall()
+        user.screen = "wallask"
+        displayPrompt()
     }
 }
 
