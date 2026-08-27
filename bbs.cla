@@ -409,6 +409,7 @@ func displayMenu() {
     switch user.screen {
     case "terminal"    { drawTerminalMenu() }
     case "main"        { drawMainMenu() }
+    case "games"       { drawGamesMenu() }
     case "sysop"       { drawSysopMenu() }
     case "sysopboards" { drawSysopBoardsMenu() }
     case "sysopareas"  { drawSysopAreasMenu() }
@@ -482,6 +483,7 @@ func displayPrompt() {
     case "newemail" { sendData("Email (optional): ") }
     case "terminal"    { sendData("Terminal type [4]> ") }
     case "main"        { sendData("Main Menu> ") }
+    case "games"       { sendData("Games> ") }
     case "sysop"       { sendData("Sysop Menu> ") }
     case "sysopboards" { sendData("Sysop:Boards> ") }
     case "sysopareas"  { sendData("Sysop:Areas> ") }
@@ -578,6 +580,7 @@ func drawMainMenu() {
     } else {
         sendLine("M) Mail")
     }
+    sendLine("G) Games")
     sendLine("D) Message of the Day")
     sendLine("W) Wall")
     sendLine("L) Recent Logins")
@@ -587,6 +590,26 @@ func drawMainMenu() {
     sendLine("T) Terminal Settings")
     sendLine("Q) Quit (Logoff)")
     sendLine("")
+}
+
+// Games: nothing in it yet.
+func drawGamesMenu() {
+    sendLine("")
+    sendLine("Games:")
+    sendLine("No games are available yet.")
+    sendLine("Q) Return to Main Menu")
+    sendLine("")
+}
+
+func gamesChoice(input: string) {
+    switch upperStr(input) {
+    case "?" {
+        displayMenu()
+        displayPrompt()
+    }
+    case "Q" { gotoScreen("main") }
+    else     { displayPrompt() }
+    }
 }
 
 // The last 20 sessions from the login log, newest first. Narrow
@@ -648,6 +671,7 @@ func processInput(input: string) {
     case "wallentry" { wallEntryInput(input) }
     case "terminal"    { terminalChoice(input) }
     case "main"        { mainChoice(input) }
+    case "games"       { gamesChoice(input) }
     case "sysop"       { sysopChoice(input) }
     case "sysopboards" { sysopBoardsChoice(input) }
     case "sysopareas"  { sysopAreasChoice(input) }
@@ -970,6 +994,7 @@ func mainChoice(input: string) {
     }
     case "B" { gotoScreen("boards") }
     case "F" { gotoScreen("areas") }
+    case "G" { gotoScreen("games") }
     case "W" {
         wallFromMenu = true
         startWall()

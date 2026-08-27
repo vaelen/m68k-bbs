@@ -263,7 +263,8 @@ inputChar (bbs.cla) → processInput`.
   carry the banner across). `showPause(next)` parks on the
   input-swallowing `"pause"` screen and `pauseChoice` runs
   `pauseNext`. Main-menu `W` runs the wall (`wallFromMenu`, back to
-  main after), `D` shows the MOTD then a pause.
+  main after), `D` shows the MOTD then a pause, `G` opens the (still
+  empty) `games` menu.
   Main-menu `T` returns to the terminal-type menu; `applyTerminal`
   re-sends the VT100 init and comes back to the main menu (no chain). Main-menu
   `L` draws the last 20 sessions from the login log
