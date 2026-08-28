@@ -66,7 +66,7 @@ translation below.
 
 ## Wire translation (translateOut)
 
-`sendData` passes every caller-facing string through `translateOut`
+`sendData` (and `sendDrawing`) passes every caller-facing string through `translateOut`
 (transfers and telnet negotiation bypass it):
 
 - ANSI, VT100 — untouched.

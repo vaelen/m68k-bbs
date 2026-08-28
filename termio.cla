@@ -32,7 +32,8 @@ func clearBackground(conn: connection) {
 
 // Send a run of box-drawing characters (boxChar/hbar output) as one
 // drawing-mode shift, so a whole rule line costs a single SO/SI pair
-// on VT100.
+// on VT100. Translated like every other caller-facing string (PETSCII
+// gets its own line graphics here).
 func sendDrawing(conn: connection, s: string) {
-    telnetSend(conn, startDrawing() + s + stopDrawing())
+    telnetSend(conn, translateOut(startDrawing() + s + stopDrawing()))
 }

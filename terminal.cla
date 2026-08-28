@@ -142,8 +142,10 @@ const petsciiDefaultColor: char = '\x9A'   // light blue, the C64's own
 // CP437 byte -> PETSCII byte for the shifted set: letters swap case,
 // single- and double-line box drawing and blocks go to the C= graphics
 // that survive a charset switch, the rest of the high half is '?'.
+// int(c) sign-extends high bytes on the 68k backend (the host lane
+// doesn't), so mask before any magnitude test.
 func petsciiChar(c: char): char {
-    var n: int = int(c)
+    var n: int = int(c) & 0xFF
     if n >= 65 and n <= 90 { return char(n + 128) }   // A-Z -> $C1-$DA
     if n >= 97 and n <= 122 { return char(n - 32) }   // a-z -> $41-$5A
     if n < 128 {
@@ -183,7 +185,7 @@ func petsciiChar(c: char): char {
 
 // PETSCII keyboard byte -> the ASCII the rest of the BBS expects.
 func petsciiIn(c: char): char {
-    var n: int = int(c)
+    var n: int = int(c) & 0xFF
     if n >= 65 and n <= 90 { return char(n + 32) }    // $41-$5A -> a-z
     if n >= 193 and n <= 218 { return char(n - 128) } // $C1-$DA -> A-Z
     if c == '\x14' { return '\x08' }                  // DELETE -> BS
@@ -212,7 +214,7 @@ func translateOut(s: string): string {
             } else {
                 out = out + petsciiChar(c)
             }
-        } else if int(c) >= 128 {
+        } else if (int(c) & 0xFF) >= 128 {
             out = out + '?'
         } else {
             out = out + c
