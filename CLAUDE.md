@@ -439,6 +439,32 @@ inputChar (bbs.cla) → processInput`.
   writes and updates it; shown wrapped by `showMotd` (bbs.cla). Sysop
   menu `M` edits it in the line editor (`editTarget 'D'`).
   `docs/motd.md`.
+- `basic/num.cla`, `basic/basic.cla` — the BASIC interpreter
+  (`docs/basic.md`, caller-facing `basic/langref.md`). `Num` is a
+  software float (`m * 2^e`, 31-bit mantissa; Clarus has no float and
+  SANE is Mac-only) with GW-BASIC 7-digit print formatting. `basic.cla`
+  keeps source per line (`srcLines`/`srcNumbers`), tokenizes on `RUN`
+  into one flat `prog: list of Tok` (pc = token index, no AST),
+  evaluates by recursive descent into `Val {isStr, n, s}`, and never
+  blocks: `INPUT` parks in `BWaitLine`, `INKEY$`/`SLEEP` in
+  `BWaitKey`/`BSleeping`; every error is an `abort` caught in
+  `basicStep`. It knows nothing of the BBS — the including program
+  defines `basicOut(s)`, `basicScreen(op, a, b)`, `basicPath(name,
+  write)`, `basicEnv(name)` and drives `basicNew`/`basicLoad`/
+  `basicRun`/`basicPrompt`/`basicStep(budget)`/`basicLine`/`basicKey`/
+  `basicStop` off `basicState`. `games/basic.cla` is the BBS wrapper:
+  the Games menu lists `:BASIC:*.BAS` (`gamenum` prompt), sysops get
+  `B` = the `Ok` prompt in `:BASIC:<user>:`, screens `basic`
+  (character mode, no echo) / `basicline` (line mode), `basicPump()`
+  from input and the `every 2 ticks` block in bbs.cla,
+  `disconnected()` → `basicStop()`. `basic/basic-host.cla` +
+  `scripts/basic-host.sh` run it on the host over the TCP serial port
+  (`nc localhost 2345`); the host lane can't build `every` blocks, so
+  that wrapper pumps to completion per receive. The 68k backend can't
+  pass a fixed array by value or `return m.get(...)` directly — use
+  ints/locals. Tests: `tests/num-test.cla`, `tests/basic-test.cla`
+  (`runProgram(src, inputs)` harness; `tests/fixtures/sst.bas` is the
+  Star Trek acceptance run).
 - `loginlog.cla` — the login log, `Logins.txt` (TEXT/ttxt): one
   65-byte fixed-width, tab-delimited text line per session — new flag
   (`*`/space), name padded to 31, `dateTimeStr` of the login, padded
@@ -504,6 +530,9 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
 - `zmodem.cla` — ZMODEM sender and receiver (CRC-32/CRC-16 framing)
 - `ftnaddr.cla`, `ftnpkt.cla`, `ftntoss.cla`, `emsi.cla` — FidoNet:
   addresses, packets/kludges, toss/scan, the EMSI poll
+- `basic/` — the BASIC interpreter (`num.cla`, `basic.cla`), the host
+  wrapper (`basic-host.cla`), `langref.md`, and the sample program;
+  `games/basic.cla` — its BBS wrapper (Games menu, sysop prompt)
 - `mail.cla` — private mail and netmail: inbox, message view,
   compose/reply
 - `editor.cla` — line editor for new posts, replies, and mail (/S /A
@@ -517,9 +546,9 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
   `networksdb.cla`, `terminal.cla`, `termio.cla`, `btree.cla`,
   `vdb.cla` — modules above
 - `tests/` — host-lane test suites (`tests/fixtures/` — real fsxNet
-  packets); `scripts/` — build/test/deploy, `xmodem-e2e.sh` (lrz over
-  socat, raw and via `telnet-shim.py`), `ftn-e2e.sh` (a poll against
-  `emsi-peer.py`)
+  packets, `sst.bas`); `scripts/` — build/test/deploy, `xmodem-e2e.sh`
+  (lrz over socat, raw and via `telnet-shim.py`), `ftn-e2e.sh` (a poll
+  against `emsi-peer.py`), `basic-host.sh` (BASIC over TCP)
 - `bin/`, `vendor/` — pinned compiler + runtime/toolbox snapshot
 - `docs/` — language reference + Snow how-to (symlinks), language-gaps.md,
   telnet-negotiation-reference.md and vt100.codes.txt (protocol notes)

@@ -16,7 +16,8 @@ Three stages, in development order:
    ships first, and the model every later stage plugs into (a game is
    a screen-state machine driven by `processInput`, like every other
    screen).
-2. **BASIC games via a native Clarus BASIC.** A tokenizer plus
+2. **BASIC games via a native Clarus BASIC.** *Shipped 2026-08-28:
+   `basic/basic.cla` and `games/basic.cla`, see `docs/basic.md`.* A tokenizer plus
    tree-walking interpreter written in Clarus (native 68k, so fast
    enough), with a BBS-flavored I/O layer: `PRINT` → `sendData`,
    `INPUT` → a line-mode prompt (the interpreter parks like any other

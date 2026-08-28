@@ -68,13 +68,18 @@ Early development. Working today:
   the Day` (`docs/motd.md`)
 - A post-login chain: welcome banner → the wall → the MOTD → new
   mail and pending-upload counts → the main menu, each pausing for a
-  key; `G) Games` is a placeholder menu with nothing in it yet
+  key
+- Games: a GW-BASIC-flavored BASIC interpreter written in Clarus
+  (`basic/`); `G) Games` runs the `.BAS` programs the sysop drops in a
+  `BASIC` folder (Super Star Trek ships as the sample), and sysops get
+  the classic `Ok` prompt with `LOAD`/`SAVE`/`FILES` in a folder of
+  their own (`docs/basic.md`, `basic/langref.md`)
 - Terminal-aware rendering at 40 or 80 columns (never writing the
   last column, so SyncTERM/DOS auto-wrap and Unix terminals agree) for ASCII, ANSI
   (cp437), and VT100 (DEC Special Graphics) callers: box-drawn
   tables, paged views, color helpers (`docs/tables.md`)
 
-Planned: door games, message search, and full-screen ANSI niceties.
+Planned: Hermes externals, message search, and full-screen ANSI niceties.
 Fidonet-style echomail and netmail are in (`docs/fidonet.md`) and wait
 on the host-side bridge.
 
