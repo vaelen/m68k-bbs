@@ -38,7 +38,7 @@ func drawSysopMenu() {
 }
 
 func drawSysopConfigMenu() {
-    sendTitleBox("Sysop - Configuration (Config.txt)")
+    sendTitleBox("Sysop - Configuration")
     sendLine("")
     sendLine("A) New User Access (" + accessSummary(config.newUserAccess) + ")")
     sendLine("Q) Return to Sysop Menu")
