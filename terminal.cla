@@ -188,6 +188,7 @@ func petsciiIn(c: char): char {
     var n: int = int(c) & 0xFF
     if n >= 65 and n <= 90 { return char(n + 32) }    // $41-$5A -> a-z
     if n >= 193 and n <= 218 { return char(n - 128) } // $C1-$DA -> A-Z
+    if n >= 97 and n <= 122 { return char(n - 32) }   // $61-$7A -> A-Z (same glyphs; SyncTERM sends these)
     if c == '\x14' { return '\x08' }                  // DELETE -> BS
     return c
 }

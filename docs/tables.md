@@ -79,7 +79,7 @@ translation below.
   `?`, and an ESC copies the byte after it verbatim. So `boxChar`
   returns CP437 for PETSCII just like ANSI and the wire does the rest.
   Input goes the other way through `petsciiIn` in `inputChar`
-  (`$41-$5A` → `a-z`, `$C1-$DA` → `A-Z`, DELETE → BS). PETSCII sessions
+  (`$41-$5A` → `a-z`, `$C1-$DA` and `$61-$7A` → `A-Z`, DELETE → BS). PETSCII sessions
   are 25 rows with a bare CR `terminal.eol`. Byte chart:
   `docs/petscii.md`.
 
