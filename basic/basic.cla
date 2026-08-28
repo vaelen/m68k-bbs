@@ -697,10 +697,1066 @@ func tokenizeProgram() {
     tkEmit(TEnd, 0)
 }
 
+// --- Values and variables ---------------------------------------------
+
+record Val {
+    isStr: bool
+    n: Num
+    s: string
+}
+
+func valNum(n: Num): Val {
+    var v: Val
+    v.n = n
+    return v
+}
+
+func valStr(s: string): Val {
+    var v: Val
+    v.isStr = true
+    v.s = s
+    return v
+}
+
+func valInt(i: int): Val { return valNum(numFromInt(i)) }
+
+func needNum(v: Val): Num {
+    if v.isStr { abort("Type mismatch") }
+    return v.n
+}
+
+func needStr(v: Val): string {
+    if not v.isStr { abort("Type mismatch") }
+    return v.s
+}
+
+// Nearest int, as BASIC converts arguments (CINT).
+func numAsInt(n: Num): int { return numToInt(numRound(n)) }
+
+var nums: map of Num
+var strs: map of string
+var defTypes: char[26]        // implied suffix per initial letter; 0 = none
+
+record ArrayInfo {
+    lower: int          // OPTION BASE
+    dims: int
+    d0: int
+    d1: int
+    d2: int
+    isStr: bool
+    heap: int           // first slot in anums / astrs
+}
+
+var arrays: map of ArrayInfo
+var anums: list of Num
+var astrs: list of string
+var optionBase: int = 0
+
+func isStrKey(key: string): bool { return key[key.length - 1] == '$' }
+func isIntKey(key: string): bool { return key[key.length - 1] == '%' }
+
+// The variable key for a name id: the name with its suffix, or the
+// DEFtype-implied suffix when it has none.
+func varKey(id: int): string {
+    var name: string = names[id]
+    var last: char = name[name.length - 1]
+    var d: char
+    if last == '$' or last == '%' { return name }
+    if last == '!' or last == '#' or last == '&' { return name }
+    d = defTypes[int(name[0]) - int('A')]
+    if d == '$' { return name + "$" }
+    if d == '%' { return name + "%" }
+    return name
+}
+
+func getNum(key: string): Num { return nums.get(key, numZero()) }
+func getStr(key: string): string { return strs.get(key, "") }
+
+func storeNum(key: string, v: Num) {
+    var r: Num = v
+    if isIntKey(key) {
+        r = numRound(v)
+        if numCmp(numAbs(r), numFromInt(32767)) > 0 { abort("Overflow") }
+    }
+    nums[key] = r
+}
+
+func storeVal(key: string, v: Val) {
+    if isStrKey(key) {
+        strs[key] = needStr(v)
+    } else {
+        storeNum(key, needNum(v))
+    }
+}
+
+func clearVars() {
+    var i: int = 0
+    nums.clear()
+    strs.clear()
+    arrays.clear()
+    anums.clear()
+    astrs.clear()
+    optionBase = 0
+    while i < 26 {
+        defTypes[i] = char(0)
+        i = i + 1
+    }
+}
+
+// --- Execution state --------------------------------------------------
+
+var cur: list of Tok          // the list being executed: prog or immed
+var pc: int = 0
+var runLine: int = 0          // current line for error messages (0 = immediate)
+var fromPrompt: bool = false  // RUN started from the Ok prompt: errors return there
+var cursorCol: int = 0
+var cursorRow: int = 1
+var outBytes: int = 0         // output emitted during this basicStep
+var inkeyStall: bool = false
+var contPc: int = -1
+var sleepUntil: int = 0
+var fileCol: int = 0          // column within the file for PRINT # zones
+
+// --- Token access -----------------------------------------------------
+
+func tok(): Tok {
+    if pc >= cur.count { return cur[cur.count - 1] }
+    return cur[pc]
+}
+
+func isOp(c: char): bool {
+    var t: Tok = tok()
+    return t.kind == TOp and t.ival == int(c)
+}
+
+func isOpCode(code: int): bool {
+    var t: Tok = tok()
+    return t.kind == TOp and t.ival == code
+}
+
+func isKw(k: int): bool {
+    var t: Tok = tok()
+    return t.kind == TKw and t.ival == k
+}
+
+func expectOp(c: char) {
+    if not isOp(c) { abort("Syntax error") }
+    pc = pc + 1
+}
+
+func skipOp(c: char): bool {
+    if isOp(c) {
+        pc = pc + 1
+        return true
+    }
+    return false
+}
+
+func skipKw(k: int): bool {
+    if isKw(k) {
+        pc = pc + 1
+        return true
+    }
+    return false
+}
+
+func atLineEnd(): bool {
+    var t: Tok = tok()
+    return t.kind == TLine or t.kind == TEnd
+}
+
+func atStmtEnd(): bool {
+    var t: Tok = tok()
+    if t.kind == TLine or t.kind == TEnd { return true }
+    if t.kind == TOp and t.ival == int(':') { return true }
+    if t.kind == TKw and t.ival == K_ELSE { return true }
+    return false
+}
+
+func skipToLineEnd() {
+    while not atLineEnd() { pc = pc + 1 }
+}
+
+func skipToStmtEnd() {
+    while not atStmtEnd() { pc = pc + 1 }
+}
+
+// --- Output -----------------------------------------------------------
+
+var printFile: int = 0        // PRINT #n in progress (0 = screen)
+
+func emitRaw(s: string) {
+    basicOut(s)
+    outBytes = outBytes + s.length
+}
+
+func outNewline() {
+    if printFile > 0 {
+        fileWrite(printFile, "\n")
+        fileCol = 0
+        return
+    }
+    emitRaw("\n")
+    cursorCol = 0
+    cursorRow = cursorRow + 1
+}
+
+// Print an item, wrapping to a new line first when it would cross the
+// width, and ending the line when it exactly fills it (GW-BASIC's own
+// behavior).
+func outStr(s: string) {
+    if s.length == 0 { return }
+    if printFile > 0 {
+        fileWrite(printFile, s)
+        fileCol = fileCol + s.length
+        return
+    }
+    if cursorCol > 0 and cursorCol + s.length > basicWidth { outNewline() }
+    emitRaw(s)
+    cursorCol = cursorCol + s.length
+    while cursorCol >= basicWidth {
+        cursorCol = cursorCol - basicWidth
+        cursorRow = cursorRow + 1
+        if cursorCol == 0 { emitRaw("\n") }
+    }
+}
+
+func spaces(n: int): string {
+    var s: string
+    var i: int = n
+    if i > 255 { i = 255 }
+    while i > 0 {
+        s = s + " "
+        i = i - 1
+    }
+    return s
+}
+
+func curCol(): int {
+    if printFile > 0 { return fileCol }
+    return cursorCol
+}
+
+// --- Expressions ------------------------------------------------------
+// Recursive descent in MS BASIC precedence, lowest first:
+// IMP EQV XOR OR AND NOT relational +- MOD \ */ unary- ^
+
+func evalExpr(): Val {
+    return evalImp()
+}
+
+func toLogic(v: Val): int { return numAsInt(needNum(v)) }
+
+func evalImp(): Val {
+    var left: Val = evalEqv()
+    var a: int
+    var b: int
+    while isKw(K_IMP) {
+        pc = pc + 1
+        a = toLogic(left)
+        b = toLogic(evalEqv())
+        left = valInt((~a) | b)
+    }
+    return left
+}
+
+func evalEqv(): Val {
+    var left: Val = evalXor()
+    var a: int
+    var b: int
+    while isKw(K_EQV) {
+        pc = pc + 1
+        a = toLogic(left)
+        b = toLogic(evalXor())
+        left = valInt(~(a ^ b))
+    }
+    return left
+}
+
+func evalXor(): Val {
+    var left: Val = evalOr()
+    var a: int
+    while isKw(K_XOR) {
+        pc = pc + 1
+        a = toLogic(left)
+        left = valInt(a ^ toLogic(evalOr()))
+    }
+    return left
+}
+
+func evalOr(): Val {
+    var left: Val = evalAnd()
+    var a: int
+    while isKw(K_OR) {
+        pc = pc + 1
+        a = toLogic(left)
+        left = valInt(a | toLogic(evalAnd()))
+    }
+    return left
+}
+
+func evalAnd(): Val {
+    var left: Val = evalNot()
+    var a: int
+    while isKw(K_AND) {
+        pc = pc + 1
+        a = toLogic(left)
+        left = valInt(a & toLogic(evalNot()))
+    }
+    return left
+}
+
+func evalNot(): Val {
+    if isKw(K_NOT) {
+        pc = pc + 1
+        return valInt(~toLogic(evalNot()))
+    }
+    return evalRel()
+}
+
+func boolVal(b: bool): Val {
+    if b { return valInt(-1) }
+    return valInt(0)
+}
+
+func evalRel(): Val {
+    var left: Val = evalAdd()
+    var right: Val
+    var c: int
+    var t: Tok
+    while true {
+        t = tok()
+        if t.kind != TOp { break }
+        if t.ival != int('=') and t.ival != int('<') and t.ival != int('>') and t.ival != O_LE and t.ival != O_GE and t.ival != O_NE { break }
+        pc = pc + 1
+        right = evalAdd()
+        if left.isStr != right.isStr { abort("Type mismatch") }
+        if left.isStr {
+            if left.s < right.s { c = -1 } else if left.s > right.s { c = 1 } else { c = 0 }
+        } else {
+            c = numCmp(left.n, right.n)
+        }
+        if t.ival == int('=') {
+            left = boolVal(c == 0)
+        } else if t.ival == int('<') {
+            left = boolVal(c < 0)
+        } else if t.ival == int('>') {
+            left = boolVal(c > 0)
+        } else if t.ival == O_LE {
+            left = boolVal(c <= 0)
+        } else if t.ival == O_GE {
+            left = boolVal(c >= 0)
+        } else {
+            left = boolVal(c != 0)
+        }
+    }
+    return left
+}
+
+func evalAdd(): Val {
+    var left: Val = evalMod()
+    var right: Val
+    var plus: bool
+    while isOp('+') or isOp('-') {
+        plus = isOp('+')
+        pc = pc + 1
+        right = evalMod()
+        if left.isStr or right.isStr {
+            if not plus or not left.isStr or not right.isStr { abort("Type mismatch") }
+            if left.s.length + right.s.length > 255 { abort("String too long") }
+            left = valStr(left.s + right.s)
+        } else if plus {
+            left = valNum(numAdd(left.n, right.n))
+        } else {
+            left = valNum(numSub(left.n, right.n))
+        }
+    }
+    return left
+}
+
+func evalMod(): Val {
+    var left: Val = evalIdiv()
+    var a: int
+    var b: int
+    while isKw(K_MOD) {
+        pc = pc + 1
+        a = toLogic(left)
+        b = toLogic(evalIdiv())
+        if b == 0 { abort("Division by zero") }
+        left = valInt(a mod b)
+    }
+    return left
+}
+
+func evalIdiv(): Val {
+    var left: Val = evalMul()
+    var a: int
+    var b: int
+    while isOp('\\') {
+        pc = pc + 1
+        a = toLogic(left)
+        b = toLogic(evalMul())
+        if b == 0 { abort("Division by zero") }
+        left = valInt(a / b)
+    }
+    return left
+}
+
+func evalMul(): Val {
+    var left: Val = evalNeg()
+    var right: Num
+    var mul: bool
+    while isOp('*') or isOp('/') {
+        mul = isOp('*')
+        pc = pc + 1
+        right = needNum(evalNeg())
+        if mul {
+            left = valNum(numMul(needNum(left), right))
+        } else {
+            left = valNum(numDiv(needNum(left), right))
+        }
+    }
+    return left
+}
+
+func evalNeg(): Val {
+    if isOp('-') {
+        pc = pc + 1
+        return valNum(numNeg(needNum(evalNeg())))
+    }
+    if isOp('+') {
+        pc = pc + 1
+        return evalNeg()
+    }
+    return evalPow()
+}
+
+func evalPow(): Val {
+    var left: Val = evalPrimary()
+    var right: Val
+    while isOp('^') {
+        pc = pc + 1
+        if isOp('-') {
+            pc = pc + 1
+            right = valNum(numNeg(needNum(evalPrimary())))
+        } else {
+            right = evalPrimary()
+        }
+        left = valNum(numPow(needNum(left), needNum(right)))
+    }
+    return left
+}
+
+func evalNum(): Num { return needNum(evalExpr()) }
+func evalStr(): string { return needStr(evalExpr()) }
+func evalInt(): int { return numAsInt(evalNum()) }
+
+// ( expr )
+func parenNum(): Num {
+    var n: Num
+    expectOp('(')
+    n = evalNum()
+    expectOp(')')
+    return n
+}
+
+func parenStr(): string {
+    var s: string
+    expectOp('(')
+    s = evalStr()
+    expectOp(')')
+    return s
+}
+
+func parenInt(): int { return numAsInt(parenNum()) }
+
+func strFromChar(c: char): string {
+    var s: string(1)
+    s = s + c
+    return s
+}
+
+func evalPrimary(): Val {
+    var t: Tok = tok()
+    var v: Val
+    var key: string
+    var idx: int
+    if t.kind == TNum {
+        pc = pc + 1
+        return valNum(t.num)
+    }
+    if t.kind == TStr {
+        pc = pc + 1
+        return valStr(strPool[t.ival])
+    }
+    if t.kind == TOp and t.ival == int('(') {
+        pc = pc + 1
+        v = evalExpr()
+        expectOp(')')
+        return v
+    }
+    if t.kind == TId {
+        pc = pc + 1
+        if names[t.ival].length > 2 and names[t.ival][0] == 'F' and names[t.ival][1] == 'N' {
+            return callUserFn(t.ival)
+        }
+        key = varKey(t.ival)
+        if isOp('(') {
+            idx = arrayIndex(key)
+            if isStrKey(key) { return valStr(astrs[idx]) }
+            return valNum(anums[idx])
+        }
+        if isStrKey(key) { return valStr(getStr(key)) }
+        return valNum(getNum(key))
+    }
+    if t.kind == TKw {
+        pc = pc + 1
+        return evalFunction(t.ival)
+    }
+    abort("Syntax error")
+    return v
+}
+
+func evalFunction(k: int): Val {
+    var s: string
+    var s2: string
+    var n: int
+    var m: int
+    var x: Num
+    var v: Val
+    switch k {
+    case K_ABS { return valNum(numAbs(parenNum())) }
+    case K_SGN {
+        x = parenNum()
+        return valInt(numCmp(x, numZero()))
+    }
+    case K_INT { return valNum(numFloor(parenNum())) }
+    case K_FIX { return valNum(numFromInt(numToInt(parenNum()))) }
+    case K_CINT {
+        n = parenInt()
+        if n > 32767 or n < -32768 { abort("Overflow") }
+        return valInt(n)
+    }
+    case K_CSNG, K_CDBL { return valNum(parenNum()) }
+    case K_SQR { return valNum(numSqrt(parenNum())) }
+    case K_SIN { return valNum(numSin(parenNum())) }
+    case K_COS { return valNum(numCos(parenNum())) }
+    case K_TAN { return valNum(numTan(parenNum())) }
+    case K_ATN { return valNum(numAtn(parenNum())) }
+    case K_EXP { return valNum(numExp(parenNum())) }
+    case K_LOG { return valNum(numLog(parenNum())) }
+    case K_RND {
+        if isOp('(') {
+            x = parenNum()
+            if x.m == 0 { return valNum(rndLast) }
+            if x.m < 0 { rndSeed = numToInt(x) }
+        }
+        return valNum(rndNext())
+    }
+    case K_TIMER { return valNum(timerNow()) }
+    case K_LEN { return valInt(parenStr().length) }
+    case K_LEFTS {
+        expectOp('(')
+        s = evalStr()
+        expectOp(',')
+        n = evalInt()
+        expectOp(')')
+        if n < 0 { abort("Illegal function call") }
+        if n > s.length { n = s.length }
+        return valStr(s[0, n])
+    }
+    case K_RIGHTS {
+        expectOp('(')
+        s = evalStr()
+        expectOp(',')
+        n = evalInt()
+        expectOp(')')
+        if n < 0 { abort("Illegal function call") }
+        if n > s.length { n = s.length }
+        return valStr(s[s.length - n, n])
+    }
+    case K_MIDS {
+        expectOp('(')
+        s = evalStr()
+        expectOp(',')
+        n = evalInt()
+        m = 255
+        if skipOp(',') { m = evalInt() }
+        expectOp(')')
+        if n < 1 or m < 0 { abort("Illegal function call") }
+        if n > s.length { return valStr("") }
+        if m > s.length - n + 1 { m = s.length - n + 1 }
+        return valStr(s[n - 1, m])
+    }
+    case K_INSTR {
+        expectOp('(')
+        v = evalExpr()
+        n = 1
+        if not v.isStr {
+            n = numAsInt(v.n)
+            expectOp(',')
+            v = evalExpr()
+        }
+        s = needStr(v)
+        expectOp(',')
+        s2 = evalStr()
+        expectOp(')')
+        if n < 1 { abort("Illegal function call") }
+        if n > s.length { return valInt(0) }
+        if s2.length == 0 { return valInt(n) }
+        m = s[n - 1, s.length - n + 1].indexOf(s2)
+        if m < 0 { return valInt(0) }
+        return valInt(m + n)
+    }
+    case K_STRS { return valStr(numStr(parenNum())) }
+    case K_VAL { return valNum(numParsePrefix(parenStr())) }
+    case K_CHRS {
+        n = parenInt()
+        if n < 0 or n > 255 { abort("Illegal function call") }
+        return valStr(strFromChar(char(n)))
+    }
+    case K_ASC {
+        s = parenStr()
+        if s.length == 0 { abort("Illegal function call") }
+        return valInt(int(s[0]))
+    }
+    case K_SPACES {
+        n = parenInt()
+        if n < 0 or n > 255 { abort("Illegal function call") }
+        return valStr(spaces(n))
+    }
+    case K_STRINGS {
+        expectOp('(')
+        n = evalInt()
+        expectOp(',')
+        v = evalExpr()
+        expectOp(')')
+        if v.isStr {
+            if v.s.length == 0 { abort("Illegal function call") }
+            m = int(v.s[0])
+        } else {
+            m = numAsInt(v.n)
+        }
+        if n < 0 or n > 255 or m < 0 or m > 255 { abort("Illegal function call") }
+        s = ""
+        while n > 0 {
+            s = s + char(m)
+            n = n - 1
+        }
+        return valStr(s)
+    }
+    case K_UCASES {
+        s = parenStr()
+        n = 0
+        while n < s.length {
+            s[n] = upperChar(s[n])
+            n = n + 1
+        }
+        return valStr(s)
+    }
+    case K_LCASES {
+        s = parenStr()
+        n = 0
+        while n < s.length {
+            if s[n] >= 'A' and s[n] <= 'Z' { s[n] = char(int(s[n]) + 32) }
+            n = n + 1
+        }
+        return valStr(s)
+    }
+    case K_LTRIMS {
+        s = parenStr()
+        n = 0
+        while n < s.length and s[n] == ' ' { n = n + 1 }
+        return valStr(s[n, s.length - n])
+    }
+    case K_RTRIMS {
+        s = parenStr()
+        n = s.length
+        while n > 0 and s[n - 1] == ' ' { n = n - 1 }
+        return valStr(s[0, n])
+    }
+    case K_HEXS, K_OCTS {
+        n = parenInt()
+        if n < 0 { n = n & 0xFFFF }
+        if k == K_HEXS { m = 16 } else { m = 8 }
+        s = ""
+        if n == 0 { s = "0" }
+        while n > 0 {
+            if (n mod m) < 10 { s = char(int('0') + (n mod m)) + s } else { s = char(int('A') + (n mod m) - 10) + s }
+            n = n / m
+        }
+        return valStr(s)
+    }
+    case K_INKEYS { return valStr(inkeyRead()) }
+    case K_POS {
+        parenNum()
+        return valInt(curCol() + 1)
+    }
+    case K_CSRLIN { return valInt(cursorRow) }
+    case K_ENVIRONS { return valStr(basicEnv(parenStr())) }
+    case K_EOF { return boolVal(fileEof(parenInt())) }
+    case K_FRE {
+        expectOp('(')
+        evalExpr()
+        expectOp(')')
+        return valInt(65536)
+    }
+    }
+    if k >= K_NOTSUP_FIRST { abort("Not supported") }
+    abort("Syntax error")
+    return v
+}
+
+// --- Arrays -----------------------------------------------------------
+
+// Parse "(i[,j[,k]])" after an array name and return its heap slot,
+// DIMing 10 per subscript on first use.
+func arrayIndex(key: string): int {
+    var subs: int[3]
+    var n: int = 0
+    var info: ArrayInfo
+    var idx: int
+    var i: int
+    expectOp('(')
+    while true {
+        if n >= 3 { abort("Subscript out of range") }
+        subs[n] = evalInt()
+        n = n + 1
+        if not skipOp(',') { break }
+    }
+    expectOp(')')
+    if not arrays.has(key) {
+        i = 0
+        while i < n {
+            subs[i] = 10
+            i = i + 1
+        }
+        dimArray(key, n, subs)
+        // subs were the dims; re-read is impossible, so recompute from the parsed values:
+        // simpler -- fall through with the original subscripts restored below
+    }
+    info = arrays[key]
+    if info.dims != n { abort("Subscript out of range") }
+    return arraySlot(info, subs)
+}
+
+func arraySlot(info: ArrayInfo, subs: int[3]): int {
+    var idx: int = 0
+    var i: int = 0
+    var d: int
+    while i < info.dims {
+        if i == 0 { d = info.d0 } else if i == 1 { d = info.d1 } else { d = info.d2 }
+        if subs[i] < info.lower or subs[i] > d { abort("Subscript out of range") }
+        idx = idx * (d - info.lower + 1) + (subs[i] - info.lower)
+        i = i + 1
+    }
+    return info.heap + idx
+}
+
+func dimArray(key: string, dims: int, sizes: int[3]) {
+    var info: ArrayInfo
+    var count: int = 1
+    var i: int = 0
+    if arrays.has(key) { abort("Duplicate definition") }
+    info.lower = optionBase
+    info.dims = dims
+    info.d0 = sizes[0]
+    info.d1 = sizes[1]
+    info.d2 = sizes[2]
+    info.isStr = isStrKey(key)
+    while i < dims {
+        if sizes[i] < optionBase { abort("Subscript out of range") }
+        count = count * (sizes[i] - optionBase + 1)
+        i = i + 1
+    }
+    if info.isStr {
+        info.heap = astrs.count
+        while count > 0 {
+            astrs.add("")
+            count = count - 1
+        }
+    } else {
+        info.heap = anums.count
+        while count > 0 {
+            anums.add(numZero())
+            count = count - 1
+        }
+    }
+    arrays[key] = info
+}
+
+// --- User functions, RND, TIMER ---------------------------------------
+
+record FnInfo {
+    param: int          // name id of the parameter
+    pc: int             // token index of the expression
+}
+
+var fns: map of FnInfo
+
+func callUserFn(id: int): Val {
+    var name: string = names[id]
+    var fn: FnInfo
+    var pkey: string
+    var arg: Val
+    var savedNum: Num
+    var savedStr: string
+    var savedPc: int
+    var savedCur: list of Tok
+    var v: Val
+    if not fns.has(name) { abort("Undefined user function") }
+    fn = fns[name]
+    expectOp('(')
+    arg = evalExpr()
+    expectOp(')')
+    pkey = varKey(fn.param)
+    if isStrKey(pkey) {
+        savedStr = getStr(pkey)
+        strs[pkey] = needStr(arg)
+    } else {
+        savedNum = getNum(pkey)
+        storeNum(pkey, needNum(arg))
+    }
+    savedPc = pc
+    savedCur = cur
+    cur = prog
+    pc = fn.pc
+    v = evalExpr()
+    cur = savedCur
+    pc = savedPc
+    if isStrKey(pkey) { strs[pkey] = savedStr } else { nums[pkey] = savedNum }
+    if isStrKey(name) { needStr(v) } else { needNum(v) }
+    return v
+}
+
+var rndSeed: int = 12345
+var rndLast: Num
+
+func rndNext(): Num {
+    rndSeed = rndSeed * 1103515245 + 12345
+    rndLast = numMul(numFromInt((rndSeed >> 8) & 0xFFFFFF), numNormalize(0x40000000, -54))   // / 2^24
+    return rndLast
+}
+
+// Seconds since local midnight. now() is local-time seconds since 1904
+// read as a signed int (negative today); 2^32 mod 86400 = 23296.
+func timerNow(): Num {
+    var t: int = ((now() mod 86400) + 23296 + 86400) mod 86400
+    return numFromInt(t)
+}
+
+// --- Statements -------------------------------------------------------
+
+func stmtLet() {
+    var t: Tok
+    var key: string
+    var idx: int = -1
+    var v: Val
+    skipKw(K_LET)
+    t = tok()
+    if t.kind != TId { abort("Syntax error") }
+    pc = pc + 1
+    key = varKey(t.ival)
+    if isOp('(') { idx = arrayIndex(key) }
+    expectOp('=')
+    v = evalExpr()
+    if idx < 0 {
+        storeVal(key, v)
+    } else if isStrKey(key) {
+        astrs[idx] = needStr(v)
+    } else {
+        anums[idx] = needNum(v)
+    }
+}
+
+func stmtPrint() {
+    var lastSep: bool = false
+    var v: Val
+    var n: int
+    var next: int
+    if isOp('#') {
+        pc = pc + 1
+        n = evalInt()
+        expectOp(',')
+        printFile = fileForWrite(n)
+    }
+    while not atStmtEnd() {
+        if isOp(';') {
+            pc = pc + 1
+            lastSep = true
+        } else if isOp(',') {
+            pc = pc + 1
+            lastSep = true
+            next = (curCol() / 14 + 1) * 14
+            if next >= basicWidth { outNewline() } else { outStr(spaces(next - curCol())) }
+        } else if isKw(K_TAB) {
+            pc = pc + 1
+            n = parenInt() - 1
+            if n < 0 { n = 0 }
+            if n < curCol() { outNewline() }
+            outStr(spaces(n - curCol()))
+            lastSep = false
+        } else if isKw(K_SPC) {
+            pc = pc + 1
+            n = parenInt()
+            if n > 0 { outStr(spaces(n)) }
+            lastSep = false
+        } else if isKw(K_USING) {
+            printFile = 0
+            abort("Not supported")
+        } else {
+            v = evalExpr()
+            if v.isStr { outStr(v.s) } else { outStr(numStr(v.n) + " ") }
+            lastSep = false
+        }
+    }
+    if not lastSep { outNewline() }
+    printFile = 0
+}
+
+func endRun() {
+    closeAllFiles()
+    if fromPrompt {
+        basicPrompt()
+    } else {
+        basicState = BDone
+    }
+}
+
+func stmtEnd() {
+    contPc = -1
+    endRun()
+}
+
+// One statement at pc.
+func execStatement() {
+    var t: Tok = tok()
+    if t.kind == TLine {
+        runLine = t.ival
+        pc = pc + 1
+        return
+    }
+    if t.kind == TEnd {
+        stmtEnd()
+        return
+    }
+    if t.kind == TOp and t.ival == int(':') {
+        pc = pc + 1
+        return
+    }
+    if t.kind == TId {
+        stmtLet()
+        return
+    }
+    if t.kind != TKw { abort("Syntax error") }
+    pc = pc + 1
+    switch t.ival {
+    case K_PRINT { stmtPrint() }
+    case K_LET {
+        pc = pc - 1
+        stmtLet()
+    }
+    case K_END { stmtEnd() }
+    case K_REM { skipToLineEnd() }
+    case K_ELSE { skipToLineEnd() }
+    else {
+        if t.ival >= K_NOTSUP_FIRST { abort("Not supported") }
+        abort("Syntax error")
+    }
+    }
+}
+
+// --- Stepping and errors ----------------------------------------------
+
+func reportError(msg: string) {
+    if cursorCol > 0 { outNewline() }
+    if runLine > 0 {
+        basicOut(msg + " in " + string(runLine) + "\n")
+    } else {
+        basicOut(msg + "\n")
+    }
+    contPc = -1
+    endRun()
+}
+
+// Run up to budget statements. Returns true while the host should keep
+// calling (running, sleeping, or waiting for a key).
+func basicStep(budget: int): bool {
+    var n: int = 0
+    outBytes = 0
+    inkeyStall = false
+    if basicState == BSleeping and now() >= sleepUntil { basicState = BRunning }
+    if basicState != BRunning {
+        return basicState == BSleeping or basicState == BWaitKey
+    }
+    attempt {
+        while basicState == BRunning and n < budget and outBytes < 1024 and not inkeyStall {
+            execStatement()
+            n = n + 1
+        }
+    } aborted msg {
+        reportError(msg)
+    }
+    return basicState == BRunning or basicState == BSleeping or basicState == BWaitKey
+}
+
+func basicRun() {
+    tokenizeProgram()
+    clearVars()
+    fns.clear()
+    closeAllFiles()
+    cur = prog
+    pc = 0
+    runLine = 0
+    contPc = -1
+    basicState = BRunning
+}
+
+func basicStop() {
+    closeAllFiles()
+    basicState = BDone
+}
+
+func basicPrompt() {
+    basicOut("Ok\n")
+    cursorCol = 0
+    fromPrompt = true
+    basicState = BPrompt
+}
+
+func basicLine(s: string) {
+}
+
+func basicKey(c: char) {
+}
+
+// --- Input (stubs filled in later) ------------------------------------
+
+func inkeyRead(): string { return "" }
+
+// --- Files (stubs filled in later) ------------------------------------
+
+func fileWrite(n: int, s: string) { }
+func fileForWrite(n: int): int {
+    abort("Bad file number")
+    return 0
+}
+func fileEof(n: int): bool {
+    abort("Bad file number")
+    return true
+}
+func closeAllFiles() { }
+
 // --- Lifecycle -----------------------------------------------------------
 
 func basicNew() {
     srcClear()
     prog.clear()
+    clearVars()
+    fns.clear()
+    closeAllFiles()
+    cursorCol = 0
+    cursorRow = 1
+    fromPrompt = false
     basicState = BIdle
 }

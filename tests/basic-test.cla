@@ -126,8 +126,105 @@ func tokenizerTests() {
     expect(toks[3].kind == TStr and strPool[toks[3].ival] == "unterminated", "unterminated string")
 }
 
+// Load src, run it, answer each INPUT from the '|'-separated inputs,
+// answer INKEY$/SLEEP waits with 'Y', and return everything printed.
+func runProgram(src: string, inputs: string): text {
+    var i: int = 0
+    var j: int
+    var item: string
+    var rest: string = inputs
+    out = ""
+    screenOps = ""
+    basicNew()
+    basicSleepInstant = true
+    basicWidth = 80
+    if not basicLoad(fromText(src)) { return out }
+    basicRun()
+    while basicState == BRunning or basicState == BWaitLine or basicState == BSleeping or basicState == BWaitKey {
+        if basicState == BWaitLine {
+            if rest == "" {
+                basicStop()
+                break
+            }
+            j = rest.indexOf('|')
+            if j < 0 {
+                item = rest
+                rest = ""
+            } else {
+                item = rest[0, j]
+                rest = rest[j + 1, rest.length - j - 1]
+            }
+            basicLine(item)
+        } else if basicState == BWaitKey {
+            basicKey('Y')
+        }
+        basicStep(1000)
+        i = i + 1
+        if i > 100000 {
+            basicStop()
+            log("runaway")
+            break
+        }
+    }
+    return out
+}
+
+func check(src: string, inputs: string, want: string, name: string) {
+    var got: text = runProgram(src, inputs)
+    if got == want {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name + " got [" + got[0, got.length] + "]")
+        failures = failures + 1
+    }
+}
+
+func evalTests() {
+    check("10 PRINT 1+2", "", " 3 \n", "print sum")
+    check("10 PRINT \"A\";\"B\"", "", "AB\n", "semicolon")
+    check("10 PRINT \"A\",\"B\"", "", "A             B\n", "comma zone")
+    check("10 PRINT 1;-2;3", "", " 1 -2  3 \n", "numbers")
+    check("10 PRINT \"X\";", "", "X", "trailing semicolon")
+    check("10 PRINT", "", "\n", "empty print")
+    check("10 LET A=5:B=A*2:PRINT A;B", "", " 5  10 \n", "let")
+    check("10 A$=\"HI\":PRINT A$+\"!\";LEN(A$)", "", "HI! 2 \n", "strings")
+    check("10 PRINT 2^10;7 MOD 3;7\\2;-2^2;2*3+4", "", " 1024  1  3 -4  10 \n", "operators")
+    check("10 PRINT 1=1;1=2;1<2;\"A\"<\"B\";NOT 0;3 AND 6;1 OR 2;\"A\"<>\"A\"", "", "-1  0 -1 -1 -1  2  3  0 \n", "logic")
+    check("10 PRINT TAB(5);\"X\";TAB(3);\"Y\"", "", "    X\n  Y\n", "tab")
+    check("10 PRINT SPC(3);\"X\"", "", "   X\n", "spc")
+    check("10 PRINT INT(-.5);ABS(-3);SGN(-2);SQR(16);FIX(-1.5);CINT(2.6)", "", "-1  3 -1  4 -1  3 \n", "numeric funcs")
+    check("10 PRINT LEFT$(\"HELLO\",2);RIGHT$(\"HELLO\",3);MID$(\"HELLO\",2,2);MID$(\"HELLO\",4)", "", "HELLOELLO\n", "substrings")
+    check("10 PRINT STR$(5);VAL(\"12X\");CHR$(65);ASC(\"a\");INSTR(\"ABC\",\"C\");SPACE$(2);\"|\";STRING$(3,\"-\")", "", " 5 12 A 97  3   |---\n", "string funcs")
+    check("10 PRINT UCASE$(\"ab\");LCASE$(\"CD\");LTRIM$(\"  x\");RTRIM$(\"y  \");\"|\";HEX$(255);OCT$(8);INSTR(2,\"ABAB\",\"AB\")", "", "ABcdxy|FF10 3 \n", "more string funcs")
+    check("10 PRINT 1:END:PRINT 2", "", " 1 \n", "end")
+    check("10 PRINT \"A\"\n20 PRINT 1/0", "", "A\nDivision by zero in 20\n", "runtime error")
+    check("10 PRINT \"A\" \"B\"", "", "AB\n", "adjacent strings")
+    check("10 PRINT 1+\"A\"", "", "Type mismatch in 10\n", "type mismatch")
+    check("10 PRINT +", "", "Syntax error in 10\n", "syntax error")
+    check("10 PRINT ENVIRON$(\"USER\")", "", "TESTER\n", "environ")
+    check("10 PRINT X;X$;\"|\"", "", " 0 |\n", "defaults")
+    check("10 A=1.5:PRINT A;-A;A*2;1E7;1/3", "", " 1.5 -1.5  3  1E+07  .3333333 \n", "number formats")
+    check("10 PRINT \"ABC\"+\"DEF\";\"A\"=\"A\"", "", "ABCDEF-1 \n", "concat and compare")
+    check("10 PRINT 1,2,3,4,5,6,7", "", " 1             2             3             4             5             6 \n 7 \n", "zones wrap")
+    check("10 PRINT SPACE$(78);\"XY\"", "", "                                                                              XY\n\n", "exact fill ends the line")
+    check("10 PRINT SPACE$(78);\"XYZ\"", "", "                                                                              \nXYZ\n", "wrap before item")
+    check("10 PRINT SPACE$(80)", "", "                                                                                \n\n", "exact width row")
+    check("10 PRINT -1 AND 3;1 XOR 3;NOT 5;1 EQV 1;0 IMP 1", "", " 3  2 -6 -1 -1 \n", "bitwise")
+    check("10 PRINT (1+2)*3;-(2);2^3^2", "", " 9 -2  64 \n", "grouping")
+    check("10 PRINT ABS(\"X\")", "", "Type mismatch in 10\n", "func type mismatch")
+    check("10 PRINT CHR$(300)", "", "Illegal function call in 10\n", "illegal function call")
+    check("10 A$=STRING$(200,\"X\")+STRING$(100,\"Y\")", "", "String too long in 10\n", "string too long")
+    check("10 PRINT MID$(\"ABC\",5);\"|\";LEFT$(\"AB\",5)", "", "|AB\n", "substring past end")
+    check("10 PRINT POS(0);", "", " 1 ", "pos")
+    check("10 PRINT \"A\";:PRINT \"B\"", "", "AB\n", "semicolon carries across statements")
+    check("10 PRINT FRE(0)>0;RND<1;RND>=0", "", "-1 -1 -1 \n", "fre rnd")
+    check("10 PRINT 1;", "", " 1 ", "trailing semicolon number")
+    check("10 PRINT SGN(0);INT(2.7);INT(-2.7)", "", " 0  2 -3 \n", "sgn int")
+}
+
 on App.startCLI(args: list of string) {
     tokenizerTests()
+    evalTests()
     if failures > 0 { quit 1 }
     log("basic-test: all passed")
 }
