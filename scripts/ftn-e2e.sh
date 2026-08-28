@@ -86,7 +86,7 @@ func seed() {
     mailOpen()
     networksOpen()
     user.name = "sysop"
-    user.access = accessSysop
+    user.access = accessAllFlags
     createUser()
     n.name = "fsxNet"
     n.addr = parseAddress("21:1/141")
