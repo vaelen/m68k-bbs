@@ -693,8 +693,8 @@ func drawAccessTable() {
     sendRule(BottomLeft, BottomCenter, BottomRight, w)
 }
 
-// "useraccess": a flag number flips that bit and redraws; Enter
-// returns to accessReturn (saving the config on the way back).
+// "useraccess": a flag number flips that bit and redraws, ? redraws;
+// Enter returns to accessReturn (saving the config on the way back).
 func accessToggleInput(input: string) {
     var n: int
     if input == "" {
@@ -710,6 +710,11 @@ func accessToggleInput(input: string) {
         }
         user.screen = "edituser"
         drawEditUserCard()
+        displayPrompt()
+        return
+    }
+    if input == "?" {
+        drawAccessTable()
         displayPrompt()
         return
     }

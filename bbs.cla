@@ -523,7 +523,7 @@ func displayPrompt() {
     case "editareaid"  { sendData("Area ID: ") }
     case "edituser", "editboard", "editarea" { sendData("Field letter, S)ave, Q)uit: ") }
     case "edituserval"  { editUserValuePrompt() }
-    case "useraccess"   { sendData("Flag to toggle (Enter = done): ") }
+    case "useraccess"   { sendData("Flag to toggle, ?)Redraw, Enter = done: ") }
     case "editboardval" { editBoardValuePrompt() }
     case "editareaval"  { editAreaValuePrompt() }
     case "deluserid"    { sendData("User ID or name: ") }

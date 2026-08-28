@@ -45,10 +45,11 @@ Sysop > Users > Edit > `A` opens the `useraccess` screen:
 | 1  | Send Mail            | Yes     |
 ...
 +----+----------------------+---------+
-Flag to toggle (Enter = done):
+Flag to toggle, ?)Redraw, Enter = done:
 ```
 
-A number flips that bit in the buffered `editAccess` and redraws;
+A number flips that bit in the buffered `editAccess` and redraws, `?`
+redraws;
 Enter returns to the edit card, where `S` saves. On their own account
 a sysop can toggle everything except the Sysop flag ("You cannot
 change your own Sysop flag."). The detail and edit cards show the
