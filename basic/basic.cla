@@ -502,6 +502,7 @@ var tkSrc: text
 var tkPos: int = 0
 var tkLine: int = 0
 var tkOut: list of Tok
+var tkLineStart: int = 0      // tkOut index of the current line's TLine
 
 func tkEmit(kind: TokKind, ival: int) {
     var t: Tok
@@ -584,7 +585,7 @@ func tkWord() {
             }
         }
         // a label: WORD: at the start of the line
-        if tkOut.count == 1 and tkPos < tkSrc.length and tkSrc[tkPos] == ':' and w[w.length - 1] != '$' {
+        if tkOut.count == tkLineStart + 1 and tkPos < tkSrc.length and tkSrc[tkPos] == ':' and w[w.length - 1] != '$' {
             labels[w] = tkLine
             tkPos = tkPos + 1
             return
@@ -629,6 +630,7 @@ func tokenizeText(t: text, lineNo: int, out: list of Tok) {
     tkPos = 0
     tkLine = lineNo
     tkOut = out
+    tkLineStart = tkOut.count
     tkEmit(TLine, lineNo)
     while tkPos < tkSrc.length {
         c = tkSrc[tkPos]
@@ -1545,6 +1547,225 @@ func timerNow(): Num {
     return numFromInt(t)
 }
 
+// --- Control flow -----------------------------------------------------
+
+record ForFrame {
+    key: string(41)
+    limit: Num
+    step: Num
+    pc: int             // first token after the FOR statement
+}
+
+var forStack: list of ForFrame
+var gosubStack: list of int
+var whileStack: list of int
+
+func clearStacks() {
+    forStack.clear()
+    gosubStack.clear()
+    whileStack.clear()
+}
+
+// A line number or label at pc.
+func lineTarget(): int {
+    var t: Tok = tok()
+    var n: int
+    pc = pc + 1
+    if t.kind == TNum { return numAsInt(t.num) }
+    if t.kind == TId {
+        n = labels.get(names[t.ival], -1)
+        if n < 0 { abort("Undefined line number") }
+        return n
+    }
+    abort("Syntax error")
+    return 0
+}
+
+func jumpToLine(n: int) {
+    var idx: int = lineIndex.get(n, -1)
+    if idx < 0 { abort("Undefined line number") }
+    cur = prog
+    pc = idx
+}
+
+func stmtGoto() { jumpToLine(lineTarget()) }
+
+func stmtGosub() {
+    var n: int = lineTarget()
+    gosubStack.add(pc)
+    jumpToLine(n)
+}
+
+func stmtReturn() {
+    if gosubStack.count == 0 { abort("RETURN without GOSUB") }
+    pc = gosubStack.pop()
+}
+
+func stmtIf() {
+    var c: Num = evalNum()
+    var depth: int = 0
+    var t: Tok
+    if not skipKw(K_THEN) and not isKw(K_GOTO) { abort("Syntax error") }
+    if c.m != 0 {
+        if tok().kind == TNum { jumpToLine(lineTarget()) }
+        return
+    }
+    // false: find our ELSE on this line, else fall to the next line
+    while true {
+        t = tok()
+        if t.kind == TLine or t.kind == TEnd { return }
+        if t.kind == TKw and t.ival == K_IF { depth = depth + 1 }
+        if t.kind == TKw and t.ival == K_ELSE {
+            if depth == 0 {
+                pc = pc + 1
+                if tok().kind == TNum { jumpToLine(lineTarget()) }
+                return
+            }
+            depth = depth - 1
+        }
+        pc = pc + 1
+    }
+}
+
+func forPast(v: Num, f: ForFrame): bool {
+    if f.step.m < 0 { return numCmp(v, f.limit) < 0 }
+    return numCmp(v, f.limit) > 0
+}
+
+func stmtFor() {
+    var t: Tok = tok()
+    var f: ForFrame
+    var start: Num
+    var depth: int = 0
+    var i: int
+    if t.kind != TId { abort("Syntax error") }
+    pc = pc + 1
+    f.key = varKey(t.ival)
+    expectOp('=')
+    start = evalNum()
+    if not skipKw(K_TO) { abort("Syntax error") }
+    f.limit = evalNum()
+    f.step = numFromInt(1)
+    if skipKw(K_STEP) { f.step = evalNum() }
+    storeNum(f.key, start)
+    // a FOR on a variable with an active loop replaces that loop
+    i = forStack.count - 1
+    while i >= 0 {
+        if forStack[i].key == f.key {
+            while forStack.count > i { forStack.pop() }
+            break
+        }
+        i = i - 1
+    }
+    f.pc = pc
+    forStack.add(f)
+    if not forPast(start, f) { return }
+    // zero-trip: skip to the matching NEXT
+    while true {
+        t = tok()
+        if t.kind == TEnd { abort("FOR without NEXT") }
+        if t.kind == TKw and t.ival == K_FOR { depth = depth + 1 }
+        if t.kind == TKw and t.ival == K_NEXT {
+            if depth == 0 {
+                pc = pc + 1
+                forStack.pop()
+                if tok().kind == TId {
+                    pc = pc + 1
+                    if skipOp(',') { stmtNext() }   // NEXT I,J closes J too
+                }
+                return
+            }
+            depth = depth - 1
+        }
+        pc = pc + 1
+    }
+}
+
+func stmtNext() {
+    var t: Tok
+    var key: string
+    var f: ForFrame
+    var v: Num
+    while true {
+        t = tok()
+        key = ""
+        if t.kind == TId {
+            key = varKey(t.ival)
+            pc = pc + 1
+        }
+        if key != "" {
+            while forStack.count > 0 and forStack.last().key != key { forStack.pop() }
+        }
+        if forStack.count == 0 { abort("NEXT without FOR") }
+        f = forStack.last()
+        v = numAdd(getNum(f.key), f.step)
+        storeNum(f.key, v)
+        if not forPast(v, f) {
+            pc = f.pc
+            return
+        }
+        forStack.pop()
+        if not skipOp(',') { return }
+    }
+}
+
+func stmtWhile() {
+    var c: Num
+    var depth: int = 0
+    var t: Tok
+    whileStack.add(pc - 1)
+    c = evalNum()
+    if c.m != 0 { return }
+    whileStack.pop()
+    while true {
+        t = tok()
+        if t.kind == TEnd { abort("WHILE without WEND") }
+        if t.kind == TKw and t.ival == K_WHILE { depth = depth + 1 }
+        if t.kind == TKw and t.ival == K_WEND {
+            if depth == 0 {
+                pc = pc + 1
+                return
+            }
+            depth = depth - 1
+        }
+        pc = pc + 1
+    }
+}
+
+func stmtWend() {
+    if whileStack.count == 0 { abort("WEND without WHILE") }
+    pc = whileStack.pop()
+}
+
+func stmtOn() {
+    var n: int = evalInt()
+    var gosub: bool
+    var targets: list of int
+    if skipKw(K_GOTO) {
+        gosub = false
+    } else if skipKw(K_GOSUB) {
+        gosub = true
+    } else if isKw(K_ERROR) {
+        abort("Not supported")
+    } else {
+        abort("Syntax error")
+    }
+    while true {
+        targets.add(lineTarget())
+        if not skipOp(',') { break }
+    }
+    if n < 1 or n > targets.count { return }
+    if gosub { gosubStack.add(pc) }
+    jumpToLine(targets[n - 1])
+}
+
+func stmtStop() {
+    if cursorCol > 0 { outNewline() }
+    if runLine > 0 { basicOut("Break in " + string(runLine) + "\n") } else { basicOut("Break\n") }
+    contPc = pc
+    endRun()
+}
+
 // --- Statements -------------------------------------------------------
 
 func stmtLet() {
@@ -1659,6 +1880,16 @@ func execStatement() {
     case K_END { stmtEnd() }
     case K_REM { skipToLineEnd() }
     case K_ELSE { skipToLineEnd() }
+    case K_GOTO { stmtGoto() }
+    case K_GOSUB { stmtGosub() }
+    case K_RETURN { stmtReturn() }
+    case K_IF { stmtIf() }
+    case K_FOR { stmtFor() }
+    case K_NEXT { stmtNext() }
+    case K_WHILE { stmtWhile() }
+    case K_WEND { stmtWend() }
+    case K_ON { stmtOn() }
+    case K_STOP { stmtStop() }
     else {
         if t.ival >= K_NOTSUP_FIRST { abort("Not supported") }
         abort("Syntax error")
@@ -1703,6 +1934,7 @@ func basicStep(budget: int): bool {
 func basicRun() {
     tokenizeProgram()
     clearVars()
+    clearStacks()
     fns.clear()
     closeAllFiles()
     cur = prog
@@ -1753,6 +1985,7 @@ func basicNew() {
     srcClear()
     prog.clear()
     clearVars()
+    clearStacks()
     fns.clear()
     closeAllFiles()
     cursorCol = 0
