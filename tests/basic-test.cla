@@ -378,9 +378,9 @@ func session(lines: string): text {
             item = rest[0, j]
             rest = rest[j + 1, rest.length - j - 1]
         }
-        basicLine(item)
+        if item == "^C" { basicBreak() } else { basicLine(item) }
         guard = 0
-        while basicState == BRunning and guard < 10000 {
+        while basicState == BRunning and guard < 100 {
             basicStep(1000)
             guard = guard + 1
         }
@@ -396,6 +396,26 @@ func checkSession(lines: string, want: string, name: string) {
         log("FAIL " + name + " got [" + got[0, got.length] + "]")
         failures = failures + 1
     }
+}
+
+func breakTests() {
+    out = ""
+    basicNew()
+    basicWidth = 80
+    expect(basicLoad(fromText("10 GOTO 10\n")), "break: load")
+    basicRun()
+    expect(basicStep(300) and basicState == BRunning, "break: loop keeps running")
+    basicBreak()
+    expectOut("Break in 10\n", "break: message")
+    expect(basicState == BDone, "break: program ends")
+    checkSession("10 GOTO 10|RUN|^C", "Ok\nBreak in 10\nOk\n", "break at the prompt")
+    checkSession("10 GOTO 10|RUN|^C|CONT|^C", "Ok\nBreak in 10\nOk\nBreak in 10\nOk\n", "cont after break")
+    checkSession("10 INPUT A|RUN|^C", "Ok\n? \nBreak in 10\nOk\n", "break at input")
+    out = ""
+    basicNew()
+    basicPrompt()
+    basicBreak()
+    expectOut("Ok\n", "break at idle prompt is a no-op")
 }
 
 func immediateTests() {
@@ -529,6 +549,7 @@ on App.startCLI(args: list of string) {
     inputTests()
     screenTests()
     immediateTests()
+    breakTests()
     fileTests()
     usingTests()
     errorTests()

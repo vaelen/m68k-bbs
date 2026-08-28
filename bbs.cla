@@ -257,6 +257,10 @@ func inputChar(c: char) {
         xferChar(c)
         return
     }
+    if c == '\x03' and basicActive {      // ^C breaks a BASIC program
+        basicBreakKey()
+        return
+    }
     if not terminal.linemode {
         if c == LF or c == BS or c == DEL { return }
         if c >= '0' and c <= '9' and numberScreen(user.screen) != "" {

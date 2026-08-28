@@ -257,6 +257,15 @@ func basicPump() {
     syncBasicScreen()
 }
 
+// ^C from the caller, on either screen: "Break in n", then the Ok
+// prompt for a sysop or back to the Games menu for a game.
+func basicBreakKey() {
+    user.buffer = ""
+    if termCol > 0 { sendData(terminal.eol) }
+    basicBreak()
+    basicPump()
+}
+
 // A completed line (basicline) or a single key (basic) from the caller.
 func basicScreenInput(input: string) {
     if user.screen == "basicline" {

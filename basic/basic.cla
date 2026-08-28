@@ -22,7 +22,7 @@
 //   basicEnv(name: string): string            -- ENVIRON$; "" if unknown
 //
 // API: basicNew, basicLoad, basicRun, basicPrompt, basicStep,
-// basicLine, basicKey, basicStop, and the state basicState. The
+// basicLine, basicKey, basicBreak, basicStop, and the state basicState. The
 // interpreter never blocks: INPUT parks it in BWaitLine and the host
 // calls basicLine with the answer.
 //
@@ -3187,6 +3187,15 @@ func stmtCont() {
 }
 
 func stmtSystem() { basicStop() }
+
+// Keyboard interrupt (the caller's ^C): a STOP wherever the program is,
+// including asleep or waiting on INKEY$/INPUT. Nothing to do at the
+// prompt or when idle.
+func basicBreak() {
+    if basicState == BIdle or basicState == BPrompt or basicState == BDone { return }
+    keyQueue = ""
+    stmtStop()
+}
 
 // --- Data files -------------------------------------------------------
 // Sequential files 1-3. Each open file is a whole text: read on open

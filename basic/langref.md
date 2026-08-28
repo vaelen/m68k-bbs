@@ -148,7 +148,9 @@ Square brackets mark optional parts.
 - `ON expr GOTO|GOSUB line, line, ...` — the n-th target; out of range
   falls through.
 - `END` — stop and close files. `STOP` — stop with `Break in n`; at the
-  prompt `CONT` resumes. `SYSTEM` — leave BASIC.
+  prompt `CONT` resumes. `SYSTEM` — leave BASIC. Ctrl-C at the keyboard
+  is a `STOP` wherever the program is (running, sleeping, or waiting
+  for a key or `INPUT`).
 
 **Error handling**
 

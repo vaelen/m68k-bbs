@@ -68,6 +68,7 @@ hooks append to a `text`).
 | `basicStep(budget: int): bool` | execute up to `budget` statements, stopping early at a wait, the end, an error, or after ~1 KB of output (so a serial line keeps draining). Returns true while the host should keep calling: `BRunning`, `BSleeping`, `BWaitKey` |
 | `basicLine(s: string)` | a completed input line: the answer to `INPUT`/`LINE INPUT` (`BWaitLine`) or a line typed at the prompt (`BPrompt`) |
 | `basicKey(c: char)` | a raw key for `INKEY$`; wakes `SLEEP` and a stalled `INKEY$` poll |
+| `basicBreak()` | keyboard interrupt: `STOP` at the current line from any running or waiting state (`CONT` resumes at the prompt); no-op when idle or at the prompt |
 | `basicStop()` | abort, close files; state `BDone` |
 | `basicState` | `BIdle`, `BRunning`, `BWaitLine`, `BWaitKey`, `BSleeping`, `BPrompt`, `BDone` |
 | `basicWidth` | line width for `PRINT` wrapping and comma zones (default 80; `WIDTH n` changes it) |
@@ -171,6 +172,9 @@ the BBS at all (a per-program `ECHO` setting if someone wants it).
   `every 2 ticks` block pumps while `basicActive` and the state is
   `BRunning`/`BSleeping`, so a compute loop can't freeze the Mac and
   output trickles out at the serial line's pace.
+- `^C` on either screen (caught in `inputChar` before line assembly,
+  `basicBreakKey`) is `basicBreak()`: "Break in n", then the `Ok`
+  prompt for a sysop or the Games menu for a game.
 - Hooks: `basicOut` turns CR into `terminal.eol` and goes through
   `sendData` (column tracking, telnet IAC escaping). `basicScreen` emits
   ANSI only when `terminal.ansi` (CLS = clear + home, LOCATE = CUP,
