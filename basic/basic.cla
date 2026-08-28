@@ -823,7 +823,6 @@ var fromPrompt: bool = false  // RUN started from the Ok prompt: errors return t
 var cursorCol: int = 0
 var cursorRow: int = 1
 var outBytes: int = 0         // output emitted during this basicStep
-var inkeyStall: bool = false
 var contPc: int = -1
 var sleepUntil: int = 0
 var fileCol: int = 0          // column within the file for PRINT # zones
@@ -2167,6 +2166,9 @@ func execStatement() {
     case K_RANDOMIZE { stmtRandomize() }
     case K_MIDS { stmtMidAssign() }
     case K_CLEAR { stmtClear() }
+    case K_INPUT { stmtInput() }
+    case K_LINE { stmtLineInput() }
+    case K_SLEEP { stmtSleep() }
     else {
         if t.ival >= K_NOTSUP_FIRST { abort("Not supported") }
         abort("Syntax error")
@@ -2192,13 +2194,12 @@ func reportError(msg: string) {
 func basicStep(budget: int): bool {
     var n: int = 0
     outBytes = 0
-    inkeyStall = false
     if basicState == BSleeping and now() >= sleepUntil { basicState = BRunning }
     if basicState != BRunning {
         return basicState == BSleeping or basicState == BWaitKey
     }
     attempt {
-        while basicState == BRunning and n < budget and outBytes < 1024 and not inkeyStall {
+        while basicState == BRunning and n < budget and outBytes < 1024 {
             execStatement()
             n = n + 1
         }
@@ -2220,6 +2221,8 @@ func basicRun() {
     contPc = -1
     dataIdx = 0
     dataPos = 0
+    keyQueue = ""
+    inkeyMisses = 0
     basicState = BRunning
 }
 
@@ -2235,15 +2238,227 @@ func basicPrompt() {
     basicState = BPrompt
 }
 
+// --- Input ------------------------------------------------------------
+// INPUT parks the interpreter in BWaitLine with the variable list's
+// token range remembered; basicLine parses the answer into it.
+
+var inputVarsPc: int = 0
+var inputResumePc: int = 0
+var inputPrompt: string
+var inputQuestion: bool = false
+var inputIsLine: bool = false
+var inputKeepLine: bool = false
+var keyQueue: text
+var inkeyMisses: int = 0
+
+func showInputPrompt() {
+    outStr(inputPrompt)
+    if inputQuestion { outStr("? ") }
+}
+
+func stmtInput() {
+    var t: Tok
+    if isOp('#') {
+        stmtInputFile(false)
+        return
+    }
+    inputKeepLine = skipOp(';')
+    inputPrompt = ""
+    inputQuestion = true
+    t = tok()
+    if t.kind == TStr {
+        inputPrompt = strPool[t.ival]
+        pc = pc + 1
+        if skipOp(',') {
+            inputQuestion = false
+        } else {
+            expectOp(';')
+        }
+    }
+    showInputPrompt()
+    inputVarsPc = pc
+    skipToStmtEnd()
+    inputResumePc = pc
+    inputIsLine = false
+    basicState = BWaitLine
+}
+
+// LINE INPUT [;]["prompt";] var$   (after the LINE keyword)
+func stmtLineInput() {
+    var t: Tok
+    if not skipKw(K_INPUT) { abort("Not supported") }     // graphics LINE
+    if isOp('#') {
+        stmtInputFile(true)
+        return
+    }
+    inputKeepLine = skipOp(';')
+    inputPrompt = ""
+    inputQuestion = false
+    t = tok()
+    if t.kind == TStr {
+        inputPrompt = strPool[t.ival]
+        pc = pc + 1
+        expectOp(';')
+    }
+    showInputPrompt()
+    inputVarsPc = pc
+    skipToStmtEnd()
+    inputResumePc = pc
+    inputIsLine = true
+    basicState = BWaitLine
+}
+
+// Comma-separated items, quotes honored, blanks trimmed.
+func splitInputItems(s: string, items: list of string) {
+    var i: int = 0
+    var item: string
+    items.clear()
+    while true {
+        item = ""
+        while i < s.length and s[i] == ' ' { i = i + 1 }
+        if i < s.length and s[i] == '"' {
+            i = i + 1
+            while i < s.length and s[i] != '"' {
+                item = item + s[i]
+                i = i + 1
+            }
+            if i < s.length { i = i + 1 }
+            while i < s.length and s[i] == ' ' { i = i + 1 }
+        } else {
+            while i < s.length and s[i] != ',' {
+                item = item + s[i]
+                i = i + 1
+            }
+            while item.length > 0 and item[item.length - 1] == ' ' { item = item[0, item.length - 1] }
+        }
+        items.add(item)
+        if i < s.length and s[i] == ',' {
+            i = i + 1
+        } else {
+            return
+        }
+    }
+}
+
+// The caller's answer to INPUT. Returns false when it must be redone.
+func inputAnswer(s: string): bool {
+    var items: list of string
+    var n: int = 0
+    var pass: int = 0
+    var key: string
+    var idx: int
+    var v: Val
+    if inputIsLine {
+        pc = inputVarsPc
+        parseLValue()
+        assignLValue(lvKey, lvIdx, valStr(s))
+        return true
+    }
+    splitInputItems(s, items)
+    // pass 0 checks the count and the numeric items; pass 1 assigns
+    while pass < 2 {
+        pc = inputVarsPc
+        n = 0
+        while true {
+            parseLValue()
+            key = lvKey
+            idx = lvIdx
+            if n >= items.count { return false }
+            if isStrKey(key) {
+                v = valStr(items[n])
+            } else if items[n] == "" {
+                v = valInt(0)
+            } else {
+                v = valNum(numParsePrefix(items[n]))
+                if numParseEnd != items[n].length { return false }
+            }
+            if pass == 1 { assignLValue(key, idx, v) }
+            n = n + 1
+            if not skipOp(',') { break }
+        }
+        if n != items.count { return false }
+        pass = pass + 1
+    }
+    return true
+}
+
+// A completed line from the host: the answer to INPUT, or a line typed
+// at the Ok prompt.
 func basicLine(s: string) {
+    var ok: bool
+    if basicState == BPrompt {
+        immediateLine(s)
+        return
+    }
+    if basicState != BWaitLine { return }
+    if inputKeepLine {
+        cursorCol = cursorCol + s.length
+    } else {
+        cursorCol = 0
+        cursorRow = cursorRow + 1
+    }
+    attempt {
+        ok = inputAnswer(s)
+        if ok {
+            pc = inputResumePc
+            basicState = BRunning
+        } else {
+            basicOut("?Redo from start\n")
+            cursorCol = 0
+            showInputPrompt()
+        }
+    } aborted msg {
+        reportError(msg)
+    }
 }
 
+// One raw key from the host, for INKEY$; wakes SLEEP and a stalled
+// INKEY$ poll.
 func basicKey(c: char) {
+    keyQueue.append(c)
+    inkeyMisses = 0
+    if basicState == BWaitKey or basicState == BSleeping { basicState = BRunning }
 }
 
-// --- Input (stubs filled in later) ------------------------------------
+// INKEY$: the next queued key or "". A program polling with nothing
+// queued would spin forever, so after 200 empty polls the interpreter
+// parks in BWaitKey until a key arrives.
+func inkeyRead(): string {
+    var s: string
+    if keyQueue.length > 0 {
+        s = keyQueue[0, 1]
+        keyQueue = keyQueue.textAt(1, keyQueue.length - 1)
+        inkeyMisses = 0
+        return s
+    }
+    inkeyMisses = inkeyMisses + 1
+    if inkeyMisses >= 200 {
+        inkeyMisses = 0
+        basicState = BWaitKey
+    }
+    return ""
+}
 
-func inkeyRead(): string { return "" }
+// SLEEP [seconds]: no argument (or 0) waits for a key; otherwise for
+// the seconds or a key, whichever first.
+func stmtSleep() {
+    var n: int = 0
+    if not atStmtEnd() { n = evalInt() }
+    if n <= 0 {
+        basicState = BWaitKey
+        return
+    }
+    if basicSleepInstant { return }
+    sleepUntil = now() + n
+    basicState = BSleeping
+}
+
+func immediateLine(s: string) {
+}
+
+func stmtInputFile(lineMode: bool) {
+    abort("Bad file number")
+}
 
 // --- Files (stubs filled in later) ------------------------------------
 
