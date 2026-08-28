@@ -227,10 +227,16 @@ inputChar (bbs.cla) → processInput`.
   against `minimumWideTerminalWidth` (79) and tables total 79/39 —
   rows via `setRows`, color, echo — on by default, linemode — off by default, set per screen by
   `displayPrompt` via `lineScreen`, type: ASCII/ANSI/VT100, ansi — set for the ANSI and
-  VT100 types, telnet, reportedTerminalType, reportedSpeed) + global
+  VT100 types and whenever color is on (the terminal menu offers each
+  type with and without color, no-color first; 40-column ASCII both
+  ways), telnet, reportedTerminalType, reportedSpeed) + global
   `terminal`, `Color`
   enum, and pure ANSI sequence builders (`colorSeq`, `backgroundSeq`,
-  clear consts), plus the box-drawing/table builders (`boxChar`,
+  clear consts) plus their terminal-aware forms that return `""` when
+  unsupported (`fg`/`bg`/`fgOff`/`bgOff` on `terminal.color`;
+  `bold`/`underline`/`blink`/`reverseVideo(on)`, `attrsOff`,
+  `clearScreen`, `moveTo(row, col)` on `terminal.ansi` — see
+  `docs/tables.md`), plus the box-drawing/table builders (`boxChar`,
   `ruleLine`, `rowLine`, `pad`, `center` — see `docs/tables.md`).
   `termio.cla` — connection-facing send wrappers over those (take a
   `connection` parameter, gated on `terminal.color`).

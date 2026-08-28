@@ -39,6 +39,24 @@ line graphics while a shift to the G1 character set is active. So:
   VT100 and `""` on the other types. Drawing characters render as
   lines only between them.
 
+## Colors and attributes (terminal.cla)
+
+Terminal-aware builders that return the escape sequence when the
+session's terminal supports it and `""` otherwise, so a menu line can
+concatenate them and degrade to plain text by itself:
+
+- `fg(color)` / `bg(color)` / `fgOff()` / `bgOff()` — need
+  `terminal.color` (the unconditional `colorSeq`/`backgroundSeq` and
+  `clearColorSeq`/`clearBackgroundSeq` are what they wrap).
+- `bold(on)`, `underline(on)`, `blink(on)`, `reverseVideo(on)`,
+  `attrsOff()` (SGR 0), `clearScreen()` (`ESC[2J ESC[H`),
+  `moveTo(row, col)` (1-based) — need `terminal.ansi`, which
+  `applyTerminal` sets for ANSI, VT100, and any type with color on.
+
+Bright foregrounds are bold+color, so `bold(false)` un-brightens one
+(re-send `fg`). `trackOutput` ignores cursor motion: `termCol` is stale
+after `moveTo`/`clearScreen` until the next CR.
+
 ## Building blocks (terminal.cla)
 
 - `pad(s, width)` — left-align in `width` spaces, truncate if longer.

@@ -100,6 +100,80 @@ func backgroundSeq(color: Color): string {
 const clearColorSeq:      string = "\x1B[22;39m"
 const clearBackgroundSeq: string = "\x1B[49m"
 
+// --- Terminal-aware builders -------------------------------------------
+// Each returns the sequence when the session's terminal supports it and
+// "" otherwise, so menus and screens can concatenate them freely and
+// degrade to plain text by themselves. Colors need terminal.color; the
+// rest need terminal.ansi (escape codes honored: ANSI, VT100, or any
+// type with color on).
+
+func fg(color: Color): string {
+    if not terminal.color { return "" }
+    return colorSeq(color)
+}
+
+func bg(color: Color): string {
+    if not terminal.color { return "" }
+    return backgroundSeq(color)
+}
+
+func fgOff(): string {
+    if not terminal.color { return "" }
+    return clearColorSeq
+}
+
+func bgOff(): string {
+    if not terminal.color { return "" }
+    return clearBackgroundSeq
+}
+
+// Clear the screen and home the cursor.
+func clearScreen(): string {
+    if not terminal.ansi { return "" }
+    return "\x1B[2J\x1B[H"
+}
+
+// SGR attribute toggles. Bold off (22) also un-brightens a bright
+// foreground, since bright colors are bold+color -- re-send fg after.
+func bold(enabled: bool): string {
+    if not terminal.ansi { return "" }
+    if enabled { return "\x1B[1m" }
+    return "\x1B[22m"
+}
+
+func underline(enabled: bool): string {
+    if not terminal.ansi { return "" }
+    if enabled { return "\x1B[4m" }
+    return "\x1B[24m"
+}
+
+func blink(enabled: bool): string {
+    if not terminal.ansi { return "" }
+    if enabled { return "\x1B[5m" }
+    return "\x1B[25m"
+}
+
+func reverseVideo(enabled: bool): string {
+    if not terminal.ansi { return "" }
+    if enabled { return "\x1B[7m" }
+    return "\x1B[27m"
+}
+
+// All attributes and colors off.
+func attrsOff(): string {
+    if not terminal.ansi { return "" }
+    return "\x1B[0m"
+}
+
+// Move the cursor to a 1-based row and column.
+// ponytail: trackOutput ignores cursor motion, so termCol is stale
+// after this until the next CR; fine for full-screen layouts that
+// don't take echoed line input mid-screen.
+func moveTo(row: int, col: int): string {
+    if not terminal.ansi { return "" }
+    return "\x1B[" + string(row) + ";" + string(col) + "H"
+}
+
 // --- Output column tracking -------------------------------------------
 // The caller's cursor column, kept up to date by feeding every
 // caller-facing send through trackOutput (bbs.cla's sendData does).

@@ -56,6 +56,28 @@ on App.startCLI(args: list of string) {
     expect(clearColorSeq      == "\x1B[22;39m", "clearColorSeq")
     expect(clearBackgroundSeq == "\x1B[49m",    "clearBackgroundSeq")
 
+    // --- Terminal-aware builders: "" unless the terminal supports them
+    terminal.color = false
+    terminal.ansi = false
+    expect(fg(Red) == "" and bg(Blue) == "" and fgOff() == "" and bgOff() == "", "no color: color builders empty")
+    expect(clearScreen() == "" and bold(true) == "" and underline(true) == "", "no ansi: attribute builders empty")
+    expect(blink(true) == "" and reverseVideo(true) == "" and attrsOff() == "", "no ansi: more builders empty")
+    expect(moveTo(5, 10) == "", "no ansi: moveTo empty")
+    terminal.ansi = true
+    expect(fg(Red) == "", "ansi without color: fg still empty")
+    expect(clearScreen() == "\x1B[2J\x1B[H", "clearScreen")
+    expect(bold(true) == "\x1B[1m" and bold(false) == "\x1B[22m", "bold on/off")
+    expect(underline(true) == "\x1B[4m" and underline(false) == "\x1B[24m", "underline on/off")
+    expect(blink(true) == "\x1B[5m" and blink(false) == "\x1B[25m", "blink on/off")
+    expect(reverseVideo(true) == "\x1B[7m" and reverseVideo(false) == "\x1B[27m", "reverse on/off")
+    expect(attrsOff() == "\x1B[0m", "attrsOff")
+    expect(moveTo(5, 10) == "\x1B[5;10H", "moveTo")
+    terminal.color = true
+    expect(fg(Red) == colorSeq(Red) and bg(Blue) == backgroundSeq(Blue), "color: fg/bg")
+    expect(fgOff() == clearColorSeq and bgOff() == clearBackgroundSeq, "color: fgOff/bgOff")
+    terminal.color = false
+    terminal.ansi = false
+
     // --- Box drawing ----------------------------------------------------
 
     // Default eol is CRLF.

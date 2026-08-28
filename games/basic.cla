@@ -60,7 +60,7 @@ func basicScreen(op: char, a: int, b: int) {
     switch op {
     case 'C' {
         if terminal.ansi {
-            sendData("\x1B[2J\x1B[H")
+            sendData(clearScreen())
         } else {
             while i < terminal.rows {
                 sendData(terminal.eol)
@@ -71,9 +71,9 @@ func basicScreen(op: char, a: int, b: int) {
     case 'L' {
         if not terminal.ansi { return }
         if a > 0 and b > 0 {
-            sendData("\x1B[" + intStr(a) + ";" + intStr(b) + "H")
+            sendData(moveTo(a, b))
         } else if a > 0 {
-            sendData("\x1B[" + intStr(a) + ";1H")
+            sendData(moveTo(a, 1))
         } else if b > 0 {
             sendData("\x1B[" + intStr(b) + "G")
         }

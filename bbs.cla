@@ -596,9 +596,12 @@ func drawTerminalMenu() {
     sendLine("Terminal Types:")
     sendLine("1. ASCII 80x24 No Color")
     sendLine("2. ASCII 80x24 With Color")
-    sendLine("3. ANSI  80x24 (DOS/Windows)")
-    sendLine("4. VT100 80x24 (UNIX/Linux)")
-    sendLine("5. ASCII 40x24 No Color (APPLE II, etc)")
+    sendLine("3. ANSI  80x24 No Color (DOS/Windows)")
+    sendLine("4. ANSI  80x24 With Color (DOS/Windows)")
+    sendLine("5. VT100 80x24 No Color (UNIX/Linux)")
+    sendLine("6. VT100 80x24 With Color (UNIX/Linux)")
+    sendLine("7. ASCII 40x24 No Color (APPLE II, etc)")
+    sendLine("8. ASCII 40x24 With Color (APPLE II, etc)")
 }
 
 func drawMainMenu() {
@@ -915,7 +918,8 @@ func applyTerminal(t: TerminalType, cols: int, colorOn: bool) {
     setColumns(cols)
     setRows(24)
     terminal.color = colorOn
-    terminal.ansi = (t == ANSI or t == VT100)
+    // color implies escape-code support, whatever the type
+    terminal.ansi = (t == ANSI or t == VT100 or colorOn)
     if t == VT100 { sendData(vt100SetupSeq) }
     msg = "User: " + user.name + ", Terminal: " + termTypeName(t)
     msg = msg + " " + intStr(cols) + "x" + intStr(terminal.rows)
@@ -1002,9 +1006,12 @@ func terminalChoice(input: string) {
     switch input {
     case "1"     { applyTerminal(ASCII, 80, false) }
     case "2"     { applyTerminal(ASCII, 80, true) }
-    case "3"     { applyTerminal(ANSI, 80, true) }
-    case "", "4" { applyTerminal(VT100, 80, false) }
-    case "5"     { applyTerminal(ASCII, 40, false) }
+    case "3"     { applyTerminal(ANSI, 80, false) }
+    case "4"     { applyTerminal(ANSI, 80, true) }
+    case "", "5" { applyTerminal(VT100, 80, false) }
+    case "6"     { applyTerminal(VT100, 80, true) }
+    case "7"     { applyTerminal(ASCII, 40, false) }
+    case "8"     { applyTerminal(ASCII, 40, true) }
     else         { gotoScreen("terminal") }
     }
 }
