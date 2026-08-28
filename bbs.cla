@@ -179,8 +179,6 @@ var sessionStart: int = 0
 var sessionNew: bool = false
 var previousSeen: int = 0   // that account's lastSeen before this login (Mac seconds can be
                             // negative as an int past 2^31, so no sentinel value -- hence the bool)
-var postLogin: bool = false // just logged in or signed up: run the
-                            // welcome -> wall -> MOTD chain once
 var pauseNext: string(15)   // what the "pause" screen's keypress runs
 
 
@@ -510,7 +508,7 @@ func displayPrompt() {
     case "newpass"  { sendData("Choose a password: ") }
     case "newpass2" { sendData("Retype password: ") }
     case "newemail" { sendData("Email (optional): ") }
-    case "terminal"    { sendData("Terminal type [4]> ") }
+    case "terminal"    { sendData("TERMINAL TYPE [1]> ") }
     case "main"        { sendData("Main Menu> ") }
     case "games"       { sendData("Games> ") }
     case "sysop"       { sendData("Sysop Menu> ") }
@@ -595,18 +593,20 @@ func gotoScreen(s: string) {
 
 func drawTerminalMenu() {
     sendLine("")
-    sendLine("Terminal Types:")
-    sendLine("1. Color Mac/DOS/Windows (ANSI)")
-    sendLine("2. Monochrome Mac/DOS/Windows (ANSI)")
-    sendLine("3. Color UNIX/Mac (VT100)")
-    sendLine("4. Monochrome UNIX/Mac (VT100)")
-    sendLine("5. Apple II 40 Column (ASCII)")
-    sendLine("6. Apple II 80 Column (ASCII)")
-    sendLine("7. Apple II ProTERM, etc. (VT52)")
-    sendLine("8. C64 40 Column (PETSCII)")
-    sendLine("9. C64 80 Column (PETSCII)")
+    // Capitals only: this is shown before the type is known, and
+    // uppercase ASCII is legible in both C64 character sets.
+    sendLine("TERMINAL TYPES:")
+    sendLine("1. COLOR MAC/DOS/WINDOWS (ANSI)")
+    sendLine("2. MONOCHROME MAC/DOS/WINDOWS (ANSI)")
+    sendLine("3. COLOR UNIX/MAC (VT100)")
+    sendLine("4. MONOCHROME UNIX/MAC (VT100)")
+    sendLine("5. APPLE II 40 COLUMN (ASCII)")
+    sendLine("6. APPLE II 80 COLUMN (ASCII)")
+    sendLine("7. APPLE II PROTERM, ETC. (VT52)")
+    sendLine("8. C64 40 COLUMN (PETSCII)")
+    sendLine("9. C64 80 COLUMN (PETSCII)")
     sendLine("")
-    sendLine("(Select 5 or 6 for line printers, etc.)")
+    sendLine("(SELECT 5 OR 6 FOR LINE PRINTERS, ETC.)")
 }
 
 func drawMainMenu() {
@@ -822,14 +822,13 @@ func loginOk() {
     user.authenticated = true
     log("User logged in: " + user.name + " (#" + intStr(user.id) + ")")
     returning = true
-    postLogin = true
     previousSeen = user.lastSeen
     user.lastSeen = now()
     saveUser()
     sessionName = user.name
     sessionStart = now()
     sessionNew = false
-    gotoScreen("terminal")
+    postLoginStart()
 }
 
 // --- Signup -----------------------------------------------------------
@@ -904,8 +903,7 @@ func newEmail(input: string) {
         sendLine("You are the first user, so you have sysop access.")
     }
     user.authenticated = true
-    postLogin = true
-    gotoScreen("terminal")
+    postLoginStart()
 }
 
 func termTypeName(t: TerminalType): string {
@@ -935,32 +933,37 @@ func applyTerminal(t: TerminalType, cols: int, colorOn: bool, ansiOn: bool) {
         terminal.eol = "\x0D"
         sendData(petsciiLowercaseSeq)
     }
-    msg = "User: " + user.name + ", Terminal: " + termTypeName(t)
+    msg = "Terminal: " + termTypeName(t)
     msg = msg + " " + intStr(cols) + "x" + intStr(terminal.rows)
     log(msg)
-    if postLogin {
-        // the once-per-login chain: welcome, wall, MOTD, counts
-        postLogin = false
+    if not user.authenticated {
+        // first pick of the call: on to the login prompt
         sendLine("")
-        if returning {
-            sendLine("Welcome back, " + user.name + "!")
-            if previousSeen != 0 {
-                sendLine("Last on: " + dateTimeStr(previousSeen))
-            }
-        } else {
-            sendLine("Welcome, " + user.name + "!")
-        }
-        returning = false
-        showPause("wall")
+        sendLine("Type NEW at the login prompt to create an account.")
+        gotoScreen("login")
         return
     }
-    gotoScreen("main")
+    gotoScreen("main")   // re-pick from the main menu's T
 }
 
 // --- Post-login chain --------------------------------------------------
-// applyTerminal -> pause -> wall (wall.cla) -> MOTD -> pause
-// -> new-message/pending-file counts -> main menu. "pause" swallows one
-// key and runs pauseNext.
+// loginOk/newEmail -> postLoginStart -> pause -> wall (wall.cla) -> MOTD
+// -> pause -> new-message/pending-file counts -> main menu. "pause"
+// swallows one key and runs pauseNext.
+
+func postLoginStart() {
+    sendLine("")
+    if returning {
+        sendLine("Welcome back, " + user.name + "!")
+        if previousSeen != 0 {
+            sendLine("Last on: " + dateTimeStr(previousSeen))
+        }
+    } else {
+        sendLine("Welcome, " + user.name + "!")
+    }
+    returning = false
+    showPause("wall")
+}
 
 func showPause(next: string) {
     pauseNext = next
@@ -1089,7 +1092,8 @@ var telnetProbe: int = 0   // countdown to the end of the telnet probe
 // The probe window is over: the telnet processor has already consumed
 // any negotiation that came back (setting terminal.telnet), so keep
 // intercepting only for telnet clients, drop whatever stray bytes the
-// probe buffered, and show the login prompt.
+// probe buffered, and show the terminal-type menu (the login prompt
+// follows once the type is known, so it can be rendered for it).
 func telnetProbeDone() {
     if not isConnected { return }
     telnetIntercept = terminal.telnet
@@ -1097,9 +1101,7 @@ func telnetProbeDone() {
     if terminal.telnet {
         log("Telnet client detected (type: " + terminal.reportedTerminalType + ").")
     }
-    sendLine("")
-    user.screen = "login"
-    displayPrompt()
+    gotoScreen("terminal")
 }
 
 func logoff() {
@@ -1148,7 +1150,6 @@ func connected() {
     pendingId = 0
     pendingHash = 0
     returning = false
-    postLogin = false
     sessionName = ""
     if ftnPolling {
         // our own outbound call: the mailer answered, not a caller
@@ -1159,12 +1160,12 @@ func connected() {
         return
     }
     log("Caller connected.")
-    sendLine("Welcome to 68kBBS!")
-    sendLine("Type NEW at the login prompt to create an account.")
+    // capitals only until the terminal type is known (see drawTerminalMenu)
+    sendLine("WELCOME TO 68KBBS!")
     telnetProbeStart()
-    sendLine("Checking for telnet support...")
+    sendLine("CHECKING FOR TELNET SUPPORT...")
     user.screen = "probe"
-    telnetProbe = 2          // ~1s; telnetProbeDone shows the login prompt
+    telnetProbe = 2          // ~1s; telnetProbeDone shows the terminal menu
 }
 
 // Called by scanner.cla's feedChar on a full "\r\nNO CARRIER\r\n".

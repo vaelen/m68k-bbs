@@ -270,20 +270,25 @@ inputChar (bbs.cla) → processInput`.
   Caller-facing output goes through `sendData` (→ `telnetSend`); only
   modem commands (+++/ATH) and `telnetOut` use `modem.send` raw. On
   connect, `connected()` sends the telnet probe (DO TERMINAL-TYPE /
-  NAWS / TERMINAL-SPEED) and "Checking for telnet support...", parks
+  NAWS / TERMINAL-SPEED) and "CHECKING FOR TELNET SUPPORT...", parks
   the session on the input-swallowing "probe" screen for 2 firings of
   the 30-tick timer (`telnetProbe`), then `telnetProbeDone` clears the
-  input buffer and shows the login prompt.
-  `processInput` dispatches on `user.screen`: login → password →
-  terminal-type menu → main menu; typing NEW at the login prompt
+  input buffer and shows the terminal-type menu. Everything before a
+  type is chosen — banner, probe line, the menu itself — is
+  **capitals only**, since uppercase ASCII is legible in both C64
+  character sets while lowercase renders as graphics in the power-on
+  one; `applyTerminal` then sends the login prompt (or, from the
+  main menu's `T`, returns to main).
+  `processInput` dispatches on `user.screen`: terminal-type menu →
+  login → password → main menu; typing NEW at the login prompt
   enters the signup flow (newname → newpass → newpass2 → newemail,
   empty name cancels; first account gets `accessAllFlags`, later ones
   `config.newUserAccess`). Logins are checked against the Users database
   (case-insensitive; wrong password returns to login; a correct
   password on an account without the Login flag says "This account is
-  disabled." and hangs up). Last-seen is updated at login. Once the
-  terminal type is known, `applyTerminal` runs the once-per-login
-  chain when `postLogin` is set (`loginOk`/`newEmail`): "Welcome back
+  disabled." and hangs up). Last-seen is updated at login.
+  `loginOk`/`newEmail` then call `postLoginStart`, the once-per-login
+  chain: "Welcome back
   / Last on" (or "Welcome" for a new account) → `pause` → the
   wall table → "Sign the wall?" → the MOTD and another
   `pause` (both skipped when `motdText` is empty) → "You have N new
@@ -295,7 +300,7 @@ inputChar (bbs.cla) → processInput`.
   main after), `D` shows the MOTD then a pause, `G` opens the (still
   empty) `games` menu (`docs/games.md`).
   Main-menu `T` returns to the terminal-type menu; `applyTerminal`
-  re-sends the VT100 init and comes back to the main menu (no chain). Main-menu
+  re-sends the VT100 init and comes back to the main menu. Main-menu
   `L` draws the last 20 sessions from the login log
   (`drawRecentLogins`); `sessionName`/`sessionStart`/`sessionNew`
   are set at login/signup and `disconnected()` appends the record.
