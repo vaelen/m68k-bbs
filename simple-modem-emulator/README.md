@@ -1,20 +1,23 @@
 # simple-modem-emulator
 
-A tiny TCP bridge that makes a modern telnet client look like a Hayes
-modem to an emulated computer's serial port.
+A tiny program that sits on an emulated computer's serial port (a TCP
+socket) and behaves like a Hayes modem: telnet callers ring in, and the
+computer can dial out to TCP hosts or to programs.
 
 ```
-telnet client  ──TCP──▶  modem (port X)  ──TCP──▶  localhost:Y (emulated serial port)
-   "caller"                                          e.g. Snow's --serial-bridge-a tcp:1234
+telnet client ──▶ :2323 ─┐
+                         ├─ modem ──▶ localhost:1234 (emulated serial port,
+ATDT host:port ◀─────────┤           e.g. Snow's --serial-bridge-a tcp:1234)
+ATDT name ──▶ dial.conf ─┘  (tcp:host:port or exec:command)
 ```
 
-It was written so [68kBBS](..) running inside an emulator can take calls
-from `telnet`, but it is generic: anything that listens on a TCP port and
-expects to be talking to a modem will do.
+Written so [68kBBS](..) running inside an emulator can take calls from
+`telnet` and poll its FidoNet uplink, but generic: anything that expects
+a modem on a TCP "serial port" will do.
 
 ## Build
 
-Plain C, no dependencies beyond a POSIX socket API:
+Plain C, no dependencies beyond POSIX:
 
 ```sh
 make
@@ -23,46 +26,65 @@ make
 ## Run
 
 ```sh
-./modem [listen_port [connect_port]]     # defaults: 2323 1234
+./modem [listen_port [connect_port [dial.conf]]]     # defaults: 2323 1234 (none)
 ```
 
-Then point a telnet client at `listen_port`.
+The modem connects to `localhost:connect_port` at start and stays
+connected. If that fails or the connection drops (the emulator quit), it
+retries every 10 s, silently; a call in progress at the time is dropped.
+It logs to stderr: serial port connected/lost, calls placed, answered and
+ended.
 
-## What it does
+## Inbound calls
 
-1. Listens on `listen_port`.
-2. When a caller connects, it connects to `localhost:connect_port`
-   (the "serial port"). If that is refused, the caller is sent
-   `NO ANSWER, PLEASE TRY AGAIN LATER\r\n` and dropped.
-3. Otherwise it writes `\r\nCONNECT 57600\r\n` to the serial port and bridges
-   all traffic between the two, unchanged, in both directions.
-4. If the caller disconnects, it writes `\r\nNO CARRIER\r\n` to the serial port
-   and closes that connection. If the serial port side closes, the caller
-   is dropped.
-5. One call at a time; further callers during a call are sent
-   `BUSY, PLEASE TRY AGAIN LATER\r\n` and dropped.
+A telnet client connecting to `listen_port` is answered at once: the
+serial side gets `\r\nCONNECT 57600\r\n` and traffic is bridged unchanged
+both ways. When the caller disconnects the serial side gets
+`\r\nNO CARRIER\r\n`. One call at a time: further callers get
+`BUSY, PLEASE TRY AGAIN LATER\r\n`; callers while the serial port is down
+get `NO ANSWER, PLEASE TRY AGAIN LATER\r\n`. No `RING`, no auto-answer
+register — the line just answers.
+
+## Dialing out
+
+`ATD`, `ATDT` or `ATDP` followed by a dial string, spaces and dashes
+ignored:
+
+1. A name listed in `dial.conf` → its target.
+2. Otherwise `host[:port]` (anything containing a `.` or `:`), port 23 by
+   default — no `dial.conf` needed.
+3. Otherwise `NO CARRIER`.
+
+`dial.conf` is `name = target` per line, `#` comments; names match
+case-insensitively. Targets:
+
+| Target | Effect |
+|---|---|
+| `tcp:host:port` | connect; `CONNECT 57600` when connected, `NO CARRIER` if refused |
+| `exec:command` | run `sh -c command` with stdin/stdout on the line (stderr inherited, so `2>>log` works); `CONNECT 57600` on its first byte, `NO CARRIER` if it exits first; hanging up sends it `SIGTERM` |
+
+See `dial.conf.example`. While a dial is in progress any byte from the
+computer aborts it (`NO CARRIER`), as does a 60 s ceiling.
 
 ## Hayes subset
 
-Only what is needed to hang up on a caller from the computer side:
-
-| Input (from serial port)              | Effect                                         |
-|---------------------------------------|------------------------------------------------|
-| `+++` (0.5 s of silence before/after) | Enter command mode, reply `\r\nOK\r\n`. Not forwarded.|
-| `ATH` / `ATH0`                        | Hang up: `\r\nNO CARRIER\r\n`, close both connections.|
-| `ATO`                                 | Back to data mode, reply `\r\nCONNECT 57600\r\n`.     |
-| any other `AT…`                       | `\r\nOK\r\n`                                          |
+| Input (from serial port) | On-hook | Online after `+++` |
+|---|---|---|
+| `+++` (0.5 s of silence before/after) | — | enters command mode, `OK`; not forwarded |
+| `ATD…` | dials (above) | `ERROR` |
+| `ATH` / `ATH0` | `OK` | hang up: `NO CARRIER`, remote closed |
+| `ATO` | `OK` | back to data mode, `CONNECT 57600` |
+| any other `AT…` | `OK` | `OK` |
 
 Result codes use the Hayes verbose (`ATV1`) framing, `<CR><LF>text<CR><LF>`.
-Everything else about a real modem — `RING`, `ATA`, dialing, echo, S
-registers, numeric result codes — is deliberately absent. The guard time
-is 0.5 s, half the Hayes default (`GUARD_MS` in `modem.c`). Data from the
-caller that arrives while in command mode is discarded.
+No command echo, S registers, numeric result codes or `RING`. The guard
+time is 0.5 s, half the Hayes default (`GUARD_MS` in `modem.c`). Data from
+the remote side that arrives in command mode is discarded.
 
 ## Test
 
 ```sh
-make test     # needs python3; exercises all of the above end to end
+make test     # needs python3; ~20 s, exercises all of the above end to end
 ```
 
 ## License

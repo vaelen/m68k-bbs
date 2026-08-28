@@ -307,14 +307,15 @@ mailer, 4 bad password, 5 address mismatch, 6 transfer failed,
 
 ### `simple-modem-emulator`
 
-- Connects to Snow's serial bridge (`:1234`) at start; reconnects with
-  backoff. Keeps listening on `:2323` for human callers (`RING`,
-  `CONNECT 57600`, `NO CARRIER`) as today.
+- Connects to Snow's serial bridge (`:1234`) at start; reconnects every
+  10 s, silently, when it drops. Keeps listening on `:2323` for human
+  callers (`CONNECT 57600`, `NO CARRIER`; no `RING`) as before.
 - Hayes from the serial side: `AT`, `ATZ` → `OK`; `ATDT<number>`;
-  `+++`/`ATH` as today. Numbers resolve through `dial.conf`:
-  `number = tcp:host:port` (telnet out to another system) or
-  `number = exec:<command>` (spawn with stdin/stdout on the line, as
-  `socat exec:` does). Unknown → `NO CARRIER`.
+  `+++`/`ATH` as today. Numbers resolve through an optional `dial.conf`:
+  `name = tcp:host:port` (telnet out to another system) or
+  `name = exec:<command>` (spawn with stdin/stdout on the line, as
+  `socat exec:` does); a string with no entry is dialed as `host[:port]`.
+  Unknown → `NO CARRIER`.
 - `exec:` targets: `CONNECT 57600` is sent when the child writes its
   first byte; child exit before any output, or exit/EOF later →
   `NO CARRIER`; `ATH` → `SIGTERM` the child, `OK`. The child does its
@@ -421,3 +422,10 @@ packets were tossed into the right board and inbox, and the network
 card recorded the poll as ok. The bridge (`fnemsi` in libftn and the
 modem emulator's dialing) is the remaining piece; the deferrals are in
 `TODO.md`.
+
+Update (2026-08-29): the modem emulator side of the bridge is done —
+persistent serial connection, `ATDT` to `host[:port]`, `dial.conf`
+`tcp:`/`exec:` targets, `CONNECT` on the child's first byte, `SIGTERM` on
+hang-up (`simple-modem-emulator/README.md`). Wiring `fnemsi` is one
+`dial.conf` line (`dial.conf.example`). `scripts/emsi-peer.py --connect`,
+which faked a successful dial by calling in, is gone.

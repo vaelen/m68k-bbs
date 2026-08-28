@@ -5,7 +5,8 @@ Listens on --port; the harness connects (CLARUS_SERIAL_MODEM=connect:).
 Reads "ATDT<n>\r", answers CONNECT, runs the EMSI answer side, receives
 the caller's batch with lrz into --inbound, sends every file in
 --outbound with lsz, then answers +++/ATH with NO CARRIER. Stands in
-for the bridge (docs/fidonet.md, "Bridge contract") until it exists.
+for the bridge (docs/fidonet.md, "Bridge contract") on the host lane;
+on Snow the modem emulator's dial.conf points at fnemsi instead.
 """
 import argparse
 import glob
@@ -45,30 +46,23 @@ def read_until(sock, marker, limit=8192):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, help="listen here as the harness's modem")
-    ap.add_argument("--connect", help="HOST:PORT -- call in through the modem emulator instead "
-                                      "(the Mac has dialed; the emulator sends it CONNECT)")
+    ap.add_argument("--port", type=int, required=True, help="listen here as the harness's modem")
     ap.add_argument("--address", default="21:1/100")
     ap.add_argument("--password", default="SECRET")
     ap.add_argument("--inbound", required=True)
     ap.add_argument("--outbound", required=True)
     a = ap.parse_args()
-    if a.connect:
-        host, port = a.connect.rsplit(":", 1)
-        sock = socket.create_connection((host, int(port)))
-        print("peer: connected to the modem emulator", flush=True)
-    else:
-        ls = socket.socket()
-        ls.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        ls.bind(("127.0.0.1", a.port))
-        ls.listen(1)
-        sock, _ = ls.accept()
-        print("peer: harness connected", flush=True)
-        line = read_until(sock, b"\r")
-        if not line.startswith(b"ATDT"):
-            print("peer: expected ATDT, got %r" % line)
-            sys.exit(1)
-        sock.sendall(b"\r\nCONNECT 57600\r\n")
+    ls = socket.socket()
+    ls.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    ls.bind(("127.0.0.1", a.port))
+    ls.listen(1)
+    sock, _ = ls.accept()
+    print("peer: harness connected", flush=True)
+    line = read_until(sock, b"\r")
+    if not line.startswith(b"ATDT"):
+        print("peer: expected ATDT, got %r" % line)
+        sys.exit(1)
+    sock.sendall(b"\r\nCONNECT 57600\r\n")
     sock.sendall(seq(b"EMSI_REQ"))
     read_until(sock, b"**EMSI_INQ")
     read_until(sock, b"\r")                       # the INQ's crc + CR

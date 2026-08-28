@@ -92,15 +92,20 @@ fails with "===== not found" — quote it).
 
 ## Modem emulator
 
-`simple-modem-emulator/` is a tiny C TCP bridge that makes a telnet
-client look like a Hayes modem to the emulated serial port
+`simple-modem-emulator/` is a tiny C program that sits on the emulated
+serial port and behaves like a Hayes modem
 (`telnet → :2323 → modem → :1234 → Snow`). Andrew usually has it running
-on port 2323. On caller connect it sends `\r\nCONNECT 57600\r\n` to the
-serial side; on caller disconnect, `\r\nNO CARRIER\r\n` — exactly what
-`scanner.cla` watches for. It also honors `+++`/`ATH` (hang up) and `ATO`
-from the Mac side, replying `OK`/`CONNECT` in Hayes verbose framing. One
-call at a time. So: test the BBS with `telnet localhost 2323` rather than
-raw `nc` to port 1234. See `simple-modem-emulator/README.md`.
+on port 2323. It connects to Snow's serial bridge at start and reconnects
+every 10 s (quietly) if Snow goes away. Inbound telnet callers are
+answered at once: `\r\nCONNECT 57600\r\n` to the serial side, then
+`\r\nNO CARRIER\r\n` when they leave — exactly what `scanner.cla` watches
+for. From the Mac side it honors `+++`/`ATH` (hang up), `ATO`, and
+`ATDT`: a `dial.conf` name (`name = tcp:host:port | exec:command`; the
+FidoNet poll dials an `exec:fnemsi … --answer` entry, `CONNECT` arrives
+on the child's first byte) or a bare `host[:port]`. One call at a time;
+callers during a call get `BUSY`. So: test the BBS with
+`telnet localhost 2323` rather than raw `nc` to port 1234. See
+`simple-modem-emulator/README.md`.
 
 ## Getting a build into the emulator
 
