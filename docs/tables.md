@@ -83,7 +83,7 @@ translation below.
   BS). SyncTERM's PETSCII mode sends plain ASCII letters instead, and
   a KERNAL never sends `$61-$7A`, so the first such byte sets
   `terminal.asciiKeys` and `$41-$5A` stays uppercase for the session. PETSCII sessions
-  are 25 rows with a bare CR `terminal.eol`. Byte chart:
+  use a bare CR `terminal.eol`. Byte chart:
   `docs/petscii.md`.
 
 ## Building blocks (terminal.cla)
@@ -121,6 +121,8 @@ bbs.cla layers the connection-facing senders over these, shared by
 the sysop screens and the board reader:
 
 - `sendRule(l, m, r, w)` — one rule line via `sendDrawing` + eol
+- `sendTitleBox(title)` — a closed one-row box with a centered title
+  at full table width (75/35 content), for menu headings.
 - `sendTableTitle(title, w)` — blank spacer, top rule, centered
   title bar, joint rule
 - `sendTableHeader(title, headers, w)` — title plus a header row and

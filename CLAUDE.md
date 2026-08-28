@@ -230,7 +230,7 @@ inputChar (bbs.cla) → processInput`.
   ansi and color — each menu entry's own flags (`applyTerminal(t,
   cols, colorOn, ansiOn)`): ANSI and VT100 color/mono, Apple II 40/80
   ASCII, "VT52" = ASCII with ansi, C64 40/80 PETSCII with color, no
-  ansi, 25 rows, CR-only eol), telnet, reportedTerminalType, reportedSpeed) + global
+  ansi, CR-only eol), telnet, reportedTerminalType, reportedSpeed) + global
   `terminal`, `Color`
   enum, and pure ANSI sequence builders (`colorSeq`, `backgroundSeq`,
   clear consts) plus their terminal-aware forms that return `""` when
@@ -291,10 +291,12 @@ inputChar (bbs.cla) → processInput`.
   chain: "Welcome back
   / Last on" (or "Welcome" for a new account) → `pause` → the
   wall table → "Sign the wall?" → the MOTD and another
-  `pause` (both skipped when `motdText` is empty) → "You have N new
-  message(s)" (plus, for sysops, "N file(s) are awaiting approval."
-  via `pendingFileCount`) → main menu (`returning`/`previousSeen`
-  carry the banner across). `showPause(next)` parks on the
+  `pause` (both skipped when `motdText` is empty) → main menu
+  (`returning`/`previousSeen` carry the banner across). The main menu
+  opens with a `sendTitleBox("Main Menu")` (a closed one-row box at
+  table width) and its prompt is preceded by `sendMainCounts` — "You
+  have N new message(s)" plus, for approvers, "N file(s) are awaiting
+  approval." via `pendingFileCount`. `showPause(next)` parks on the
   input-swallowing `"pause"` screen and `pauseChoice` runs
   `pauseNext`. Main-menu `W` runs the wall (`wallFromMenu`, back to
   main after), `D` shows the MOTD then a pause, `G` opens the (still

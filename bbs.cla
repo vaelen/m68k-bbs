@@ -354,6 +354,22 @@ func sendTableTitle(title: string, w: list of int) {
     sendRule(CenterLeft, TopCenter, CenterRight, w)
 }
 
+// A closed one-row box with a centered title, full table width
+// (79/39), for menu headings.
+func sendTitleBox(title: string) {
+    var span: list of int
+    var cells: list of string
+    if terminal.columns < minimumWideTerminalWidth {
+        span.add(35)
+    } else {
+        span.add(75)
+    }
+    cells.add(center(title, span[0]))
+    sendRule(TopLeft, TopCenter, TopRight, span)
+    sendLine(rowLine(cells, span))
+    sendRule(BottomLeft, BottomCenter, BottomRight, span)
+}
+
 // Table title plus a header row and its rule.
 func sendTableHeader(title: string, headers: list of string, w: list of int) {
     sendTableTitle(title, w)
@@ -509,7 +525,10 @@ func displayPrompt() {
     case "newpass2" { sendData("Retype password: ") }
     case "newemail" { sendData("Email (optional): ") }
     case "terminal"    { sendData("TERMINAL TYPE [1]> ") }
-    case "main"        { sendData("Main Menu> ") }
+    case "main" {
+        sendMainCounts()
+        sendData("Main Menu> ")
+    }
     case "games"       { sendData("Games> ") }
     case "sysop"       { sendData("Sysop Menu> ") }
     case "sysopboards" { sendData("Sysop:Boards> ") }
@@ -609,7 +628,23 @@ func drawTerminalMenu() {
     sendLine("(SELECT 5 OR 6 FOR LINE PRINTERS, ETC.)")
 }
 
+// Unread mail and (for approvers) pending uploads, right above the
+// main-menu prompt.
+func sendMainCounts() {
+    var pf: int = 0
+    if unreadCount(user.id) > 0 {
+        sendLine("You have " + intStr(unreadCount(user.id)) + " new message(s).")
+    }
+    if hasPermission(ApproveUploads) {
+        pf = pendingFileCount()
+        if pf > 0 {
+            sendLine(intStr(pf) + " file(s) are awaiting approval.")
+        }
+    }
+}
+
 func drawMainMenu() {
+    sendTitleBox("Main Menu")
     sendLine("")
     sendLine("B) Bulletin Boards")
     sendLine("F) File Areas")
@@ -928,8 +963,7 @@ func applyTerminal(t: TerminalType, cols: int, colorOn: bool, ansiOn: bool) {
     terminal.eol = "\x0D\x0A"
     if t == VT100 { sendData(vt100SetupSeq) }
     if t == PETSCII {
-        // C64 screen: 25 rows, RETURN alone ends a line, lowercase set
-        setRows(25)
+        // RETURN alone ends a line; select the lowercase set
         terminal.eol = "\x0D"
         sendData(petsciiLowercaseSeq)
     }
@@ -977,7 +1011,7 @@ func pauseChoice(input: string) {
         wallFromMenu = false
         startWall()
     }
-    case "counts" { postLoginCounts() }
+    case "counts" { gotoScreen("main") }
     else          { gotoScreen("main") }
     }
 }
@@ -996,26 +1030,11 @@ func showMotd() {
 // After the wall: the MOTD and its pause, skipped when empty.
 func postLoginMotd() {
     if motdText.length == 0 {
-        postLoginCounts()
+        gotoScreen("main")
         return
     }
     showMotd()
     showPause("counts")
-}
-
-func postLoginCounts() {
-    var pf: int = 0
-    sendLine("")
-    if unreadCount(user.id) > 0 {
-        sendLine("You have " + intStr(unreadCount(user.id)) + " new message(s).")
-    }
-    if hasPermission(ApproveUploads) {
-        pf = pendingFileCount()
-        if pf > 0 {
-            sendLine(intStr(pf) + " file(s) are awaiting approval.")
-        }
-    }
-    gotoScreen("main")
 }
 
 // Invalid choice redraws the whole menu; empty input takes the default.
