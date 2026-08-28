@@ -1,6 +1,8 @@
 # Releases
 
-## Unreleased — v0.2
+## Unreleased — v0.3
+
+## v0.2 — 2026-08-28
 
 FidoNet-technology networking as a leaf node (fsxNet first), over the
 modem port:
@@ -34,6 +36,18 @@ Also in this release:
   `BASIC` folder; sysops get the `Ok` prompt (`LIST`, `RUN`, `LOAD`,
   `SAVE`, `FILES`). Runs Super Star Trek. Also runs on the host over
   TCP (`scripts/basic-host.sh`). `docs/basic.md`, `basic/langref.md`.
+  Ctrl-C breaks a running program.
+- Access flags: per-user permissions (login, mail, boards, uploads,
+  approve uploads, wall, games, sysop, BASIC prompt) edited from the
+  sysop user card; `Config.txt` holds the new-user default (Sysop menu
+  `C`).
+- Terminals: PETSCII support for Commodore callers (C= line drawing,
+  colors, case and key translation), a nine-entry terminal menu (ANSI,
+  VT100, Apple II ASCII/VT52, C64) shown before login so the login
+  screen renders for the chosen terminal, terminal-aware formatting
+  helpers (color, bold, underline, blink, reverse, clear, cursor) that
+  degrade to plain text, and boxed title bars on the main, sysop, and
+  games menus.
 
 ## v0.1 — 2026-08-26
 
