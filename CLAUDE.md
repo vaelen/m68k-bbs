@@ -303,7 +303,7 @@ inputChar (bbs.cla) → processInput`.
   sets the screen and draws menu + prompt; `displayMenu`/`displayPrompt`
   switch on `user.screen`; choices are case-insensitive (`upperStr`);
   `?` redraws the menu; invalid main-menu input redraws only the
-  prompt; the terminal menu redraws fully and defaults to VT100 on
+  prompt; the terminal menu redraws fully and defaults to color ANSI on
   empty input. Logoff paces `+++` / `ATH` through a `every 30 ticks`
   timer (`hangupPhase`) to honor the Hayes guard time; the resulting
   NO CARRIER resets the session. Sessions reset in `connected()`

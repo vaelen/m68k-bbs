@@ -1018,10 +1018,10 @@ func postLoginCounts() {
 // Invalid choice redraws the whole menu; empty input takes the default.
 func terminalChoice(input: string) {
     switch input {
-    case "1"     { applyTerminal(ANSI, 80, true, true) }
+    case "", "1" { applyTerminal(ANSI, 80, true, true) }
     case "2"     { applyTerminal(ANSI, 80, false, true) }
     case "3"     { applyTerminal(VT100, 80, true, true) }
-    case "", "4" { applyTerminal(VT100, 80, false, true) }
+    case "4"     { applyTerminal(VT100, 80, false, true) }
     case "5"     { applyTerminal(ASCII, 40, false, false) }
     case "6"     { applyTerminal(ASCII, 80, false, false) }
     case "7"     { applyTerminal(ASCII, 80, false, true) }    // VT52
