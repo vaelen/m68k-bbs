@@ -1,0 +1,133 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for basic/basic.cla, the BASIC interpreter. Defines
+// the four host hooks so everything the interpreter emits is captured,
+// then runs programs with scripted INPUT answers and compares output.
+// Run on the host via scripts/test.sh. Exits 1 on any failure.
+
+include "../basic/basic.cla"
+
+var failures: int = 0
+var out: text
+var screenOps: text
+
+func basicOut(s: string) { out.append(s) }
+func basicScreen(op: char, a: int, b: int) {
+    screenOps.append(op)
+    screenOps.append(string(a) + "," + string(b) + ";")
+}
+func basicPath(name: string, write: bool): string {
+    if name == "" { return "" }          // FILES lists the current directory
+    return "bas_" + name
+}
+func basicEnv(name: string): string {
+    if name == "USER" { return "TESTER" }
+    return ""
+}
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+func expectOut(want: string, name: string) {
+    if out == want {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name + " got [" + out[0, out.length] + "]")
+        failures = failures + 1
+    }
+}
+
+func fromText(s: string): text {
+    var t: text = s
+    return t
+}
+
+func tokenizerTests() {
+    var toks: list of Tok
+    basicNew()
+    expect(basicLoad(fromText("10 PRINT \"HI\"\n20 GOTO 10\n")), "load ok")
+    expect(srcNumbers.count == 2 and srcNumbers[0] == 10 and srcNumbers[1] == 20, "two lines")
+    expect(basicLoad(fromText("PRINT 1\x0D\x0APRINT 2\x0D\x0A")), "unnumbered load")
+    expect(srcNumbers[0] == 10 and srcNumbers[1] == 11, "auto numbering")
+    srcSet(15, "REM X")
+    expect(srcNumbers.count == 3 and srcNumbers[2] == 15, "insert keeps order")
+    srcSet(5, "REM FIRST")
+    expect(srcNumbers.count == 4 and srcNumbers[0] == 5, "insert at front")
+    srcSet(15, "")
+    srcSet(5, "")
+    expect(srcNumbers.count == 2, "delete")
+    out = ""
+    srcListRange(10, 10)
+    expectOut("10 PRINT 1\n", "list one")
+    out = ""
+    srcListRange(0, 99999)
+    expectOut("10 PRINT 1\n11 PRINT 2\n", "list all")
+
+    tokenizeLine("A1$=LEFT$(B$,3)+\"X\":IF A<=1 THEN 20 ' c", 5, toks)
+    expect(toks[0].kind == TLine and toks[0].ival == 5, "line tok")
+    expect(toks[1].kind == TId and names[toks[1].ival] == "A1$", "ident with suffix")
+    expect(toks[2].kind == TOp and toks[2].ival == int('='), "op =")
+    expect(toks[3].kind == TKw and toks[3].ival == K_LEFTS, "LEFT$ keyword")
+    expect(toks[4].kind == TOp and toks[4].ival == int('('), "paren")
+    expect(toks[5].kind == TId and names[toks[5].ival] == "B$", "B$")
+    expect(toks[7].kind == TNum and numToInt(toks[7].num) == 3, "number 3")
+    expect(toks[10].kind == TStr and strPool[toks[10].ival] == "X", "string literal")
+    expect(toks[11].kind == TOp and toks[11].ival == int(':'), "colon")
+    expect(toks[12].kind == TKw and toks[12].ival == K_IF, "IF")
+    expect(toks[14].kind == TOp and toks[14].ival == O_LE, "<=")
+    expect(toks[16].kind == TKw and toks[16].ival == K_THEN, "THEN")
+    expect(toks[17].kind == TNum and numToInt(toks[17].num) == 20, "line number as number")
+    expect(toks[18].kind == TKw and toks[18].ival == K_REM, "' is REM")
+    expect(toks[toks.count - 1].kind == TEnd, "TEnd")
+    expect(toks.count == 20, "token count")
+    toks.clear()
+    tokenizeLine("print\"a\";b", 6, toks)
+    expect(toks[1].kind == TKw and toks[1].ival == K_PRINT, "lowercase keyword")
+    expect(toks[2].kind == TStr and strPool[toks[2].ival] == "a", "string keeps case")
+    expect(toks[4].kind == TId and names[toks[4].ival] == "B", "ident uppercased")
+    toks.clear()
+    tokenizeLine("loop: GOTO loop", 7, toks)
+    expect(labels.has("LOOP") and labels["LOOP"] == 7, "label")
+    expect(toks[1].kind == TKw and toks[1].ival == K_GOTO, "label consumed")
+    expect(toks[2].kind == TId and names[toks[2].ival] == "LOOP", "label reference is an id")
+    toks.clear()
+    tokenizeLine("? 1.5E3;&HFF;<>;>=;=<", 8, toks)
+    expect(toks[1].kind == TKw and toks[1].ival == K_PRINT, "? is PRINT")
+    expect(toks[2].kind == TNum and numToInt(toks[2].num) == 1500, "1.5E3")
+    expect(toks[4].kind == TNum and numToInt(toks[4].num) == 255, "&HFF")
+    expect(toks[6].ival == O_NE and toks[8].ival == O_GE and toks[10].ival == O_LE, "two-char ops")
+    toks.clear()
+    tokenizeLine("FOR I=1TO9:GOTO10", 9, toks)
+    expect(toks[4].kind == TNum and toks[5].kind == TKw and toks[5].ival == K_TO and toks[6].kind == TNum, "1TO9 splits")
+    expect(toks[8].kind == TKw and toks[8].ival == K_GOTO and toks[9].kind == TNum, "GOTO10 splits")
+    toks.clear()
+    tokenizeLine("TOTAL=SCORE+1", 10, toks)
+    expect(toks[1].kind == TId and names[toks[1].ival] == "TOTAL" and toks[3].kind == TId and names[toks[3].ival] == "SCORE", "keywords inside names are not split")
+    toks.clear()
+    tokenizeLine("DATA 1, \"A:B\", C D:PRINT 2", 11, toks)
+    expect(toks[1].kind == TKw and toks[1].ival == K_DATA and dataText[toks[1].aux] == "1, \"A:B\", C D", "data raw text")
+    expect(toks[2].kind == TOp and toks[2].ival == int(':') and toks[3].ival == K_PRINT, "data stops at colon")
+    toks.clear()
+    tokenizeLine("X=FNR(1):DEF FNR(R)=R*2", 12, toks)
+    expect(toks[3].kind == TId and names[toks[3].ival] == "FNR", "FN name")
+    expect(toks[8].kind == TKw and toks[8].ival == K_DEF and toks[9].kind == TId, "DEF FN")
+    toks.clear()
+    tokenizeLine("REM hello:world", 13, toks)
+    expect(toks.count == 3 and toks[1].ival == K_REM, "REM swallows the line")
+    toks.clear()
+    tokenizeLine("A=\"unterminated", 14, toks)
+    expect(toks[3].kind == TStr and strPool[toks[3].ival] == "unterminated", "unterminated string")
+}
+
+on App.startCLI(args: list of string) {
+    tokenizerTests()
+    if failures > 0 { quit 1 }
+    log("basic-test: all passed")
+}

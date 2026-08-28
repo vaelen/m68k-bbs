@@ -1,0 +1,706 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// A GW-BASIC-flavored BASIC interpreter. Decoupled from the BBS: it
+// talks to its host only through four hook functions the including
+// program defines, and an API the host drives (docs/basic.md,
+// basic/langref.md). Nothing here touches connections, terminals or
+// the BBS.
+//
+// Hooks the including program must define:
+//   basicOut(s: string)                       -- every byte of output;
+//                                                "\n" (CR) ends lines
+//   basicScreen(op: char, a: int, b: int)     -- 'C' CLS, 'L' LOCATE
+//                                                row a col b (0 = keep),
+//                                                'K' COLOR fg a bg b
+//                                                (-1 = keep), 'B' BEEP
+//   basicPath(name: string, write: bool): string
+//                                             -- a bare BASIC file name
+//                                                to a real path in the
+//                                                host's sandbox; "" refuses;
+//                                                name "" = the folder
+//   basicEnv(name: string): string            -- ENVIRON$; "" if unknown
+//
+// API: basicNew, basicLoad, basicRun, basicPrompt, basicStep,
+// basicLine, basicKey, basicStop, and the state basicState. The
+// interpreter never blocks: INPUT parks it in BWaitLine and the host
+// calls basicLine with the answer.
+//
+// Design: the source is kept per line; RUN tokenizes it into one flat
+// token list (no AST -- MS BASIC itself interpreted by scanning
+// tokens) and the program counter is a token index. Every error is an
+// abort caught by basicStep.
+
+include "num.cla"
+
+// --- State ---------------------------------------------------------------
+
+enum BasicState { BIdle, BRunning, BWaitLine, BWaitKey, BSleeping, BPrompt, BDone }
+
+var basicState: BasicState = BIdle
+var basicWidth: int = 80          // PRINT wraps here; WIDTH n changes it
+var basicSleepInstant: bool = false   // tests: SLEEP returns at once
+var basicFixedSeed: int = 0       // tests: RANDOMIZE uses this seed when nonzero
+
+// --- Source store --------------------------------------------------------
+// One text per line, keyed by line number, plus the numbers in order.
+
+var srcLines: intmap of text
+var srcNumbers: list of int
+
+// Replace, insert, or (empty s) delete line n.
+func srcSetText(n: int, t: text) {
+    var i: int = 0
+    var j: int
+    if t.length == 0 {
+        if not srcLines.has(n) { return }
+        srcLines.remove(n)
+        while i < srcNumbers.count {
+            if srcNumbers[i] == n {
+                srcNumbers.remove(i)
+                return
+            }
+            i = i + 1
+        }
+        return
+    }
+    if not srcLines.has(n) {
+        // keep srcNumbers sorted: append, then bubble down into place
+        srcNumbers.add(n)
+        j = srcNumbers.count - 1
+        while j > 0 and srcNumbers[j - 1] > n {
+            srcNumbers[j] = srcNumbers[j - 1]
+            j = j - 1
+        }
+        srcNumbers[j] = n
+    }
+    srcLines[n] = t
+}
+
+func srcSet(n: int, s: string) {
+    var t: text = s
+    srcSetText(n, t)
+}
+
+func srcClear() {
+    srcLines.clear()
+    srcNumbers.clear()
+}
+
+func srcLineStr(n: int): string {
+    var t: text = srcLines[n]
+    if t.length > 255 { return t[0, 255] }
+    return t[0, t.length]
+}
+
+// LIST a-b through basicOut, one source line per output line.
+func srcListRange(a: int, b: int) {
+    var i: int = 0
+    var n: int
+    var t: text
+    var j: int
+    while i < srcNumbers.count {
+        n = srcNumbers[i]
+        i = i + 1
+        if n < a or n > b { continue }
+        basicOut(string(n) + " ")
+        t = srcLines[n]
+        j = 0
+        while j + 200 < t.length {
+            basicOut(t[j, 200])
+            j = j + 200
+        }
+        basicOut(t[j, t.length - j])
+        basicOut("\n")
+    }
+}
+
+// Replace the program from source text: CR, LF or CRLF line ends;
+// numbered lines keep their numbers, unnumbered ones get previous + 1
+// (10 for the first). A collision prints a message and fails.
+func basicLoad(src: text): bool {
+    var i: int = 0
+    var start: int
+    var line: text
+    var n: int
+    var last: int = 0
+    var k: int
+    var hasNumber: bool
+    var c: char
+    srcClear()
+    while i <= src.length {
+        start = i
+        while i < src.length and src[i] != '\x0D' and src[i] != '\x0A' { i = i + 1 }
+        line = src.textAt(start, i - start)
+        // consume the line end (CRLF counts once)
+        if i < src.length {
+            if src[i] == '\x0D' and i + 1 < src.length and src[i + 1] == '\x0A' { i = i + 1 }
+            i = i + 1
+        } else {
+            i = i + 1
+        }
+        k = 0
+        while k < line.length and (line[k] == ' ' or line[k] == '\x09') { k = k + 1 }
+        if k >= line.length { continue }
+        hasNumber = false
+        n = 0
+        while k < line.length and line[k] >= '0' and line[k] <= '9' {
+            n = n * 10 + int(line[k]) - int('0')
+            hasNumber = true
+            k = k + 1
+        }
+        if hasNumber {
+            if k < line.length and line[k] == ' ' { k = k + 1 }
+        } else {
+            if last == 0 { n = 10 } else { n = last + 1 }
+        }
+        if srcLines.has(n) {
+            basicOut("Duplicate line number " + string(n) + "\n")
+            srcClear()
+            return false
+        }
+        line = line.textAt(k, line.length - k)
+        if hasNumber and line.length == 0 { continue }   // "10" alone deletes; nothing to delete
+        srcSetText(n, line)
+        last = n
+    }
+    return true
+}
+
+// --- Tokens --------------------------------------------------------------
+
+enum TokKind { TLine, TNum, TStr, TId, TKw, TOp, TEnd }
+
+record Tok {
+    kind: TokKind
+    ival: int        // line number / pool index / name id / keyword id / op code
+    aux: int         // K_DATA: index into dataText
+    num: Num         // TNum
+}
+
+// Two-character operators get codes above any char.
+const O_LE: int = 256
+const O_GE: int = 257
+const O_NE: int = 258
+
+const K_PRINT: int = 1
+const K_INPUT: int = 2
+const K_LET: int = 3
+const K_IF: int = 4
+const K_THEN: int = 5
+const K_ELSE: int = 6
+const K_FOR: int = 7
+const K_TO: int = 8
+const K_STEP: int = 9
+const K_NEXT: int = 10
+const K_WHILE: int = 11
+const K_WEND: int = 12
+const K_GOTO: int = 13
+const K_GOSUB: int = 14
+const K_RETURN: int = 15
+const K_ON: int = 16
+const K_DIM: int = 17
+const K_OPTION: int = 18
+const K_BASE: int = 19
+const K_DEF: int = 20
+const K_DEFINT: int = 21
+const K_DEFSNG: int = 22
+const K_DEFDBL: int = 23
+const K_DEFSTR: int = 24
+const K_DATA: int = 25
+const K_READ: int = 26
+const K_RESTORE: int = 27
+const K_REM: int = 28
+const K_END: int = 29
+const K_STOP: int = 30
+const K_SWAP: int = 31
+const K_RANDOMIZE: int = 32
+const K_SLEEP: int = 33
+const K_CLS: int = 34
+const K_LOCATE: int = 35
+const K_COLOR: int = 36
+const K_WIDTH: int = 37
+const K_BEEP: int = 38
+const K_CLEAR: int = 39
+const K_SYSTEM: int = 40
+const K_OPEN: int = 41
+const K_CLOSE: int = 42
+const K_WRITE: int = 43
+const K_LINE: int = 44
+const K_AS: int = 45
+const K_OUTPUT: int = 46
+const K_APPEND: int = 47
+const K_RUN: int = 48
+const K_LIST: int = 49
+const K_NEW: int = 50
+const K_LOAD: int = 51
+const K_SAVE: int = 52
+const K_FILES: int = 53
+const K_DELETE: int = 54
+const K_CONT: int = 55
+const K_USING: int = 56
+const K_ERROR: int = 57
+const K_AND: int = 58
+const K_OR: int = 59
+const K_NOT: int = 60
+const K_XOR: int = 61
+const K_EQV: int = 62
+const K_IMP: int = 63
+const K_MOD: int = 64
+const K_ABS: int = 65
+const K_SGN: int = 66
+const K_INT: int = 67
+const K_FIX: int = 68
+const K_SQR: int = 69
+const K_SIN: int = 70
+const K_COS: int = 71
+const K_TAN: int = 72
+const K_ATN: int = 73
+const K_EXP: int = 74
+const K_LOG: int = 75
+const K_RND: int = 76
+const K_TIMER: int = 77
+const K_LEN: int = 78
+const K_LEFTS: int = 79
+const K_RIGHTS: int = 80
+const K_MIDS: int = 81
+const K_INSTR: int = 82
+const K_STRS: int = 83
+const K_VAL: int = 84
+const K_CHRS: int = 85
+const K_ASC: int = 86
+const K_SPACES: int = 87
+const K_STRINGS: int = 88
+const K_UCASES: int = 89
+const K_LCASES: int = 90
+const K_LTRIMS: int = 91
+const K_RTRIMS: int = 92
+const K_HEXS: int = 93
+const K_OCTS: int = 94
+const K_INKEYS: int = 95
+const K_POS: int = 96
+const K_CSRLIN: int = 97
+const K_ENVIRONS: int = 98
+const K_EOF: int = 99
+const K_FRE: int = 100
+const K_TAB: int = 101
+const K_SPC: int = 102
+const K_CINT: int = 103
+const K_CSNG: int = 104
+const K_CDBL: int = 105
+const K_NOTSUP_FIRST: int = 106
+const K_SCREEN: int = 106
+const K_PSET: int = 107
+const K_PRESET: int = 108
+const K_CIRCLE: int = 109
+const K_PAINT: int = 110
+const K_DRAW: int = 111
+const K_GET: int = 112
+const K_PUT: int = 113
+const K_PLAY: int = 114
+const K_SOUND: int = 115
+const K_LPRINT: int = 116
+const K_LLIST: int = 117
+const K_PEEK: int = 118
+const K_POKE: int = 119
+const K_INP: int = 120
+const K_OUT: int = 121
+const K_CALL: int = 122
+const K_USR: int = 123
+const K_FIELD: int = 124
+const K_LSET: int = 125
+const K_RSET: int = 126
+const K_CHAIN: int = 127
+const K_COMMON: int = 128
+const K_RESUME: int = 129
+const K_ERR: int = 130
+const K_ERL: int = 131
+const K_VIEW: int = 132
+const K_WINDOW: int = 133
+const K_PALETTE: int = 134
+const K_KEY: int = 135
+const K_SEG: int = 136
+const K_WAIT: int = 137
+const K_VARPTR: int = 138
+
+
+func keywordId(w: string): int {
+    switch w {
+    case "PRINT" { return K_PRINT }
+    case "INPUT" { return K_INPUT }
+    case "LET" { return K_LET }
+    case "IF" { return K_IF }
+    case "THEN" { return K_THEN }
+    case "ELSE" { return K_ELSE }
+    case "FOR" { return K_FOR }
+    case "TO" { return K_TO }
+    case "STEP" { return K_STEP }
+    case "NEXT" { return K_NEXT }
+    case "WHILE" { return K_WHILE }
+    case "WEND" { return K_WEND }
+    case "GOTO" { return K_GOTO }
+    case "GOSUB" { return K_GOSUB }
+    case "RETURN" { return K_RETURN }
+    case "ON" { return K_ON }
+    case "DIM" { return K_DIM }
+    case "OPTION" { return K_OPTION }
+    case "BASE" { return K_BASE }
+    case "DEF" { return K_DEF }
+    case "DEFINT" { return K_DEFINT }
+    case "DEFSNG" { return K_DEFSNG }
+    case "DEFDBL" { return K_DEFDBL }
+    case "DEFSTR" { return K_DEFSTR }
+    case "DATA" { return K_DATA }
+    case "READ" { return K_READ }
+    case "RESTORE" { return K_RESTORE }
+    case "REM" { return K_REM }
+    case "END" { return K_END }
+    case "STOP" { return K_STOP }
+    case "SWAP" { return K_SWAP }
+    case "RANDOMIZE" { return K_RANDOMIZE }
+    case "SLEEP" { return K_SLEEP }
+    case "CLS" { return K_CLS }
+    case "LOCATE" { return K_LOCATE }
+    case "COLOR" { return K_COLOR }
+    case "WIDTH" { return K_WIDTH }
+    case "BEEP" { return K_BEEP }
+    case "CLEAR" { return K_CLEAR }
+    case "SYSTEM" { return K_SYSTEM }
+    case "OPEN" { return K_OPEN }
+    case "CLOSE" { return K_CLOSE }
+    case "WRITE" { return K_WRITE }
+    case "LINE" { return K_LINE }
+    case "AS" { return K_AS }
+    case "OUTPUT" { return K_OUTPUT }
+    case "APPEND" { return K_APPEND }
+    case "RUN" { return K_RUN }
+    case "LIST" { return K_LIST }
+    case "NEW" { return K_NEW }
+    case "LOAD" { return K_LOAD }
+    case "SAVE" { return K_SAVE }
+    case "FILES" { return K_FILES }
+    case "DELETE" { return K_DELETE }
+    case "CONT" { return K_CONT }
+    case "USING" { return K_USING }
+    case "ERROR" { return K_ERROR }
+    case "AND" { return K_AND }
+    case "OR" { return K_OR }
+    case "NOT" { return K_NOT }
+    case "XOR" { return K_XOR }
+    case "EQV" { return K_EQV }
+    case "IMP" { return K_IMP }
+    case "MOD" { return K_MOD }
+    case "ABS" { return K_ABS }
+    case "SGN" { return K_SGN }
+    case "INT" { return K_INT }
+    case "FIX" { return K_FIX }
+    case "SQR" { return K_SQR }
+    case "SIN" { return K_SIN }
+    case "COS" { return K_COS }
+    case "TAN" { return K_TAN }
+    case "ATN" { return K_ATN }
+    case "EXP" { return K_EXP }
+    case "LOG" { return K_LOG }
+    case "RND" { return K_RND }
+    case "TIMER" { return K_TIMER }
+    case "LEN" { return K_LEN }
+    case "LEFT$" { return K_LEFTS }
+    case "RIGHT$" { return K_RIGHTS }
+    case "MID$" { return K_MIDS }
+    case "INSTR" { return K_INSTR }
+    case "STR$" { return K_STRS }
+    case "VAL" { return K_VAL }
+    case "CHR$" { return K_CHRS }
+    case "ASC" { return K_ASC }
+    case "SPACE$" { return K_SPACES }
+    case "STRING$" { return K_STRINGS }
+    case "UCASE$" { return K_UCASES }
+    case "LCASE$" { return K_LCASES }
+    case "LTRIM$" { return K_LTRIMS }
+    case "RTRIM$" { return K_RTRIMS }
+    case "HEX$" { return K_HEXS }
+    case "OCT$" { return K_OCTS }
+    case "INKEY$" { return K_INKEYS }
+    case "POS" { return K_POS }
+    case "CSRLIN" { return K_CSRLIN }
+    case "ENVIRON$" { return K_ENVIRONS }
+    case "EOF" { return K_EOF }
+    case "FRE" { return K_FRE }
+    case "TAB" { return K_TAB }
+    case "SPC" { return K_SPC }
+    case "CINT" { return K_CINT }
+    case "CSNG" { return K_CSNG }
+    case "CDBL" { return K_CDBL }
+    case "SCREEN" { return K_SCREEN }
+    case "PSET" { return K_PSET }
+    case "PRESET" { return K_PRESET }
+    case "CIRCLE" { return K_CIRCLE }
+    case "PAINT" { return K_PAINT }
+    case "DRAW" { return K_DRAW }
+    case "GET" { return K_GET }
+    case "PUT" { return K_PUT }
+    case "PLAY" { return K_PLAY }
+    case "SOUND" { return K_SOUND }
+    case "LPRINT" { return K_LPRINT }
+    case "LLIST" { return K_LLIST }
+    case "PEEK" { return K_PEEK }
+    case "POKE" { return K_POKE }
+    case "INP" { return K_INP }
+    case "OUT" { return K_OUT }
+    case "CALL" { return K_CALL }
+    case "USR" { return K_USR }
+    case "FIELD" { return K_FIELD }
+    case "LSET" { return K_LSET }
+    case "RSET" { return K_RSET }
+    case "CHAIN" { return K_CHAIN }
+    case "COMMON" { return K_COMMON }
+    case "RESUME" { return K_RESUME }
+    case "ERR" { return K_ERR }
+    case "ERL" { return K_ERL }
+    case "VIEW" { return K_VIEW }
+    case "WINDOW" { return K_WINDOW }
+    case "PALETTE" { return K_PALETTE }
+    case "KEY" { return K_KEY }
+    case "SEG" { return K_SEG }
+    case "WAIT" { return K_WAIT }
+    case "VARPTR" { return K_VARPTR }
+    }
+    return 0
+}
+
+var prog: list of Tok             // the tokenized program
+var lineIndex: intmap of int      // line number -> index of its TLine
+var labels: map of int            // LABEL -> line number
+var names: list of string         // interned variable names (with suffix)
+var nameIds: map of int
+var strPool: list of string       // string literals
+var dataText: list of string      // raw text of every DATA statement
+var dataLine: list of int         // ... and the line each is on
+
+func internName(w: string): int {
+    var id: int
+    if nameIds.has(w) { return nameIds[w] }
+    id = names.count
+    names.add(w)
+    nameIds[w] = id
+    return id
+}
+
+func upperChar(c: char): char {
+    if c >= 'a' and c <= 'z' { return char(int(c) - 32) }
+    return c
+}
+
+func isLetter(c: char): bool {
+    return (c >= 'A' and c <= 'Z') or (c >= 'a' and c <= 'z')
+}
+
+func isDigitChar(c: char): bool { return c >= '0' and c <= '9' }
+
+// Scanner state for the line being tokenized.
+var tkSrc: text
+var tkPos: int = 0
+var tkLine: int = 0
+var tkOut: list of Tok
+
+func tkEmit(kind: TokKind, ival: int) {
+    var t: Tok
+    t.kind = kind
+    t.ival = ival
+    tkOut.add(t)
+}
+
+func tkEmitNum(v: Num) {
+    var t: Tok
+    t.kind = TNum
+    t.num = v
+    tkOut.add(t)
+}
+
+// Glue keywords that crunched code runs into a number: 1TO9, GOTO10.
+func splitsBeforeDigit(w: string): int {
+    var k: int = keywordId(w)
+    if k == K_TO or k == K_THEN or k == K_ELSE or k == K_GOTO or k == K_GOSUB or k == K_STEP { return k }
+    return 0
+}
+
+func tkStatementEnd(): bool {
+    var n: int = tkOut.count
+    if n == 0 { return true }
+    if tkOut[n - 1].kind == TLine { return true }
+    if tkOut[n - 1].kind == TOp and tkOut[n - 1].ival == int(':') { return true }
+    if tkOut[n - 1].kind == TKw and (tkOut[n - 1].ival == K_THEN or tkOut[n - 1].ival == K_ELSE) { return true }
+    return false
+}
+
+// Raw text after DATA up to an unquoted ':' or the end of the line.
+func tkScanData() {
+    var start: int = tkPos
+    var inQuote: bool = false
+    var s: string
+    while tkPos < tkSrc.length {
+        if tkSrc[tkPos] == '"' { inQuote = not inQuote }
+        if tkSrc[tkPos] == ':' and not inQuote { break }
+        tkPos = tkPos + 1
+    }
+    while start < tkPos and tkSrc[start] == ' ' { start = start + 1 }
+    if tkPos - start > 255 { s = tkSrc[start, 255] } else { s = tkSrc[start, tkPos - start] }
+    tkOut[tkOut.count - 1].aux = dataText.count
+    dataText.add(s)
+    dataLine.add(tkLine)
+}
+
+func tkWord() {
+    var start: int = tkPos
+    var w: string
+    var k: int
+    var i: int
+    var c: char
+    var pre: string
+    while tkPos < tkSrc.length and (isLetter(tkSrc[tkPos]) or isDigitChar(tkSrc[tkPos]) or tkSrc[tkPos] == '.') {
+        tkPos = tkPos + 1
+    }
+    if tkPos < tkSrc.length {
+        c = tkSrc[tkPos]
+        if c == '$' or c == '%' or c == '!' or c == '#' or c == '&' { tkPos = tkPos + 1 }
+    }
+    i = start
+    while i < tkPos {
+        w = w + upperChar(tkSrc[i])
+        i = i + 1
+    }
+    k = keywordId(w)
+    if k == 0 {
+        // a keyword glued to a following number: TO9, GOTO10
+        i = 0
+        while i < w.length and isLetter(w[i]) { i = i + 1 }
+        if i < w.length and i > 0 and isDigitChar(w[i]) {
+            pre = w[0, i]
+            k = splitsBeforeDigit(pre)
+            if k != 0 {
+                tkPos = start + i
+                tkEmit(TKw, k)
+                return
+            }
+        }
+        // a label: WORD: at the start of the line
+        if tkOut.count == 1 and tkPos < tkSrc.length and tkSrc[tkPos] == ':' and w[w.length - 1] != '$' {
+            labels[w] = tkLine
+            tkPos = tkPos + 1
+            return
+        }
+        tkEmit(TId, internName(w))
+        return
+    }
+    if k == K_REM {
+        tkEmit(TKw, K_REM)
+        tkPos = tkSrc.length
+        return
+    }
+    tkEmit(TKw, k)
+    if k == K_DATA { tkScanData() }
+}
+
+func tkString() {
+    var s: string
+    tkPos = tkPos + 1
+    while tkPos < tkSrc.length and tkSrc[tkPos] != '"' {
+        if s.length < 255 { s = s + tkSrc[tkPos] }
+        tkPos = tkPos + 1
+    }
+    if tkPos < tkSrc.length { tkPos = tkPos + 1 }
+    tkEmit(TStr, strPool.count)
+    strPool.add(s)
+}
+
+func tkNumber() {
+    var s: string
+    var n: int = tkSrc.length - tkPos
+    if n > 40 { n = 40 }
+    s = tkSrc[tkPos, n]
+    tkEmitNum(numParsePrefix(s))
+    tkPos = tkPos + numParseEnd
+}
+
+func tokenizeText(t: text, lineNo: int, out: list of Tok) {
+    var c: char
+    var c2: char
+    tkSrc = t
+    tkPos = 0
+    tkLine = lineNo
+    tkOut = out
+    tkEmit(TLine, lineNo)
+    while tkPos < tkSrc.length {
+        c = tkSrc[tkPos]
+        if c == ' ' or c == '\x09' {
+            tkPos = tkPos + 1
+        } else if isLetter(c) {
+            tkWord()
+        } else if isDigitChar(c) or (c == '.' and tkPos + 1 < tkSrc.length and isDigitChar(tkSrc[tkPos + 1])) {
+            tkNumber()
+        } else if c == '&' and tkPos + 1 < tkSrc.length and (upperChar(tkSrc[tkPos + 1]) == 'H' or upperChar(tkSrc[tkPos + 1]) == 'O') {
+            tkNumber()
+        } else if c == '"' {
+            tkString()
+        } else if c == '\'' {
+            tkEmit(TKw, K_REM)
+            tkPos = tkSrc.length
+        } else if c == '?' {
+            tkEmit(TKw, K_PRINT)
+            tkPos = tkPos + 1
+        } else {
+            c2 = ' '
+            if tkPos + 1 < tkSrc.length { c2 = tkSrc[tkPos + 1] }
+            if (c == '<' and c2 == '=') or (c == '=' and c2 == '<') {
+                tkEmit(TOp, O_LE)
+                tkPos = tkPos + 2
+            } else if (c == '>' and c2 == '=') or (c == '=' and c2 == '>') {
+                tkEmit(TOp, O_GE)
+                tkPos = tkPos + 2
+            } else if (c == '<' and c2 == '>') or (c == '>' and c2 == '<') {
+                tkEmit(TOp, O_NE)
+                tkPos = tkPos + 2
+            } else {
+                tkEmit(TOp, int(c))
+                tkPos = tkPos + 1
+            }
+        }
+    }
+    tkEmit(TEnd, 0)
+}
+
+func tokenizeLine(s: string, lineNo: int, out: list of Tok) {
+    var t: text = s
+    tokenizeText(t, lineNo, out)
+}
+
+// RUN: the whole source into prog, one TEnd at the end.
+func tokenizeProgram() {
+    var i: int = 0
+    var n: int
+    prog.clear()
+    lineIndex.clear()
+    labels.clear()
+    names.clear()
+    nameIds.clear()
+    strPool.clear()
+    dataText.clear()
+    dataLine.clear()
+    while i < srcNumbers.count {
+        n = srcNumbers[i]
+        lineIndex[n] = prog.count
+        tokenizeText(srcLines[n], n, prog)
+        prog.pop()                      // each line's own TEnd
+        i = i + 1
+    }
+    tkOut = prog
+    tkEmit(TEnd, 0)
+}
+
+// --- Lifecycle -----------------------------------------------------------
+
+func basicNew() {
+    srcClear()
+    prog.clear()
+    basicState = BIdle
+}
