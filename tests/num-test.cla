@@ -1,0 +1,72 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for basic/num.cla, the BASIC interpreter's software
+// float. Run on the host via scripts/test.sh. Exits 1 on any failure.
+
+include "../basic/num.cla"
+
+var failures: int = 0
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+func n(i: int): Num { return numFromInt(i) }
+func eqInt(x: Num, i: int): bool { return numCmp(x, numFromInt(i)) == 0 }
+
+func expectStr(got: string, want: string, name: string) {
+    if got == want {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name + " got [" + got + "] want [" + want + "]")
+        failures = failures + 1
+    }
+}
+
+on App.startCLI(args: list of string) {
+    var a: Num
+    var b: Num
+    var big: Num
+
+    // --- arithmetic ---
+    expect(eqInt(numAdd(n(2), n(3)), 5), "2+3")
+    expect(eqInt(numSub(n(2), n(3)), -1), "2-3")
+    expect(eqInt(numSub(n(7), n(7)), 0), "7-7 exactly zero")
+    expect(numIsZero(numSub(n(7), n(7))), "7-7 isZero")
+    expect(eqInt(numMul(n(-7), n(6)), -42), "-7*6")
+    expect(eqInt(numDiv(n(84), n(2)), 42), "84/2")
+    expect(numToInt(numDiv(n(1), n(3))) == 0, "int(1/3)")
+    expect(eqInt(numFloor(numDiv(n(-1), n(3))), -1), "floor(-1/3)")
+    a = numDiv(n(1), n(3))
+    b = numMul(a, n(3))
+    expect(numCmp(numAbs(numSub(b, n(1))), numDiv(n(1), n(1000000))) < 0, "1/3*3 within 1e-6")
+    expect(numCmp(n(1), n(2)) < 0 and numCmp(n(2), n(1)) > 0 and numCmp(n(5), n(5)) == 0, "cmp")
+    expect(numCmp(n(-1), n(1)) < 0 and numCmp(n(-2), n(-1)) < 0, "cmp negative")
+    expect(numCmp(n(0), n(-1)) > 0 and numCmp(n(0), n(1)) < 0, "cmp zero")
+    expect(numIsInt(n(7)) and not numIsInt(numDiv(n(7), n(2))), "isInt")
+    expect(numToInt(numRound(numDiv(n(7), n(2)))) == 4, "round 3.5")
+    expect(numToInt(numRound(numDiv(n(-7), n(2)))) == -4, "round -3.5")
+    expect(numToInt(numRound(numDiv(n(5), n(2)))) == 3, "round 2.5")
+    expect(eqInt(numMul(numMul(n(1000), n(1000)), n(1000)), 1000000000), "1e9 exact")
+    big = numMul(n(46341), n(46341))
+    expect(numCmp(big, n(2147483647)) > 0, "46341^2 exceeds int")
+    expect(numToInt(numMul(n(1600), n(1000))) == 1600000, "1.6M")
+    expect(numToInt(n(-2147483647 - 1)) == -2147483647 - 1, "min int round trip")
+    expect(numToInt(numFloor(numDiv(n(7), n(2)))) == 3, "floor 3.5")
+    expect(numToInt(numFloor(numDiv(n(-7), n(2)))) == -4, "floor -3.5")
+    expect(numToInt(numDiv(n(-7), n(2))) == -3, "trunc -3.5")
+    expect(numIntPart(numDiv(n(-1), n(2))) == -1, "intPart -.5")
+    expect(numToInt(numMul(numDiv(n(1), n(1000)), n(1000000))) == 1000, "small times big")
+    a = numDiv(n(1), n(1000))
+    b = n(0)
+    expect(numCmp(a, b) > 0, "0.001 > 0")
+
+    if failures > 0 { quit 1 }
+    log("num-test: all passed")
+}

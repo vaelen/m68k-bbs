@@ -1,0 +1,223 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// Num: the BASIC interpreter's software floating point. Clarus has no
+// float (int and 16.16 fixed only, and SANE is a Mac-only trap), so
+// BASIC numbers are m * 2^e with a 32-bit signed mantissa m normalized
+// so |m| is in [2^30, 2^31) -- zero is m = 0, e = 0. That is about 9
+// significant digits, a little better than MS BASIC single precision;
+// PRINT rounds to 7 digits like GW-BASIC so program output matches.
+// Every routine here is pure Clarus and runs on both lanes. Errors are
+// abort("Overflow") / abort("Division by zero") / abort("Illegal
+// function call"), the BASIC error messages, caught by the
+// interpreter's attempt block.
+
+record Num {
+    m: int
+    e: int
+}
+
+const numMaxExp: int = 97       // 2^(97+31) ~ 3.4e38, MS BASIC's single max
+const numMinExp: int = -160     // below ~1e-39: flush to zero
+
+func numZero(): Num {
+    var r: Num
+    return r
+}
+
+func numIsZero(x: Num): bool { return x.m == 0 }
+
+// Bring m into [2^30, 2^31) by magnitude, adjusting e.
+func numNormalize(m: int, e: int): Num {
+    var r: Num
+    var mm: int = m
+    var ee: int = e
+    if mm == 0 { return r }
+    while mm < 0x40000000 and mm > -0x40000000 {
+        mm = mm << 1
+        ee = ee - 1
+    }
+    if ee > numMaxExp { abort("Overflow") }
+    if ee < numMinExp { return r }
+    r.m = mm
+    r.e = ee
+    return r
+}
+
+func numFromInt(i: int): Num {
+    if i == -2147483647 - 1 { return numNormalize(-0x40000000, 1) }
+    return numNormalize(i, 0)
+}
+
+func numNeg(x: Num): Num {
+    var r: Num = x
+    r.m = -x.m
+    return r
+}
+
+func numAbs(x: Num): Num {
+    if x.m < 0 { return numNeg(x) }
+    return x
+}
+
+// Sign-magnitude addition on halved mantissas (so the sum fits in 31
+// bits); the smaller operand is shifted down by the exponent gap.
+func numAdd(a: Num, b: Num): Num {
+    var big: Num
+    var small: Num
+    var d: int
+    var mb: int
+    var ms: int
+    if a.m == 0 { return b }
+    if b.m == 0 { return a }
+    if a.e >= b.e {
+        big = a
+        small = b
+    } else {
+        big = b
+        small = a
+    }
+    d = big.e - small.e
+    if d >= 32 { return big }
+    mb = big.m
+    ms = small.m
+    if mb < 0 { mb = -((-mb) >> 1) } else { mb = mb >> 1 }
+    if ms < 0 { ms = -(((-ms) >> 1) >> d) } else { ms = (ms >> 1) >> d }
+    return numNormalize(mb + ms, big.e + 1)
+}
+
+func numSub(a: Num, b: Num): Num { return numAdd(a, numNeg(b)) }
+
+// Top 32 bits of the 64-bit mantissa product, via 16-bit halves.
+func numMul(a: Num, b: Num): Num {
+    var am: int
+    var bm: int
+    var ah: int
+    var al: int
+    var bh: int
+    var bl: int
+    var p: int
+    var low: int
+    var neg: bool
+    if a.m == 0 or b.m == 0 { return numZero() }
+    neg = (a.m < 0) != (b.m < 0)
+    am = a.m
+    bm = b.m
+    if am < 0 { am = -am }
+    if bm < 0 { bm = -bm }
+    ah = am >> 16
+    al = am & 0xFFFF
+    bh = bm >> 16
+    bl = bm & 0xFFFF
+    p = ah * bh + ((ah * bl) >> 16) + ((al * bh) >> 16)
+    // round to nearest on the dropped low 32 bits (masking keeps the
+    // al*bl term right even when its product overflows the sign bit)
+    low = ((ah * bl) & 0xFFFF) + ((al * bh) & 0xFFFF) + (((al * bl) >> 16) & 0xFFFF)
+    p = p + ((low + 0x8000) >> 16)
+    if neg { p = -p }
+    return numNormalize(p, a.e + b.e + 32)
+}
+
+// Restoring long division on halved mantissas: 31 quotient bits of
+// |a.m| / |b.m|, which lies in (0.5, 2).
+func numDiv(a: Num, b: Num): Num {
+    var rem: int
+    var den: int
+    var q: int = 0
+    var i: int = 0
+    var neg: bool
+    if b.m == 0 { abort("Division by zero") }
+    if a.m == 0 { return numZero() }
+    neg = (a.m < 0) != (b.m < 0)
+    rem = a.m
+    den = b.m
+    if rem < 0 { rem = -rem }
+    if den < 0 { den = -den }
+    rem = rem >> 1
+    den = den >> 1
+    while i < 31 {
+        q = q << 1
+        if rem >= den {
+            rem = rem - den
+            q = q | 1
+        }
+        rem = rem << 1
+        i = i + 1
+    }
+    if rem >= den and q != 0x7FFFFFFF { q = q + 1 }   // round to nearest
+    if neg { q = -q }
+    return numNormalize(q, a.e - b.e - 30)
+}
+
+// -1, 0, 1. Exact: both operands are normalized, so for two positives
+// the larger exponent wins and equal exponents compare mantissas.
+func numCmp(a: Num, b: Num): int {
+    var an: bool = a.m < 0
+    var bn: bool = b.m < 0
+    var r: int
+    if a.m == 0 and b.m == 0 { return 0 }
+    if a.m == 0 { if bn { return 1 } else { return -1 } }
+    if b.m == 0 { if an { return -1 } else { return 1 } }
+    if an != bn { if an { return -1 } else { return 1 } }
+    // same sign: compare magnitudes
+    if a.e != b.e {
+        if a.e > b.e { r = 1 } else { r = -1 }
+    } else if a.m == b.m {
+        return 0
+    } else if a.m > b.m {
+        r = 1
+    } else {
+        r = -1
+    }
+    if an { r = -r }
+    return r
+}
+
+// Truncate toward zero. Aborts "Overflow" outside the int range.
+func numToInt(x: Num): int {
+    var shift: int
+    if x.m == 0 { return 0 }
+    if x.e > 0 {
+        if x.e == 1 and x.m == -0x40000000 { return -2147483647 - 1 }
+        abort("Overflow")
+    }
+    if x.e == 0 { return x.m }
+    shift = -x.e
+    if shift > 31 { return 0 }
+    if x.m < 0 { return -((-x.m) >> shift) }
+    return x.m >> shift
+}
+
+func numIsInt(x: Num): bool {
+    var shift: int
+    var mag: int
+    if x.m == 0 { return true }
+    if x.e >= 0 { return true }
+    shift = -x.e
+    if shift > 31 { return false }
+    mag = x.m
+    if mag < 0 { mag = -mag }
+    return (mag & ((1 << shift) - 1)) == 0
+}
+
+// Largest integer <= x (BASIC's INT).
+func numFloor(x: Num): Num {
+    var t: Num
+    if numIsInt(x) { return x }
+    t = numFromInt(numToInt(x))
+    if x.m < 0 { return numSub(t, numFromInt(1)) }
+    return t
+}
+
+func numIntPart(x: Num): int { return numToInt(numFloor(x)) }
+
+// Nearest integer, halves away from zero.
+func numRound(x: Num): Num {
+    var half: Num
+    var r: Num
+    half.m = 0x40000000
+    half.e = -31
+    r = numFloor(numAdd(numAbs(x), half))
+    if x.m < 0 { return numNeg(r) }
+    return r
+}
