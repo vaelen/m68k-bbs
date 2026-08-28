@@ -65,6 +65,23 @@ try:
     ser.settimeout(12); local, _ = ser.accept()
     caller = call(); assert rd(local) == CONNECT
     caller.close(); assert rd(local) == NOCARRIER
+    # 8. ATDT host:port with no dial.conf -> CONNECT, bridged both ways
+    peer_l = listener(1236)
+    local.sendall(b"ATDT127.0.0.1:1236\r"); peer, _ = peer_l.accept()
+    assert rd(local) == CONNECT
+    local.sendall(b"out"); assert rd(peer) == b"out"
+    peer.sendall(b"in"); assert rd(local) == b"in"
+    # 9. a caller during an outbound call is BUSY; ATD while online is ERROR
+    c = call(); assert rd(c) == BUSY; c.close()
+    time.sleep(1.1); local.sendall(b"+++"); assert rd(local) == OK
+    local.sendall(b"ATDT1.2.3.4\r"); assert rd(local) == ERROR
+    local.sendall(b"ATO\r"); assert rd(local) == CONNECT
+    # 10. the dialed side hangs up -> NO CARRIER
+    peer.close(); assert rd(local) == NOCARRIER
+    # 11. unknown number, refused port (spaces/dashes are stripped)
+    local.sendall(b"ATDT555\r"); assert rd(local) == NOCARRIER
+    local.sendall(b"ATDT 127.0.0.1:1\r"); assert rd(local, t=5) == NOCARRIER
+    local.sendall(b"AT\r"); assert rd(local) == OK
     # 7. serial port down -> caller rejected with NO ANSWER
     ser.close(); local.close(); time.sleep(0.3)
     caller = call(); assert rd(caller) == NOANSWER

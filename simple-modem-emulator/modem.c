@@ -8,6 +8,8 @@
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
@@ -20,19 +22,22 @@
 
 #define GUARD_MS 500            // Hayes S12 guard time, 25 x 20ms = 0.5s
 #define RECONNECT_MS 10000      // serial port reconnect interval
+#define DIAL_MS 60000           // dial ceiling (Hayes S7 is 50 s)
 #define CONNECT_MSG "\r\nCONNECT 57600\r\n"
 #define NO_CARRIER_MSG "\r\nNO CARRIER\r\n"
 #define BUSY_MSG "BUSY, PLEASE TRY AGAIN LATER\r\n"
 #define NO_ANSWER_MSG "NO ANSWER, PLEASE TRY AGAIN LATER\r\n"
 #define OK_MSG "\r\nOK\r\n"
+#define ERROR_MSG "\r\nERROR\r\n"
 
-enum { IDLE, ONLINE, ONLINE_CMD };     // the line: on-hook, data mode, after +++
+enum { IDLE, DIALING, ONLINE, ONLINE_CMD };   // on-hook, dial in progress, data mode, after +++
 static int state = IDLE;
 static int local = -1;                  // the "serial port"
 static int cport;                       // its TCP port
 static long local_retry_ms = 0;         // when to try connecting it again
 static int rin = -1, rout = -1;         // the remote: one socket for now
 static pid_t child = 0;                 // an exec: target's pid, 0 for a socket
+static long dial_ms = 0;                // when the current dial started
 static char held[3];                    // '+' bytes held back pending guard time
 static int nheld = 0;
 static long last_local_ms = 0;          // time of last byte from local
@@ -139,6 +144,43 @@ static void go_online(void) {
     send_all(local, CONNECT_MSG, sizeof CONNECT_MSG - 1);
 }
 
+// Start a non-blocking TCP connect to host:port; the loop finishes it.
+static void dial_tcp(const char *host, const char *port) {
+    struct addrinfo hints, *ai;
+    int fd;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET;          // ponytail: v4 only; "host:port" can't carry a v6 literal
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, port, &hints, &ai) != 0) { hangup("no such host"); return; }
+    fd = socket(ai->ai_family, ai->ai_socktype, 0);
+    if (fd >= 0) {
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+        if (connect(fd, ai->ai_addr, ai->ai_addrlen) < 0 && errno != EINPROGRESS) {
+            close(fd);
+            fd = -1;
+        }
+    }
+    freeaddrinfo(ai);
+    if (fd < 0) { hangup("connect failed"); return; }
+    rin = rout = fd;
+    state = DIALING;
+    dial_ms = now_ms();
+}
+
+// Place a call for the dial string s: "host[:port]", port 23 by default.
+static void dial(const char *s) {
+    char num[256], *host, *port;
+    int i, n = 0;
+    for (i = 0; s[i]; i++) if (s[i] != ' ' && s[i] != '-') num[n++] = s[i];
+    num[n] = 0;
+    if (strchr(num, '.') == NULL && strchr(num, ':') == NULL) { hangup("no such number"); return; }
+    fprintf(stderr, "dialing %s\n", num);
+    host = num;
+    port = strrchr(host, ':');
+    if (port) *port++ = 0; else port = "23";
+    dial_tcp(host, port);
+}
+
 static void accept_caller(int lsock) {
     int fd = accept(lsock, NULL, NULL);
     if (fd < 0) return;
@@ -165,6 +207,14 @@ static void do_command(void) {
     if (ncmd < 2 || cmd[0] != 'A' || cmd[1] != 'T') return; // not a command; ignore
     // ponytail: only H (hang up) and O (online) matter; anything else is OK.
     for (i = 2; i < ncmd; i++) {
+        if (cmd[i] == 'D') {
+            if (state != IDLE) { send_all(local, ERROR_MSG, sizeof ERROR_MSG - 1); return; }
+            i++;
+            if (i < ncmd && (cmd[i] == 'T' || cmd[i] == 'P')) i++;
+            cmd[ncmd] = 0;
+            dial(cmd + i);              // sends its own result
+            return;
+        }
         if (cmd[i] == 'H' && state == ONLINE_CMD) { hangup("call ended"); return; }
         if (cmd[i] == 'O' && state == ONLINE_CMD) { go_online(); return; }
     }
@@ -176,6 +226,7 @@ static void do_command(void) {
 static void from_local(const char *buf, int len) {
     long t = now_ms();
     int i;
+    if (state == DIALING) { hangup("dial aborted"); return; }   // any key aborts a dial
     if (state != ONLINE) {              // command mode: IDLE or ONLINE_CMD
         for (i = 0; i < len; i++) {
             if (buf[i] == '\r') {
@@ -241,22 +292,40 @@ int main(int argc, char **argv) {
     fprintf(stderr, "listening on %d, serial port at localhost:%d\n", lport, cport);
 
     for (;;) {
-        fd_set r;
-        struct timeval tv = { 0, GUARD_MS * 1000 };   // wakes for guard and retry clocks
+        fd_set r, w;
+        struct timeval tv = { 0, GUARD_MS * 1000 };   // wakes for guard, retry and dial clocks
         int maxfd = lsock, n;
         serial_try();
         FD_ZERO(&r);
+        FD_ZERO(&w);
         FD_SET(lsock, &r);
         if (local >= 0) { FD_SET(local, &r); if (local > maxfd) maxfd = local; }
-        if (rin >= 0) { FD_SET(rin, &r); if (rin > maxfd) maxfd = rin; }
-        if (select(maxfd + 1, &r, NULL, NULL, &tv) < 0) {
+        if (rin >= 0) {
+            if (state == DIALING && child == 0) FD_SET(rin, &w);   // connect in flight
+            else FD_SET(rin, &r);
+            if (rin > maxfd) maxfd = rin;
+        }
+        if (select(maxfd + 1, &r, &w, NULL, &tv) < 0) {
             if (errno == EINTR) continue;
             perror("select");
             return 1;
         }
         check_guard();
+        if (state == DIALING && now_ms() - dial_ms >= DIAL_MS) hangup("dial timed out");
 
         if (FD_ISSET(lsock, &r)) accept_caller(lsock);
+        if (rin >= 0 && FD_ISSET(rin, &w)) {            // connect finished
+            int err = 0;
+            socklen_t el = sizeof err;
+            getsockopt(rin, SOL_SOCKET, SO_ERROR, &err, &el);
+            if (err) {
+                hangup("connect failed");
+            } else {
+                fcntl(rin, F_SETFL, fcntl(rin, F_GETFL) & ~O_NONBLOCK);
+                go_online();
+                fprintf(stderr, "call connected\n");
+            }
+        }
         if (rin >= 0 && FD_ISSET(rin, &r)) {
             n = (int)read(rin, buf, sizeof buf);
             if (n <= 0) hangup("call ended");
