@@ -129,10 +129,6 @@ func tokenizerTests() {
 // Load src, run it, answer each INPUT from the '|'-separated inputs,
 // answer INKEY$/SLEEP waits with 'Y', and return everything printed.
 func runProgram(src: string, inputs: string): text {
-    var i: int = 0
-    var j: int
-    var item: string
-    var rest: string = inputs
     out = ""
     screenOps = ""
     basicNew()
@@ -140,6 +136,17 @@ func runProgram(src: string, inputs: string): text {
     basicWidth = 80
     if not basicLoad(fromText(src)) { return out }
     basicRun()
+    pump(inputs)
+    return out
+}
+
+// Drive a started program: answer INPUTs from the '|'-separated list,
+// keys with 'Y', until it stops.
+func pump(inputs: string) {
+    var i: int = 0
+    var j: int
+    var item: string
+    var rest: string = inputs
     while basicState == BRunning or basicState == BWaitLine or basicState == BSleeping or basicState == BWaitKey {
         if basicState == BWaitLine {
             if rest == "" {
@@ -166,7 +173,6 @@ func runProgram(src: string, inputs: string): text {
             break
         }
     }
-    return out
 }
 
 func check(src: string, inputs: string, want: string, name: string) {
@@ -439,6 +445,36 @@ func fileTests() {
     check("10 OPEN \"DA\" FOR INPUT AS #1:INPUT #1,A$:PRINT A$", "", "Z\n", "end flushed the file")
 }
 
+func sstTest() {
+    var sst: text
+    var pos: int
+    expect(file.readText("sst.bas", sst), "read sst.bas")
+    out = ""
+    screenOps = ""
+    basicNew()
+    basicSleepInstant = true
+    basicWidth = 80
+    expect(basicLoad(sst), "load sst")
+    basicFixedSeed = 12345
+    basicRun()
+    pump("N|SRS|LRS|COM|1|COM|0|COM|5|DAM|SHE|100|NAV|1|1|TOR|4|PHA|50|XXX|NO")
+    basicFixedSeed = 0
+    expect(out.indexOf("THE USS ENTERPRISE --- NCC-1701") >= 0, "sst banner")
+    expect(out.indexOf("YOUR ORDERS ARE AS FOLLOWS") >= 0, "sst orders")
+    expect(out.indexOf("COMMAND? ") >= 0, "sst command prompt")
+    expect(out.indexOf("LONG RANGE SCAN FOR QUADRANT") >= 0, "sst lrs")
+    expect(out.indexOf("STATUS REPORT:") >= 0, "sst status report")
+    expect(out.indexOf("THE GALAXY") >= 0, "sst galaxy map")
+    expect(out.indexOf("KLINGON BATTLE CRUISERS LEFT AT") >= 0, "sst resigned")
+    expect(out.indexOf(" error in ") < 0 and out.indexOf("mismatch in ") < 0 and out.indexOf("Overflow in ") < 0 and out.indexOf("Illegal") < 0 and out.indexOf("Subscript") < 0, "sst no runtime error")
+    expect(basicState == BDone, "sst finished")
+    if basicState != BDone or out.indexOf(" in ") >= 0 {
+        pos = out.length - 600
+        if pos < 0 { pos = 0 }
+        log("sst tail: " + out[pos, out.length - pos])
+    }
+}
+
 on App.startCLI(args: list of string) {
     tokenizerTests()
     evalTests()
@@ -448,6 +484,7 @@ on App.startCLI(args: list of string) {
     screenTests()
     immediateTests()
     fileTests()
+    sstTest()
     if failures > 0 { quit 1 }
     log("basic-test: all passed")
 }
