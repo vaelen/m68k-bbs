@@ -49,8 +49,10 @@ Flag to toggle (Enter = done):
 ```
 
 A number flips that bit in the buffered `editAccess` and redraws;
-Enter returns to the edit card, where `S` saves. A sysop cannot open
-the table for their own account. Sysop > Configuration > `A` opens
+Enter returns to the edit card, where `S` saves. On their own account
+a sysop can toggle everything except the Sysop flag ("You cannot
+change your own Sysop flag."). The detail and edit cards show the
+enabled flag names, comma-separated and wrapped, or `(none)`. Sysop > Configuration > `A` opens
 the same table over the new-user default; there Enter saves
 `Config.txt` straight away.
 

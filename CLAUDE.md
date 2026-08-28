@@ -314,8 +314,9 @@ inputChar (bbs.cla) → processInput`.
   discards; the user card's `A` opens the `useraccess` flag table —
   `N | Access Level | Granted`, a flag number toggles the buffered bit,
   Enter returns to `accessReturn` — the card, or the Configuration
-  menu where it saves `newUserAccess` at once; a sysop cannot change their own access
-  or delete their own account), Y/N delete confirmations over the detail card,
+  menu where it saves `newUserAccess` at once; the detail/edit cards
+  list the enabled flag names (`sendAccessRows`, wrapped); a sysop
+  cannot toggle their own Sysop flag or delete their own account), Y/N delete confirmations over the detail card,
   the New Board wizard, folder-syntax help (`sendFolderHelp`) before
   both area folder prompts, and the same L/S/E/N/D tree over file areas
   (`Areas` database: name/description/folder/access; Sysop menu `F`).

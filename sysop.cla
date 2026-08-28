@@ -466,6 +466,28 @@ func detailWidths(w: list of int) {
     w.add(61)
 }
 
+// The enabled flag names, comma-separated, wrapped over as many
+// rows as the value column needs (label on the first only).
+func sendAccessRows(label: string, v: int, w: list of int) {
+    var names: text
+    var lines: list of string
+    var i: int = 0
+    while i < accessFlagCount {
+        if getBit(v, i) {
+            if names.length > 0 { names.append(", ") }
+            names.append(accessLabel(Access(i)))
+        }
+        i = i + 1
+    }
+    if names.length == 0 { names.append("(none)") }
+    wrapText(names, w[1], lines)
+    i = 0
+    while i < lines.count {
+        if i == 0 { sendDetailRow(label, lines[i], w) } else { sendDetailRow("", lines[i], w) }
+        i = i + 1
+    }
+}
+
 func sendDetailRow(label: string, value: string, w: list of int) {
     var cells: list of string
     cells.add(label)
@@ -504,7 +526,7 @@ func drawUserDetails(id: int, rec: text) {
     sendTableTitle("User Details", w)
     sendDetailRow("ID",       intStr(id), w)
     sendDetailRow("Username", dbExtractString(rec, uOffName), w)
-    sendDetailRow("Access",   accessName(rec.intAt(uOffAccess)), w)
+    sendAccessRows("Access", rec.intAt(uOffAccess), w)
     sendDetailRow("Email",    dbExtractString(rec, uOffEmail), w)
     sendDetailRow("Created",  dateTimeStr(rec.intAt(uOffCreated)), w)
     if rec.intAt(uOffLastSeen) != 0 {
@@ -604,12 +626,7 @@ func drawEditUserCard() {
     sendDetailRow("ID",          intStr(editId), w)
     sendDetailRow("N) Username", editName, w)
     sendDetailRow("E) Email",    editEmail, w)
-    if editId == user.id {
-        // No demoting yourself -- the system must keep a sysop.
-        sendDetailRow("Access", accessName(editAccess), w)
-    } else {
-        sendDetailRow("A) Access", accessName(editAccess), w)
-    }
+    sendAccessRows("A) Access", editAccess, w)
     sendDetailRow("P) Password", "(hidden)", w)
     sendDetailRow("Created",     dateTimeStr(editCreated), w)
     if editLastSeen != 0 {
@@ -623,11 +640,6 @@ func drawEditUserCard() {
 func editUserChoice(input: string) {
     switch upperStr(input) {
     case "A" {
-        if editId == user.id {
-            sendLine("You cannot change your own access level.")
-            displayPrompt()
-            return
-        }
         accessTitle = "Access: " + editName
         accessReturn = "edituser"
         user.screen = "useraccess"
@@ -704,6 +716,12 @@ func accessToggleInput(input: string) {
     n = parseIntStr(input)
     if (n == 0 and input != "0") or n >= accessFlagCount {
         sendLine("0-" + intStr(accessFlagCount - 1) + ".")
+        displayPrompt()
+        return
+    }
+    if accessReturn == "edituser" and editId == user.id and Access(n) == Sysop {
+        // No demoting yourself -- the system must keep a sysop.
+        sendLine("You cannot change your own Sysop flag.")
         displayPrompt()
         return
     }
