@@ -29,6 +29,20 @@ func expectStr(got: string, want: string, name: string) {
     }
 }
 
+// |x - num/den| < 1e-5 * max(1, |target|)
+func near(x: Num, num: int, den: int, name: string) {
+    var target: Num = numDiv(n(num), n(den))
+    var tol: Num = numDiv(n(1), n(100000))
+    var mag: Num = numAbs(target)
+    if numCmp(mag, n(1)) > 0 { tol = numMul(tol, mag) }
+    if numCmp(numAbs(numSub(x, target)), tol) < 0 {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name + " got " + numStr(x))
+        failures = failures + 1
+    }
+}
+
 on App.startCLI(args: list of string) {
     var a: Num
     var b: Num
@@ -110,6 +124,38 @@ on App.startCLI(args: list of string) {
     expectStr(numStr(numParse("1e38")), " 1E+38", "parse 1e38")
     numParsePrefix("12abc")
     expect(numParseEnd == 2, "parseEnd 12abc")
+
+    // --- transcendental ---
+    near(numSqrt(n(2)), 141421356, 100000000, "sqrt 2")
+    near(numSqrt(n(1600)), 40, 1, "sqrt 1600")
+    near(numSqrt(numDiv(n(1), n(4))), 1, 2, "sqrt .25")
+    near(numExp(n(1)), 271828183, 100000000, "exp 1")
+    near(numExp(n(-2)), 135335283, 1000000000, "exp -2")
+    near(numExp(n(0)), 1, 1, "exp 0")
+    near(numExp(n(10)), 220264658, 10000, "exp 10")
+    near(numLog(n(10)), 230258509, 100000000, "log 10")
+    near(numLog(numDiv(n(1), n(2))), -69314718, 100000000, "log .5")
+    near(numLog(n(1)), 0, 1, "log 1")
+    near(numSin(n(1)), 84147098, 100000000, "sin 1")
+    near(numSin(n(0)), 0, 1, "sin 0")
+    near(numCos(n(3)), -98999250, 100000000, "cos 3")
+    near(numCos(n(0)), 1, 1, "cos 0")
+    near(numTan(n(1)), 155740772, 100000000, "tan 1")
+    near(numAtn(n(1)), 78539816, 100000000, "atn 1")
+    near(numAtn(n(100)), 156079666, 100000000, "atn 100")
+    near(numAtn(n(-1)), -78539816, 100000000, "atn -1")
+    near(numAtn(numDiv(n(1), n(10))), 9966865, 100000000, "atn .1")
+    near(numPow(n(2), n(10)), 1024, 1, "2^10")
+    near(numPow(n(2), n(-2)), 1, 4, "2^-2")
+    near(numPow(n(-2), n(3)), -8, 1, "-2^3")
+    near(numPow(numDiv(n(3), n(2)), n(2)), 9, 4, "1.5^2")
+    near(numPow(n(2), numDiv(n(1), n(2))), 141421356, 100000000, "2^.5")
+    near(numPow(n(0), n(0)), 1, 1, "0^0")
+    near(numPow(n(0), n(3)), 0, 1, "0^3")
+    near(numSin(numMul(n(100), numPi())), 0, 1, "sin 100pi")
+    near(numSin(numMul(n(7), numDiv(numPi(), n(2)))), -1, 1, "sin 7pi/2")
+    expectStr(numStr(numPow(n(10), n(38))), " 1E+38", "10^38")
+    expectStr(numStr(numMul(n(1000), numPow(numDiv(n(7), n(3)), n(2)))), " 5444.444", "1000*(7/3)^2")
 
     if failures > 0 { quit 1 }
     log("num-test: all passed")

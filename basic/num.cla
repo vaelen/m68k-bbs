@@ -456,3 +456,183 @@ func numStr(x: Num): string {
     if x.m < 0 { return "-" + r }
     return " " + r
 }
+
+// --- Transcendental functions ------------------------------------------
+// Series after range reduction; accurate to a few units in the 9th
+// digit, well past the 7 PRINT shows.
+
+var numConstsReady: bool = false
+var numLn2V: Num
+var numPiV: Num
+
+func numConsts() {
+    if numConstsReady { return }
+    numLn2V = numParse("0.69314718056")
+    numPiV = numParse("3.14159265359")
+    numConstsReady = true
+}
+
+func numPi(): Num {
+    numConsts()
+    return numPiV
+}
+
+func numHalve(x: Num): Num {
+    var r: Num = x
+    if x.m == 0 { return x }
+    r.e = x.e - 1
+    if r.e < numMinExp { return numZero() }
+    return r
+}
+
+func numSqrt(x: Num): Num {
+    var y: Num
+    var i: int = 0
+    if x.m < 0 { abort("Illegal function call") }
+    if x.m == 0 { return x }
+    y = numNormalize(0x40000000, (x.e + 31) / 2 - 30)   // ~2^((e+31)/2)
+    while i < 7 {
+        y = numHalve(numAdd(y, numDiv(x, y)))
+        i = i + 1
+    }
+    return y
+}
+
+func numExp(x: Num): Num {
+    var k: int
+    var r: Num
+    var term: Num
+    var sum: Num
+    var i: int = 1
+    numConsts()
+    if x.m == 0 { return numFromInt(1) }
+    if numCmp(x, numFromInt(91)) > 0 { abort("Overflow") }
+    if numCmp(x, numFromInt(-110)) < 0 { return numZero() }
+    k = numToInt(numRound(numDiv(x, numLn2V)))
+    r = numSub(x, numMul(numFromInt(k), numLn2V))      // |r| <= ln2/2
+    term = numFromInt(1)
+    sum = numFromInt(1)
+    while i < 16 {
+        term = numDiv(numMul(term, r), numFromInt(i))
+        sum = numAdd(sum, term)
+        i = i + 1
+    }
+    return numNormalize(sum.m, sum.e + k)
+}
+
+func numLog(x: Num): Num {
+    var m: Num
+    var z: Num
+    var z2: Num
+    var term: Num
+    var sum: Num
+    var i: int = 3
+    numConsts()
+    if x.m <= 0 { abort("Illegal function call") }
+    m.m = x.m
+    m.e = -31                                           // [0.5, 1)
+    z = numDiv(numSub(m, numFromInt(1)), numAdd(m, numFromInt(1)))   // [-1/3, 0)
+    z2 = numMul(z, z)
+    term = z
+    sum = z
+    while i < 27 {
+        term = numMul(term, z2)
+        sum = numAdd(sum, numDiv(term, numFromInt(i)))
+        i = i + 2
+    }
+    return numAdd(numMul(sum, numFromInt(2)), numMul(numFromInt(x.e + 31), numLn2V))
+}
+
+// Reduce to [-pi/2, pi/2] then Taylor.
+func numSin(x: Num): Num {
+    var twoPi: Num
+    var halfPi: Num
+    var r: Num
+    var r2: Num
+    var term: Num
+    var sum: Num
+    var i: int = 3
+    numConsts()
+    if x.m == 0 { return x }
+    twoPi = numMul(numPiV, numFromInt(2))
+    halfPi = numHalve(numPiV)
+    r = numSub(x, numMul(numFloor(numDiv(x, twoPi)), twoPi))   // [0, 2pi)
+    if numCmp(r, numPiV) > 0 { r = numSub(r, twoPi) }         // [-pi, pi]
+    if numCmp(r, halfPi) > 0 { r = numSub(numPiV, r) }
+    if numCmp(r, numNeg(halfPi)) < 0 { r = numSub(numNeg(numPiV), r) }
+    r2 = numMul(r, r)
+    term = r
+    sum = r
+    while i < 19 {
+        term = numNeg(numDiv(numMul(term, r2), numFromInt(i * (i - 1))))
+        sum = numAdd(sum, term)
+        i = i + 2
+    }
+    return sum
+}
+
+func numCos(x: Num): Num {
+    numConsts()
+    return numSin(numAdd(x, numHalve(numPiV)))
+}
+
+func numTan(x: Num): Num {
+    return numDiv(numSin(x), numCos(x))
+}
+
+// atn on [0, 1] after 1/x and two half-angle reductions.
+func numAtn(x: Num): Num {
+    var neg: bool = x.m < 0
+    var invert: bool = false
+    var a: Num = numAbs(x)
+    var one: Num = numFromInt(1)
+    var a2: Num
+    var term: Num
+    var sum: Num
+    var i: int = 3
+    numConsts()
+    if a.m == 0 { return a }
+    if numCmp(a, one) > 0 {
+        invert = true
+        a = numDiv(one, a)
+    }
+    a = numDiv(a, numAdd(one, numSqrt(numAdd(one, numMul(a, a)))))
+    a = numDiv(a, numAdd(one, numSqrt(numAdd(one, numMul(a, a)))))   // <= tan(pi/16) ~ .2
+    a2 = numMul(a, a)
+    term = a
+    sum = a
+    while i < 19 {
+        term = numNeg(numMul(term, a2))
+        sum = numAdd(sum, numDiv(term, numFromInt(i)))
+        i = i + 2
+    }
+    sum = numMul(sum, numFromInt(4))
+    if invert { sum = numSub(numHalve(numPiV), sum) }
+    if neg { return numNeg(sum) }
+    return sum
+}
+
+// a ^ b: integer exponents by squaring, otherwise exp(b * log a).
+func numPow(a: Num, b: Num): Num {
+    var r: Num = numFromInt(1)
+    var base: Num = a
+    var n: int
+    if b.m == 0 { return r }
+    if a.m == 0 {
+        if b.m < 0 { abort("Division by zero") }
+        return a
+    }
+    if numIsInt(b) and b.e < 0 {          // |b| < 2^30
+        n = numToInt(b)
+        if n < 0 { n = -n }
+        while n > 0 {
+            if (n & 1) != 0 { r = numMul(r, base) }
+            n = n >> 1
+            if n > 0 { base = numMul(base, base) }
+        }
+        if b.m < 0 { return numDiv(numFromInt(1), r) }
+        return r
+    }
+    if a.m < 0 { abort("Illegal function call") }
+    return numExp(numMul(b, numLog(a)))
+}
