@@ -100,7 +100,11 @@ on App.startCLI(args: list of string) {
     expect(translateOut("\x1B\x9Ex\x08") == "\x9EX\x14", "petscii ESC passthrough, BS")
     expect(translateOut("\x0D\x07") == "\x0D\x07", "petscii controls untouched")
     expect(petsciiIn('A') == 'a' and petsciiIn('\xC1') == 'A' and petsciiIn('\x14') == '\x08', "petscii input")
-    expect(petsciiIn('a') == 'A' and petsciiIn('z') == 'Z', "petscii input: $61-$7A is uppercase too")
+    expect(not terminal.asciiKeys, "petscii input: C64 keys by default")
+    expect(petsciiIn('a') == 'a' and terminal.asciiKeys, "petscii input: $61-$7A marks an ASCII-cased client")
+    expect(petsciiIn('A') == 'A' and petsciiIn('\xC1') == 'A', "petscii input: ASCII client's $41-$5A is uppercase")
+    terminal.asciiKeys = false
+    expect(petsciiIn('A') == 'a', "petscii input: back to C64 keys")
     expect(petsciiIn('1') == '1' and petsciiIn('\x0D') == '\x0D', "petscii input passthrough")
     w.clear()
     w.add(1)

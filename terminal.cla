@@ -29,6 +29,8 @@ record Terminal {
     telnet:  bool                     // caller is a telnet client
     reportedTerminalType: string(40)  // client's TERMINAL-TYPE reply
     reportedSpeed:        string(31)  // client's TERMINAL-SPEED reply
+    asciiKeys: bool                   // PETSCII client sends ASCII-cased
+                                      // letters (SyncTERM); see petsciiIn
 }
 
 var terminal: Terminal
@@ -183,12 +185,24 @@ func petsciiChar(c: char): char {
     }
 }
 
-// PETSCII keyboard byte -> the ASCII the rest of the BBS expects.
+// PETSCII keyboard byte -> the ASCII the rest of the BBS expects. A
+// C64's KERNAL sends unshifted letters as $41-$5A and shifted as
+// $C1-$DA, never $61-$7A; SyncTERM's PETSCII mode sends plain ASCII
+// ($61-$7A unshifted, $41-$5A shifted). The first $61-$7A byte marks
+// the session ASCII-cased and $41-$5A is uppercase from then on.
+// ponytail: a SyncTERM caller whose first letters are all shifted gets
+// them lowercased until an unshifted one arrives.
 func petsciiIn(c: char): char {
     var n: int = int(c) & 0xFF
-    if n >= 65 and n <= 90 { return char(n + 32) }    // $41-$5A -> a-z
+    if n >= 97 and n <= 122 {                          // $61-$7A: ASCII client
+        terminal.asciiKeys = true
+        return c
+    }
+    if n >= 65 and n <= 90 {                           // $41-$5A
+        if terminal.asciiKeys { return c }
+        return char(n + 32)
+    }
     if n >= 193 and n <= 218 { return char(n - 128) } // $C1-$DA -> A-Z
-    if n >= 97 and n <= 122 { return char(n - 32) }   // $61-$7A -> A-Z (same glyphs; SyncTERM sends these)
     if c == '\x14' { return '\x08' }                  // DELETE -> BS
     return c
 }
