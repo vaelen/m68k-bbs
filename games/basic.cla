@@ -146,8 +146,8 @@ func loadGameNames() {
 func drawGamesMenu() {
     var i: int = 0
     loadGameNames()
+    sendTitleBox("Games")
     sendLine("")
-    sendLine("Games:")
     if gameNames.count == 0 { sendLine("No games are available yet.") }
     while i < gameNames.count {
         sendLine(intStr(i + 1) + ") " + gameNames[i])

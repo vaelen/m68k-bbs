@@ -24,8 +24,8 @@ var editLastSeen: int = 0
 // --- Menus -------------------------------------------------------------
 
 func drawSysopMenu() {
+    sendTitleBox("Sysop Menu")
     sendLine("")
-    sendLine("Sysop Menu:")
     sendLine("B) Message Boards")
     sendLine("C) Configuration")
     sendLine("F) File Areas")
@@ -38,8 +38,8 @@ func drawSysopMenu() {
 }
 
 func drawSysopConfigMenu() {
+    sendTitleBox("Sysop - Configuration (Config.txt)")
     sendLine("")
-    sendLine("Sysop - Configuration (Config.txt):")
     sendLine("A) New User Access (" + accessSummary(config.newUserAccess) + ")")
     sendLine("Q) Return to Sysop Menu")
     sendLine("")
@@ -76,8 +76,8 @@ func sysopConfigChoice(input: string) {
 }
 
 func drawSysopBoardsMenu() {
+    sendTitleBox("Sysop - Message Boards")
     sendLine("")
-    sendLine("Sysop - Message Boards:")
     sendLine("L) List Boards")
     sendLine("S) Show Board Details")
     sendLine("E) Edit Board")
@@ -88,8 +88,8 @@ func drawSysopBoardsMenu() {
 }
 
 func drawSysopUsersMenu() {
+    sendTitleBox("Sysop - Users")
     sendLine("")
-    sendLine("Sysop - Users:")
     sendLine("L) List Users")
     sendLine("S) Show User Details")
     sendLine("E) Edit User")
@@ -174,8 +174,8 @@ func sysopUsersChoice(input: string) {
 
 func drawSysopBannedMenu() {
     var line: string
+    sendTitleBox("Sysop - Banned Names (" + intStr(bannedNames.count) + ")")
     sendLine("")
-    sendLine("Sysop - Banned Names (" + intStr(bannedNames.count) + "):")
     for n in bannedNames {
         if line.length + n.length + 2 > terminal.columns {
             sendLine(line)
@@ -1068,8 +1068,8 @@ func finishNewBoard() {
 // area are not managed here yet.
 
 func drawSysopAreasMenu() {
+    sendTitleBox("Sysop - File Areas")
     sendLine("")
-    sendLine("Sysop - File Areas:")
     sendLine("L) List Areas")
     sendLine("S) Show Area Details")
     sendLine("E) Edit Area")
@@ -1457,8 +1457,8 @@ func newAreaAccess(input: string) {
 // and A)reaFix (a netmail to the robot).
 
 func drawSysopNetsMenu() {
+    sendTitleBox("Sysop - Networks")
     sendLine("")
-    sendLine("Sysop - Networks:")
     sendLine("L) List Networks")
     sendLine("S) Show Network Details")
     sendLine("E) Edit Network")
