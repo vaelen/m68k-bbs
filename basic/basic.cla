@@ -2121,7 +2121,12 @@ func execStatement() {
         return
     }
     if t.kind == TEnd {
-        stmtEnd()
+        if immediateRunning {
+            immediateRunning = false
+            endRun()
+        } else {
+            stmtEnd()
+        }
         return
     }
     if t.kind == TOp and t.ival == int(':') {
@@ -2169,6 +2174,20 @@ func execStatement() {
     case K_INPUT { stmtInput() }
     case K_LINE { stmtLineInput() }
     case K_SLEEP { stmtSleep() }
+    case K_CLS { stmtCls() }
+    case K_LOCATE { stmtLocate() }
+    case K_COLOR { stmtColor() }
+    case K_WIDTH { stmtWidth() }
+    case K_BEEP { stmtBeep() }
+    case K_RUN { stmtRun() }
+    case K_LIST { stmtList() }
+    case K_NEW { stmtNew() }
+    case K_DELETE { stmtDelete() }
+    case K_LOAD { stmtLoad() }
+    case K_SAVE { stmtSave() }
+    case K_FILES { stmtFiles() }
+    case K_CONT { stmtCont() }
+    case K_SYSTEM { stmtSystem() }
     else {
         if t.ival >= K_NOTSUP_FIRST { abort("Not supported") }
         abort("Syntax error")
@@ -2210,20 +2229,8 @@ func basicStep(budget: int): bool {
 }
 
 func basicRun() {
-    tokenizeProgram()
-    clearVars()
-    clearStacks()
-    fns.clear()
-    closeAllFiles()
-    cur = prog
-    pc = 0
-    runLine = 0
-    contPc = -1
-    dataIdx = 0
-    dataPos = 0
-    keyQueue = ""
-    inkeyMisses = 0
-    basicState = BRunning
+    fromPrompt = false
+    startProgram(0)
 }
 
 func basicStop() {
@@ -2453,8 +2460,262 @@ func stmtSleep() {
     basicState = BSleeping
 }
 
-func immediateLine(s: string) {
+// --- Screen -----------------------------------------------------------
+
+func stmtCls() {
+    basicScreen('C', 0, 0)
+    cursorCol = 0
+    cursorRow = 1
 }
+
+// LOCATE [row][,[col][,anything more]]
+func stmtLocate() {
+    var row: int = 0
+    var col: int = 0
+    if not atStmtEnd() and not isOp(',') { row = evalInt() }
+    if skipOp(',') {
+        if not atStmtEnd() and not isOp(',') { col = evalInt() }
+        skipToStmtEnd()
+    }
+    if row < 0 or col < 0 { abort("Illegal function call") }
+    if row > 0 { cursorRow = row }
+    if col > 0 { cursorCol = col - 1 }
+    basicScreen('L', row, col)
+}
+
+// COLOR [fg][,[bg][,border]]
+func stmtColor() {
+    var fg: int = -1
+    var bg: int = -1
+    if not atStmtEnd() and not isOp(',') { fg = evalInt() }
+    if skipOp(',') {
+        if not atStmtEnd() and not isOp(',') { bg = evalInt() }
+        skipToStmtEnd()
+    }
+    if fg > 31 or bg > 15 { abort("Illegal function call") }
+    basicScreen('K', fg, bg)
+}
+
+// WIDTH n sets the line width; WIDTH LPRINT / WIDTH #n forms are ignored.
+func stmtWidth() {
+    var n: int
+    if isOp('#') or isKw(K_LPRINT) {
+        skipToStmtEnd()
+        return
+    }
+    n = evalInt()
+    if n < 20 or n > 255 { abort("Illegal function call") }
+    basicWidth = n
+    skipToStmtEnd()
+}
+
+func stmtBeep() { basicScreen('B', 0, 0) }
+
+// --- Immediate mode ---------------------------------------------------
+
+var immed: list of Tok
+var immediateRunning: bool = false   // executing immed (its end keeps CONT alive)
+
+// A line typed at the Ok prompt: a numbered line edits the program,
+// anything else runs now.
+func immediateLine(s: string) {
+    var i: int = 0
+    var n: int = 0
+    var t: text
+    var hasNumber: bool = false
+    cursorCol = 0
+    while i < s.length and s[i] == ' ' { i = i + 1 }
+    if i >= s.length { return }
+    while i < s.length and s[i] >= '0' and s[i] <= '9' {
+        n = n * 10 + int(s[i]) - int('0')
+        hasNumber = true
+        i = i + 1
+    }
+    if hasNumber {
+        if i < s.length and s[i] == ' ' { i = i + 1 }
+        srcSet(n, s[i, s.length - i])
+        return
+    }
+    immed.clear()
+    t = s
+    tokenizeText(t, 0, immed)
+    cur = immed
+    pc = 0
+    runLine = 0
+    immediateRunning = true
+    basicState = BRunning
+}
+
+// Start the program from its first line, or from line n.
+func startProgram(line: int) {
+    tokenizeProgram()
+    clearVars()
+    clearStacks()
+    fns.clear()
+    closeAllFiles()
+    cur = prog
+    pc = 0
+    if line > 0 { jumpToLine(line) }
+    runLine = 0
+    immediateRunning = false
+    contPc = -1
+    dataIdx = 0
+    dataPos = 0
+    keyQueue = ""
+    inkeyMisses = 0
+    basicState = BRunning
+}
+
+func withExtension(name: string): string {
+    if name.indexOf('.') < 0 { return name + ".BAS" }
+    return name
+}
+
+func programLoadFile(name: string) {
+    var p: string = basicPath(withExtension(name), false)
+    var t: text
+    if p == "" { abort("Bad file name") }
+    if not file.readText(p, t) { abort("File not found") }
+    clearVars()
+    clearStacks()
+    fns.clear()
+    closeAllFiles()
+    contPc = -1
+    if not basicLoad(t) { abort("Syntax error") }
+}
+
+func programSaveFile(name: string) {
+    var p: string = basicPath(withExtension(name), true)
+    var t: text
+    var i: int = 0
+    var n: int
+    if p == "" { abort("Bad file name") }
+    while i < srcNumbers.count {
+        n = srcNumbers[i]
+        t.append(string(n) + " ")
+        t.append(srcLines[n])
+        t.append("\n")
+        i = i + 1
+    }
+    if not file.writeText(p, t, "TEXT", "ttxt") { abort("Device I/O error") }
+}
+
+// RUN | RUN line | RUN "file"
+func stmtRun() {
+    var t: Tok = tok()
+    if t.kind == TStr {
+        pc = pc + 1
+        programLoadFile(strPool[t.ival])
+        startProgram(0)
+        return
+    }
+    if t.kind == TNum {
+        pc = pc + 1
+        startProgram(numAsInt(t.num))
+        return
+    }
+    startProgram(0)
+}
+
+// LIST [a][-[b]]
+func stmtList() {
+    var a: int = 0
+    var b: int = 65529
+    var t: Tok = tok()
+    if t.kind == TNum {
+        a = numAsInt(t.num)
+        b = a
+        pc = pc + 1
+    }
+    if skipOp('-') {
+        b = 65529
+        t = tok()
+        if t.kind == TNum {
+            b = numAsInt(t.num)
+            pc = pc + 1
+        }
+    }
+    srcListRange(a, b)
+}
+
+func stmtNew() {
+    srcClear()
+    prog.clear()
+    clearVars()
+    clearStacks()
+    fns.clear()
+    closeAllFiles()
+    contPc = -1
+}
+
+// DELETE a[-b]
+func stmtDelete() {
+    var a: int
+    var b: int
+    var i: int
+    var doomed: list of int
+    var t: Tok = tok()
+    if t.kind != TNum { abort("Syntax error") }
+    a = numAsInt(t.num)
+    b = a
+    pc = pc + 1
+    if skipOp('-') {
+        t = tok()
+        if t.kind != TNum { abort("Syntax error") }
+        b = numAsInt(t.num)
+        pc = pc + 1
+    }
+    i = 0
+    while i < srcNumbers.count {
+        if srcNumbers[i] >= a and srcNumbers[i] <= b { doomed.add(srcNumbers[i]) }
+        i = i + 1
+    }
+    for n in doomed { srcSet(n, "") }
+    contPc = -1
+}
+
+func stmtLoad() {
+    var t: Tok = tok()
+    if t.kind != TStr { abort("Syntax error") }
+    pc = pc + 1
+    programLoadFile(strPool[t.ival])
+}
+
+func stmtSave() {
+    var t: Tok = tok()
+    if t.kind != TStr { abort("Syntax error") }
+    pc = pc + 1
+    programSaveFile(strPool[t.ival])
+}
+
+// FILES: the sandbox folder's names, four per row.
+func stmtFiles() {
+    var folder: string = basicPath("", false)
+    var found: list of string
+    var name: string
+    var i: int = 0
+    if not file.list(folder, found) { abort("Path not found") }
+    for name in found {
+        outStr(name)
+        i = i + 1
+        if i mod 4 == 0 {
+            outNewline()
+        } else if name.length < 18 {
+            outStr(spaces(18 - name.length))
+        }
+    }
+    if i mod 4 != 0 { outNewline() }
+}
+
+func stmtCont() {
+    if contPc < 0 { abort("Can't continue") }
+    cur = prog
+    pc = contPc
+    contPc = -1
+    immediateRunning = false
+}
+
+func stmtSystem() { basicStop() }
 
 func stmtInputFile(lineMode: bool) {
     abort("Bad file number")

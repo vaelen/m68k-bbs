@@ -334,12 +334,103 @@ func inputTests() {
     check("10 INPUT A:PRINT A", "|", "?  0 \n", "empty answer is zero")
 }
 
+func screenTests() {
+    runProgram("10 CLS:LOCATE 5,10:COLOR 14,1:BEEP:PRINT POS(0);CSRLIN", "")
+    expect(screenOps == "C0,0;L5,10;K14,1;B0,0;", "screen ops")
+    expectOut(" 10  5 \n", "pos and csrlin after locate")
+    check("10 WIDTH 20:PRINT \"123456789012345\";\"ABCDEFG\"", "", "123456789012345\nABCDEFG\n", "width wrap")
+    check("10 WIDTH 40:PRINT 1,2,3,4", "", " 1             2             3 \n 4 \n", "zones respect width")
+    check("10 SCREEN 1", "", "Not supported in 10\n", "graphics refused")
+    check("10 PRINT USING \"##\";1", "", "Not supported in 10\n", "print using refused")
+    check("10 LOCATE ,5:PRINT POS(0)", "", " 5 \n", "locate col only")
+    expect(screenOps == "L0,5;", "locate col only op")
+    check("10 COLOR 7:PRINT \"X\"", "", "X\n", "color fg only")
+    expect(screenOps == "K7,-1;", "color fg only op")
+    check("10 CLS:PRINT CSRLIN;POS(0)", "", " 1  4 \n", "cls homes the cursor")
+    check("10 LINE (0,0)-(1,1)", "", "Not supported in 10\n", "graphics line refused")
+    check("10 PRINT \"A\":CLS:PRINT \"B\"", "", "A\nB\n", "cls between prints")
+}
+
+// Immediate-mode session: feed each '|'-separated line to the prompt,
+// pumping the interpreter after each; INPUT answers come from the
+// same stream.
+func session(lines: string): text {
+    var rest: string = lines
+    var j: int
+    var item: string
+    var guard: int
+    out = ""
+    basicNew()
+    basicSleepInstant = true
+    basicWidth = 80
+    basicPrompt()
+    while rest != "" {
+        j = rest.indexOf('|')
+        if j < 0 {
+            item = rest
+            rest = ""
+        } else {
+            item = rest[0, j]
+            rest = rest[j + 1, rest.length - j - 1]
+        }
+        basicLine(item)
+        guard = 0
+        while basicState == BRunning and guard < 10000 {
+            basicStep(1000)
+            guard = guard + 1
+        }
+    }
+    return out
+}
+
+func checkSession(lines: string, want: string, name: string) {
+    var got: text = session(lines)
+    if got == want {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name + " got [" + got[0, got.length] + "]")
+        failures = failures + 1
+    }
+}
+
+func immediateTests() {
+    checkSession("PRINT 2+2", "Ok\n 4 \nOk\n", "immediate print")
+    checkSession("10 PRINT \"A\"|20 PRINT \"B\"|LIST", "Ok\n10 PRINT \"A\"\n20 PRINT \"B\"\nOk\n", "enter lines and list")
+    checkSession("10 PRINT \"A\"|20 PRINT \"B\"|RUN", "Ok\nA\nB\nOk\n", "run")
+    checkSession("10 PRINT \"A\"|15 PRINT \"M\"|LIST 15", "Ok\n15 PRINT \"M\"\nOk\n", "list one")
+    checkSession("10 PRINT 1|20 PRINT 2|30 PRINT 3|LIST 20-", "Ok\n20 PRINT 2\n30 PRINT 3\nOk\n", "list from")
+    checkSession("10 PRINT 1|20 PRINT 2|30 PRINT 3|LIST -20", "Ok\n10 PRINT 1\n20 PRINT 2\nOk\n", "list to")
+    checkSession("10 PRINT 1|20 PRINT 2|30 PRINT 3|LIST 20-30", "Ok\n20 PRINT 2\n30 PRINT 3\nOk\n", "list range")
+    checkSession("10 PRINT 1|20 PRINT 2|DELETE 10|LIST", "Ok\nOk\n20 PRINT 2\nOk\n", "delete")
+    checkSession("10 PRINT 1|10|LIST", "Ok\nOk\n", "bare number deletes")
+    checkSession("10 PRINT 1|NEW|LIST", "Ok\nOk\nOk\n", "new")
+    checkSession("10 PRINT \"A\":STOP|20 PRINT \"B\"|RUN|CONT", "Ok\nA\nBreak in 10\nOk\nB\nOk\n", "stop and cont")
+    checkSession("CONT", "Ok\nCan't continue\nOk\n", "cont with nothing to continue")
+    checkSession("A=5|PRINT A", "Ok\nOk\n 5 \nOk\n", "immediate variables persist")
+    checkSession("10 PRINT \"S\"|SAVE \"T1\"|NEW|LOAD \"T1\"|LIST", "Ok\nOk\nOk\nOk\n10 PRINT \"S\"\nOk\n", "save load")
+    checkSession("10 PRINT \"R\"|SAVE \"T2\"|NEW|RUN \"T2\"", "Ok\nOk\nOk\nR\nOk\n", "run file")
+    checkSession("LOAD \"NOPE\"", "Ok\nFile not found\nOk\n", "load missing")
+    checkSession("10 INPUT A|RUN|7|PRINT A", "Ok\n? Ok\n 7 \nOk\n", "input from prompt session")
+    checkSession("10 GOTO 20|RUN", "Ok\nUndefined line number in 10\nOk\n", "error returns to prompt")
+    checkSession("PRINT 1/0", "Ok\nDivision by zero\nOk\n", "immediate error no line")
+    checkSession("SYSTEM|PRINT 1", "Ok\n", "system leaves prompt")
+    session("FILES")
+    expect(out.indexOf("T1.BAS") >= 0, "files shows saved program")
+    checkSession("10 PRINT \"X\"|20 PRINT \"Y\"|RUN 20", "Ok\nY\nOk\n", "run from line")
+    checkSession("10 PRINT \"A\"|10 PRINT \"B\"|LIST", "Ok\n10 PRINT \"B\"\nOk\n", "replace line")
+    checkSession("FOR I=1 TO 3:PRINT I;:NEXT", "Ok\n 1  2  3 Ok\n", "immediate loop")
+    checkSession("10 PRINT \"A\"|RUN|LIST", "Ok\nA\nOk\n10 PRINT \"A\"\nOk\n", "program survives run")
+    checkSession("10 A=1:STOP|20 PRINT A|RUN|A=9|CONT", "Ok\nBreak in 10\nOk\nOk\n 9 \nOk\n", "cont after immediate assignment")
+}
+
 on App.startCLI(args: list of string) {
     tokenizerTests()
     evalTests()
     controlTests()
     dataTests()
     inputTests()
+    screenTests()
+    immediateTests()
     if failures > 0 { quit 1 }
     log("basic-test: all passed")
 }
