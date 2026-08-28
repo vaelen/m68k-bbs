@@ -62,10 +62,24 @@ menu FidoNet {
 var modem: connection
 var isConnected: bool = false
 
+// Set when a hotkey was just echoed: the caller's cursor sits after
+// the key, so the next caller-facing output starts a fresh line. The
+// newline is part of the echo, not of the key delivery -- handlers get
+// the bare key, and a screen with echo off (a BASIC program reading
+// INKEY$) gets no newline at all.
+var hotkeyPending: bool = false
+
+func freshLine() {
+    if not hotkeyPending { return }
+    hotkeyPending = false
+    if termCol > 0 { sendData(terminal.eol) }
+}
+
 // All caller-facing output funnels through here, so telnet IAC
 // escaping has one chokepoint. Modem commands (+++/ATH) and telnet
 // negotiation bytes bypass it via modem.send/telnetOut.
 func sendData(s: string) {
+    freshLine()
     trackOutput(s)
     telnetSend(modem, s)
 }
@@ -228,8 +242,10 @@ func echoBuffer() {
 // (terminal.linemode, set per screen by displayPrompt) buffers until
 // CR (LF is dropped, so CRLF terminals work) and handles BS/DEL;
 // otherwise each key acts at once: Enter arrives as "", any other key
-// as itself, echoed hotkey-style with a newline after it. Data
-// arriving with no caller connected is dropped.
+// as itself (a length-1 string), echoed hotkey-style; the newline that
+// follows the echo is deferred until the screen prints something
+// (hotkeyPending/freshLine). Data arriving with no caller connected is
+// dropped.
 func inputChar(c: char) {
     var single: string(1)
     if not isConnected { return }
@@ -247,7 +263,7 @@ func inputChar(c: char) {
             // a digit on a numbered list opens its number prompt with
             // the digit already typed
             single = single + c
-            if echoActive() { sendData(terminal.eol) }
+            hotkeyPending = echoActive()
             promptNumber(numberScreen(user.screen), single)
             return
         }
@@ -255,7 +271,7 @@ func inputChar(c: char) {
             single = single + c
             echoChar(c)
         }
-        if echoActive() { sendData(terminal.eol) }
+        hotkeyPending = echoActive()
         processInput(single)
         return
     }
@@ -316,6 +332,7 @@ func sendLine(s: string) {
 // by the sysop screens and the bulletin board reader.
 
 func sendRule(l: BoxPiece, m: BoxPiece, r: BoxPiece, w: list of int) {
+    freshLine()
     sendDrawing(modem, ruleLine(l, m, r, w))
     sendData(terminal.eol)
 }

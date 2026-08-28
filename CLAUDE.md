@@ -225,7 +225,9 @@ inputChar (bbs.cla) → processInput`.
   input (`terminal.linemode` on — text prompts, editor lines and the
   number prompts: buffer until CR, BS/DEL rubs out; off — menus, Y/N,
   pagers, list screens: each key acts at once, Enter arrives as "",
-  echoed hotkey style with a newline). Numbered lists (boards, areas,
+  echoed hotkey style; the newline after the echo is deferred —
+  `hotkeyPending`/`freshLine` — until the screen's first output, so
+  handlers get the bare key and a no-echo screen gets no newline). Numbered lists (boards, areas,
   posts, files, mail — `numberScreen`) have a `V` key that opens a
   line-mode number prompt (`boardnum`/`areanum`/`postnum`/`filenum`/
   `mailnum`, via `promptNumber`); a digit pressed on the list opens
