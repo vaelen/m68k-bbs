@@ -1,0 +1,147 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// basic-host: the BASIC interpreter as a host-lane command-line
+// program, served over the TCP-mapped serial port so a terminal is
+// just `nc`. Build and run with scripts/basic-host.sh:
+//
+//   CLARUS_SERIAL_MODEM=listen:2345 ./prog [file.bas]
+//   nc localhost 2345
+//
+// With a file argument the program is loaded and run and the wrapper
+// quits when it ends; without one it starts at the Ok prompt (SYSTEM
+// quits). The terminal is assumed to be in line mode with local echo
+// (nc, telnet), so typed input is not echoed back; CR on the wire
+// becomes CRLF. INKEY$ sees keys only when the terminal sends them --
+// after Enter, in nc. No timer: `every` blocks make a Clarus program a
+// UI program, which the host C lane can't build, so the interpreter is
+// pumped to completion from each receive and a timed SLEEP busy-waits.
+
+include "basic.cla"
+
+var conn: connection
+var lineBuf: string
+var startFile: string
+var started: bool = false
+var lastWasCR: bool = false
+
+func basicOut(s: string) {
+    var i: int = 0
+    var t: text
+    while i < s.length {
+        if s[i] == '\x0D' { t.append("\x0D\x0A") } else { t.append(s[i]) }
+        i = i + 1
+    }
+    conn.send(t)
+}
+
+func basicScreen(op: char, a: int, b: int) {
+    switch op {
+    case 'C' { conn.send("\x1B[2J\x1B[H") }
+    case 'L' {
+        if a > 0 and b > 0 {
+            conn.send("\x1B[" + string(a) + ";" + string(b) + "H")
+        } else if a > 0 {
+            conn.send("\x1B[" + string(a) + ";1H")
+        } else if b > 0 {
+            conn.send("\x1B[" + string(b) + "G")
+        }
+    }
+    case 'K' {
+        if a >= 0 { conn.send(ansiColor(a, 30)) }
+        if b >= 0 { conn.send(ansiColor(b, 40)) }
+    }
+    case 'B' { conn.send("\x07") }
+    }
+}
+
+// QBasic color 0-15 (0 black, 1 blue, 2 green, 3 cyan, 4 red, 5 magenta,
+// 6 brown, 7 white, +8 bright) to an ANSI SGR sequence.
+func ansiColor(c: int, base: int): string {
+    var order: int[8]
+    var k: int = c
+    order[0] = 0
+    order[1] = 4
+    order[2] = 2
+    order[3] = 6
+    order[4] = 1
+    order[5] = 5
+    order[6] = 3
+    order[7] = 7
+    if k > 15 { k = k mod 16 }
+    if k >= 8 and base == 30 { return "\x1B[1;" + string(base + order[k - 8]) + "m" }
+    if k >= 8 { k = k - 8 }
+    if base == 30 { return "\x1B[22;" + string(base + order[k]) + "m" }
+    return "\x1B[" + string(base + order[k]) + "m"
+}
+
+// Files live in the current directory; no paths.
+func basicPath(name: string, write: bool): string {
+    if name.indexOf('/') >= 0 or name.indexOf("..") >= 0 or name.indexOf(':') >= 0 { return "" }
+    return name
+}
+
+func basicEnv(name: string): string { return "" }
+
+func lineMode(): bool { return basicState == BWaitLine or basicState == BPrompt }
+
+func pump() {
+    while basicState == BRunning or basicState == BSleeping {
+        basicStep(500)              // BSleeping: spins until the deadline
+    }
+    if basicState == BDone {
+        conn.send("\x0D\x0A")
+        quit
+    }
+}
+
+on App.startCLI(args: list of string) {
+    if args.count > 0 { startFile = args[0] }
+    conn.open(serial "modem:9600")
+}
+
+on conn.opened {
+    var src: text
+    started = true
+    basicNew()
+    if startFile != "" {
+        if not file.readText(startFile, src) {
+            log("cannot read " + startFile)
+            quit 1
+        }
+        if not basicLoad(src) { quit 1 }
+        basicRun()
+    } else {
+        basicPrompt()
+    }
+    pump()
+}
+
+on conn.received(data: text) {
+    var i: int = 0
+    var c: char
+    while i < data.length {
+        c = data[i]
+        i = i + 1
+        if lineMode() {
+            if c == '\x0D' or (c == '\x0A' and not lastWasCR) {
+                basicLine(lineBuf)
+                lineBuf = ""
+            } else if c == '\x08' or c == '\x7F' {
+                if lineBuf.length > 0 { lineBuf = lineBuf[0, lineBuf.length - 1] }
+            } else if c >= ' ' {
+                if lineBuf.length < 255 { lineBuf = lineBuf + c }
+            }
+        } else if c != '\x0A' or not lastWasCR {
+            basicKey(c)
+        }
+        lastWasCR = c == '\x0D'
+    }
+    pump()
+}
+
+on conn.failed(err: error) {
+    log(err.message)
+    quit 1
+}
+
