@@ -50,12 +50,38 @@ concatenate them and degrade to plain text by itself:
   `clearColorSeq`/`clearBackgroundSeq` are what they wrap).
 - `bold(on)`, `underline(on)`, `blink(on)`, `reverseVideo(on)`,
   `attrsOff()` (SGR 0), `clearScreen()` (`ESC[2J ESC[H`),
-  `moveTo(row, col)` (1-based) — need `terminal.ansi`, which
-  `applyTerminal` sets for ANSI, VT100, and any type with color on.
+  `moveTo(row, col)` (1-based) — need `terminal.ansi`, an explicit
+  per-menu-entry flag (ANSI, VT100 and the VT52 entry set it).
 
 Bright foregrounds are bold+color, so `bold(false)` un-brightens one
 (re-send `fg`). `trackOutput` ignores cursor motion: `termCol` is stale
 after `moveTo`/`clearScreen` until the next CR.
+
+On **PETSCII** the same builders emit Commodore control bytes instead:
+the C64 palette for `fg` (`petsciiColor`; `fgOff` = light blue), no
+backgrounds, `clearScreen` = CLEAR, `reverseVideo` = RVS ON/OFF,
+`moveTo` = HOME plus cursor steps, and no bold/underline/blink. Each
+byte is wrapped by `petsciiCtrl` behind an ESC so it survives the wire
+translation below.
+
+## Wire translation (translateOut)
+
+`sendData` passes every caller-facing string through `translateOut`
+(transfers and telnet negotiation bypass it):
+
+- ANSI, VT100 — untouched.
+- ASCII — bytes 128–255 become `?`.
+- PETSCII — `petsciiChar` per byte: `a-z` → `$41-$5A` and `A-Z` →
+  `$C1-$DA` (the lowercase set, selected once by
+  `petsciiLowercaseSeq`), CP437 single/double box drawing and blocks →
+  the C= graphics at `$A0-$BF`/`$C0`/`$DB`/`$DD`, `_` → `$A4`,
+  `|` → `$DD`, BS → DELETE (`$14`), other high bytes and `\ { } ~` →
+  `?`, and an ESC copies the byte after it verbatim. So `boxChar`
+  returns CP437 for PETSCII just like ANSI and the wire does the rest.
+  Input goes the other way through `petsciiIn` in `inputChar`
+  (`$41-$5A` → `a-z`, `$C1-$DA` → `A-Z`, DELETE → BS). PETSCII sessions
+  are 25 rows with a bare CR `terminal.eol`. Byte chart:
+  `docs/petscii.md`.
 
 ## Building blocks (terminal.cla)
 

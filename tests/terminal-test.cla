@@ -78,6 +78,42 @@ on App.startCLI(args: list of string) {
     terminal.color = false
     terminal.ansi = false
 
+    // --- PETSCII: control bytes behind ESC, own colors, no backgrounds
+    terminal.type = PETSCII
+    terminal.color = true
+    expect(fg(Red) == "\x1B\x1C" and fg(BrightWhite) == "\x1B\x05", "petscii fg")
+    expect(bg(Red) == "" and bgOff() == "", "petscii: no backgrounds")
+    expect(fgOff() == "\x1B\x9A", "petscii fgOff is light blue")
+    expect(clearScreen() == "\x1B\x93", "petscii clear")
+    expect(bold(true) == "" and underline(true) == "" and blink(true) == "", "petscii: no bold/underline/blink")
+    expect(reverseVideo(true) == "\x1B\x12" and reverseVideo(false) == "\x1B\x92", "petscii reverse")
+    expect(attrsOff() == "\x1B\x92\x1B\x9A", "petscii attrsOff")
+    expect(moveTo(3, 2) == "\x1B\x13\x1B\x11\x1B\x11\x1B\x1D", "petscii moveTo")
+    expect(moveTo(1, 1) == "\x1B\x13", "petscii moveTo home")
+    // text: case swap, box drawing to C= graphics, other high bytes '?',
+    // ESC passes the next byte through, BS becomes DELETE
+    expect(translateOut("Hi 9") == "\xC8I 9", "petscii case swap")
+    expect(translateOut("\xDA\xC4\xBF\xB3\xC0\xD9") == "\xB0\xC0\xAE\xDD\xAD\xBD", "petscii box")
+    expect(translateOut("\xC9\xCD\xBB") == "\xB0\xC0\xAE", "petscii double-line box")
+    expect(translateOut("\x82\xE1") == "??", "petscii unknown high bytes")
+    expect(translateOut("a_b|c\\") == "A\xA4B\xDDC?", "petscii punctuation")
+    expect(translateOut("\x1B\x9Ex\x08") == "\x9EX\x14", "petscii ESC passthrough, BS")
+    expect(translateOut("\x0D\x07") == "\x0D\x07", "petscii controls untouched")
+    expect(petsciiIn('A') == 'a' and petsciiIn('\xC1') == 'A' and petsciiIn('\x14') == '\x08', "petscii input")
+    expect(petsciiIn('1') == '1' and petsciiIn('\x0D') == '\x0D', "petscii input passthrough")
+    w.clear()
+    w.add(1)
+    w.add(1)
+    expect(ruleLine(TopLeft, TopCenter, TopRight, w) == "\xDA\xC4\xC4\xC4\xC2\xC4\xC4\xC4\xBF", "petscii rule is cp437 pre-wire")
+    w.clear()
+    terminal.color = false
+    terminal.type = ASCII
+    expect(translateOut("a\xC4b\xFF") == "a?b?", "ascii: high bytes are ?")
+    expect(translateOut("\x1B[1m") == "\x1B[1m", "ascii: escapes untouched")
+    terminal.type = ANSI
+    expect(translateOut("a\xC4\x1B") == "a\xC4\x1B", "ansi: untouched")
+    terminal.type = ASCII
+
     // --- Box drawing ----------------------------------------------------
 
     // Default eol is CRLF.

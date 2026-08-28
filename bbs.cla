@@ -82,7 +82,7 @@ func freshLine() {
 func sendData(s: string) {
     freshLine()
     trackOutput(s)
-    telnetSend(modem, s)
+    telnetSend(modem, translateOut(s))
 }
 
 // Raw negotiation bytes from telnet.cla -- never escaped.
@@ -247,8 +247,9 @@ func echoBuffer() {
 // follows the echo is deferred until the screen prints something
 // (hotkeyPending/freshLine). Data arriving with no caller connected is
 // dropped.
-func inputChar(c: char) {
+func inputChar(raw: char) {
     var single: string(1)
+    var c: char = raw
     if not isConnected { return }
     if user.screen == "ftn" {
         emsiChar(c)
@@ -258,6 +259,7 @@ func inputChar(c: char) {
         xferChar(c)
         return
     }
+    if terminal.type == PETSCII { c = petsciiIn(raw) }
     if c == '\x03' and basicActive {      // ^C breaks a BASIC program
         basicBreakKey()
         return
@@ -594,14 +596,17 @@ func gotoScreen(s: string) {
 func drawTerminalMenu() {
     sendLine("")
     sendLine("Terminal Types:")
-    sendLine("1. ASCII 80x24 No Color")
-    sendLine("2. ASCII 80x24 With Color")
-    sendLine("3. ANSI  80x24 No Color (DOS/Windows)")
-    sendLine("4. ANSI  80x24 With Color (DOS/Windows)")
-    sendLine("5. VT100 80x24 No Color (UNIX/Linux)")
-    sendLine("6. VT100 80x24 With Color (UNIX/Linux)")
-    sendLine("7. ASCII 40x24 No Color (APPLE II, etc)")
-    sendLine("8. ASCII 40x24 With Color (APPLE II, etc)")
+    sendLine("1. Color Mac/DOS/Windows (ANSI)")
+    sendLine("2. Monochrome Mac/DOS/Windows (ANSI)")
+    sendLine("3. Color UNIX/Mac (VT100)")
+    sendLine("4. Monochrome UNIX/Mac (VT100)")
+    sendLine("5. Apple II 40 Column (ASCII)")
+    sendLine("6. Apple II 80 Column (ASCII)")
+    sendLine("7. Apple II ProTERM, etc. (VT52)")
+    sendLine("8. C64 40 Column (PETSCII)")
+    sendLine("9. C64 80 Column (PETSCII)")
+    sendLine("")
+    sendLine("(Select 5 or 6 for line printers, etc.)")
 }
 
 func drawMainMenu() {
@@ -908,19 +913,28 @@ func termTypeName(t: TerminalType): string {
     case ASCII { return "ASCII" }
     case ANSI  { return "ANSI" }
     case VT100 { return "VT100" }
+    case PETSCII { return "PETSCII" }
     }
     return ""
 }
 
-func applyTerminal(t: TerminalType, cols: int, colorOn: bool) {
+// colorOn/ansiOn are the menu entry's own claims -- a type implies
+// neither (VT52 is ASCII with escapes, PETSCII has color but no ESC).
+func applyTerminal(t: TerminalType, cols: int, colorOn: bool, ansiOn: bool) {
     var msg: string
     terminal.type = t
     setColumns(cols)
     setRows(24)
     terminal.color = colorOn
-    // color implies escape-code support, whatever the type
-    terminal.ansi = (t == ANSI or t == VT100 or colorOn)
+    terminal.ansi = ansiOn
+    terminal.eol = "\x0D\x0A"
     if t == VT100 { sendData(vt100SetupSeq) }
+    if t == PETSCII {
+        // C64 screen: 25 rows, RETURN alone ends a line, lowercase set
+        setRows(25)
+        terminal.eol = "\x0D"
+        sendData(petsciiLowercaseSeq)
+    }
     msg = "User: " + user.name + ", Terminal: " + termTypeName(t)
     msg = msg + " " + intStr(cols) + "x" + intStr(terminal.rows)
     log(msg)
@@ -1004,14 +1018,15 @@ func postLoginCounts() {
 // Invalid choice redraws the whole menu; empty input takes the default.
 func terminalChoice(input: string) {
     switch input {
-    case "1"     { applyTerminal(ASCII, 80, false) }
-    case "2"     { applyTerminal(ASCII, 80, true) }
-    case "3"     { applyTerminal(ANSI, 80, false) }
-    case "4"     { applyTerminal(ANSI, 80, true) }
-    case "", "5" { applyTerminal(VT100, 80, false) }
-    case "6"     { applyTerminal(VT100, 80, true) }
-    case "7"     { applyTerminal(ASCII, 40, false) }
-    case "8"     { applyTerminal(ASCII, 40, true) }
+    case "1"     { applyTerminal(ANSI, 80, true, true) }
+    case "2"     { applyTerminal(ANSI, 80, false, true) }
+    case "3"     { applyTerminal(VT100, 80, true, true) }
+    case "", "4" { applyTerminal(VT100, 80, false, true) }
+    case "5"     { applyTerminal(ASCII, 40, false, false) }
+    case "6"     { applyTerminal(ASCII, 80, false, false) }
+    case "7"     { applyTerminal(ASCII, 80, false, true) }    // VT52
+    case "8"     { applyTerminal(PETSCII, 40, true, false) }
+    case "9"     { applyTerminal(PETSCII, 80, true, false) }
     else         { gotoScreen("terminal") }
     }
 }

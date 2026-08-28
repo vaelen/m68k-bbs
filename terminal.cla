@@ -4,7 +4,7 @@
 // Terminal details for the connected caller -- drives how we emit
 // colors and line-drawing characters per client later on.
 
-enum TerminalType { ASCII, ANSI, VT100 }
+enum TerminalType { ASCII, ANSI, VT100, PETSCII }
 
 // Columns are stored as one LESS than the physical width, and layouts
 // are chosen against minimumWideTerminalWidth (79 for an 80-column
@@ -100,35 +100,159 @@ func backgroundSeq(color: Color): string {
 const clearColorSeq:      string = "\x1B[22;39m"
 const clearBackgroundSeq: string = "\x1B[49m"
 
+// --- PETSCII -----------------------------------------------------------
+// Commodore terminals: no ESC, colors and cursor motion are single
+// control bytes, and the shifted (lowercase) character set puts
+// lowercase at $41-$5A and uppercase at $C1-$DA. Caller-facing text is
+// translated on the wire by translateOut (sendData); control bytes the
+// builders below emit ride behind an ESC, which translateOut strips
+// while copying the next byte verbatim (docs/petscii.md).
+
+const petsciiLowercaseSeq: string = "\x0E"   // sent once at selection
+
+func petsciiCtrl(b: char): string {
+    return "\x1B" + b
+}
+
+// The 16 ANSI colors on the C64 palette (no backgrounds).
+func petsciiColor(color: Color): char {
+    switch color {
+    case Black         { return '\x90' }
+    case Red           { return '\x1C' }
+    case Green         { return '\x1E' }
+    case Yellow        { return '\x95' }   // brown
+    case Blue          { return '\x1F' }
+    case Magenta       { return '\x9C' }   // purple
+    case Cyan          { return '\x9F' }
+    case White         { return '\x9B' }   // grey 3
+    case BrightBlack   { return '\x97' }   // grey 1
+    case BrightRed     { return '\x96' }
+    case BrightGreen   { return '\x99' }
+    case BrightYellow  { return '\x9E' }
+    case BrightBlue    { return '\x9A' }
+    case BrightMagenta { return '\x9C' }
+    case BrightCyan    { return '\x9F' }
+    case BrightWhite   { return '\x05' }
+    }
+    return '\x05'
+}
+
+const petsciiDefaultColor: char = '\x9A'   // light blue, the C64's own
+
+// CP437 byte -> PETSCII byte for the shifted set: letters swap case,
+// single- and double-line box drawing and blocks go to the C= graphics
+// that survive a charset switch, the rest of the high half is '?'.
+func petsciiChar(c: char): char {
+    var n: int = int(c)
+    if n >= 65 and n <= 90 { return char(n + 128) }   // A-Z -> $C1-$DA
+    if n >= 97 and n <= 122 { return char(n - 32) }   // a-z -> $41-$5A
+    if n < 128 {
+        switch c {
+        case '\x08' { return '\x14' }   // BS -> DELETE
+        case '\x5C' { return '?' }      // backslash (PETSCII shows a pound)
+        case '\x5F' { return '\xA4' }   // underscore -> bottom line
+        case '\x60' { return '\x27' }   // backtick -> apostrophe
+        case '\x7B', '\x7D', '\x7E', '\x7F' { return '?' }
+        case '\x7C' { return '\xDD' }   // | -> vertical bar
+        else { return c }
+        }
+    }
+    switch c {
+    case '\xB3', '\xBA'                         { return '\xDD' }   // vertical
+    case '\xC4', '\xCD'                         { return '\xC0' }   // horizontal
+    case '\xDA', '\xC9', '\xD5', '\xD6'         { return '\xB0' }   // top left
+    case '\xBF', '\xB7', '\xB8', '\xBB'         { return '\xAE' }   // top right
+    case '\xC0', '\xC8', '\xD3', '\xD4'         { return '\xAD' }   // bottom left
+    case '\xD9', '\xBC', '\xBD', '\xBE'         { return '\xBD' }   // bottom right
+    case '\xC3', '\xC6', '\xC7', '\xCC'         { return '\xAB' }   // left tee
+    case '\xB4', '\xB5', '\xB6', '\xB9'         { return '\xB3' }   // right tee
+    case '\xC2', '\xCB', '\xD1', '\xD2'         { return '\xB2' }   // top tee
+    case '\xC1', '\xCA', '\xCF', '\xD0'         { return '\xB1' }   // bottom tee
+    case '\xC5', '\xCE', '\xD7', '\xD8'         { return '\xDB' }   // cross
+    case '\xB0', '\xB1', '\xB2'                 { return '\xA6' }   // shading
+    case '\xDB', '\xFE'                         { return '\xA0' }   // full block
+    case '\xDC' { return '\xA2' }   // lower half
+    case '\xDD' { return '\xA1' }   // left half
+    case '\xDE' { return '\xB6' }   // right half
+    case '\xDF' { return '\xB8' }   // upper half
+    case '\xF9', '\xFA' { return '.' }
+    case '\xFF' { return ' ' }
+    else { return '?' }
+    }
+}
+
+// PETSCII keyboard byte -> the ASCII the rest of the BBS expects.
+func petsciiIn(c: char): char {
+    var n: int = int(c)
+    if n >= 65 and n <= 90 { return char(n + 32) }    // $41-$5A -> a-z
+    if n >= 193 and n <= 218 { return char(n - 128) } // $C1-$DA -> A-Z
+    if c == '\x14' { return '\x08' }                  // DELETE -> BS
+    return c
+}
+
+// Caller-facing text as the terminal's character set: ASCII gets '?'
+// for every high byte, PETSCII the mapping above (an ESC passes the
+// byte after it through untouched -- the builders' control bytes),
+// ANSI and VT100 are sent as-is. Applied by sendData, never to file
+// transfers.
+func translateOut(s: string): string {
+    var out: string = ""
+    var i: int = 0
+    var c: char
+    if terminal.type == ANSI or terminal.type == VT100 { return s }
+    while i < s.length {
+        c = s[i]
+        i = i + 1
+        if terminal.type == PETSCII {
+            if c == '\x1B' {
+                if i < s.length {
+                    out = out + s[i]
+                    i = i + 1
+                }
+            } else {
+                out = out + petsciiChar(c)
+            }
+        } else if int(c) >= 128 {
+            out = out + '?'
+        } else {
+            out = out + c
+        }
+    }
+    return out
+}
+
 // --- Terminal-aware builders -------------------------------------------
 // Each returns the sequence when the session's terminal supports it and
 // "" otherwise, so menus and screens can concatenate them freely and
 // degrade to plain text by themselves. Colors need terminal.color; the
-// rest need terminal.ansi (escape codes honored: ANSI, VT100, or any
-// type with color on).
+// rest need terminal.ansi (escape codes honored) or a PETSCII terminal,
+// which has its own control bytes.
 
 func fg(color: Color): string {
     if not terminal.color { return "" }
+    if terminal.type == PETSCII { return petsciiCtrl(petsciiColor(color)) }
     return colorSeq(color)
 }
 
 func bg(color: Color): string {
-    if not terminal.color { return "" }
+    if not terminal.color or terminal.type == PETSCII { return "" }
     return backgroundSeq(color)
 }
 
 func fgOff(): string {
     if not terminal.color { return "" }
+    if terminal.type == PETSCII { return petsciiCtrl(petsciiDefaultColor) }
     return clearColorSeq
 }
 
 func bgOff(): string {
-    if not terminal.color { return "" }
+    if not terminal.color or terminal.type == PETSCII { return "" }
     return clearBackgroundSeq
 }
 
 // Clear the screen and home the cursor.
 func clearScreen(): string {
+    if terminal.type == PETSCII { return petsciiCtrl('\x93') }
     if not terminal.ansi { return "" }
     return "\x1B[2J\x1B[H"
 }
@@ -154,6 +278,10 @@ func blink(enabled: bool): string {
 }
 
 func reverseVideo(enabled: bool): string {
+    if terminal.type == PETSCII {
+        if enabled { return petsciiCtrl('\x12') }
+        return petsciiCtrl('\x92')
+    }
     if not terminal.ansi { return "" }
     if enabled { return "\x1B[7m" }
     return "\x1B[27m"
@@ -161,6 +289,10 @@ func reverseVideo(enabled: bool): string {
 
 // All attributes and colors off.
 func attrsOff(): string {
+    if terminal.type == PETSCII {
+        if terminal.color { return reverseVideo(false) + fgOff() }
+        return reverseVideo(false)
+    }
     if not terminal.ansi { return "" }
     return "\x1B[0m"
 }
@@ -170,6 +302,22 @@ func attrsOff(): string {
 // after this until the next CR; fine for full-screen layouts that
 // don't take echoed line input mid-screen.
 func moveTo(row: int, col: int): string {
+    var out: string = ""
+    var i: int = 1
+    if terminal.type == PETSCII {
+        // HOME, then step down and right
+        out = petsciiCtrl('\x13')
+        while i < row {
+            out = out + petsciiCtrl('\x11')
+            i = i + 1
+        }
+        i = 1
+        while i < col {
+            out = out + petsciiCtrl('\x1D')
+            i = i + 1
+        }
+        return out
+    }
     if not terminal.ansi { return "" }
     return "\x1B[" + string(row) + ";" + string(col) + "H"
 }
@@ -225,12 +373,13 @@ enum BoxPiece {
 const vt100SetupSeq: string = "\x1B)0"
 
 // The box-drawing character for the caller's terminal: ASCII uses
-// + - |, ANSI the cp437 line-drawing set, VT100 the DEC Special
+// + - |, ANSI the cp437 line-drawing set (PETSCII too -- translateOut
+// turns it into the C= graphics on the wire), VT100 the DEC Special
 // Graphics letters (which render as lines only between
 // startDrawing/stopDrawing).
 func boxChar(p: BoxPiece): char {
     switch terminal.type {
-    case ANSI {
+    case ANSI, PETSCII {
         switch p {
         case TopLeft      { return '\xDA' }
         case TopCenter    { return '\xC2' }
