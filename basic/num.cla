@@ -17,7 +17,7 @@ record Num {
     e: int
 }
 
-const numMaxExp: int = 97       // 2^(97+31) ~ 3.4e38, MS BASIC's single max
+const numMaxExp: int = 100      // 2^(100+31) ~ 2.7e39, a hair past MS BASIC's 3.4e38
 const numMinExp: int = -160     // below ~1e-39: flush to zero
 
 func numZero(): Num {
@@ -88,7 +88,10 @@ func numAdd(a: Num, b: Num): Num {
 
 func numSub(a: Num, b: Num): Num { return numAdd(a, numNeg(b)) }
 
-// Top 32 bits of the 64-bit mantissa product, via 16-bit halves.
+// The 64-bit mantissa product via 16-bit halves, taken down to a
+// normalized 31-bit mantissa with round-to-nearest. The product of two
+// normalized mantissas is in [2^60, 2^62), so the result is P >> 30 or
+// P >> 31 depending on the top bit.
 func numMul(a: Num, b: Num): Num {
     var am: int
     var bm: int
@@ -96,8 +99,14 @@ func numMul(a: Num, b: Num): Num {
     var al: int
     var bh: int
     var bl: int
+    var hi: int
+    var mid1: int
+    var mid2: int
+    var lo: int
+    var t: int
+    var k: int
     var p: int
-    var low: int
+    var rem: int
     var neg: bool
     if a.m == 0 or b.m == 0 { return numZero() }
     neg = (a.m < 0) != (b.m < 0)
@@ -109,13 +118,26 @@ func numMul(a: Num, b: Num): Num {
     al = am & 0xFFFF
     bh = bm >> 16
     bl = bm & 0xFFFF
-    p = ah * bh + ((ah * bl) >> 16) + ((al * bh) >> 16)
-    // round to nearest on the dropped low 32 bits (masking keeps the
-    // al*bl term right even when its product overflows the sign bit)
-    low = ((ah * bl) & 0xFFFF) + ((al * bh) & 0xFFFF) + (((al * bl) >> 16) & 0xFFFF)
-    p = p + ((low + 0x8000) >> 16)
+    hi = ah * bh            // < 2^30
+    mid1 = ah * bl          // < 2^31
+    mid2 = al * bh          // < 2^31
+    lo = al * bl            // < 2^32: may wrap negative, masks keep it right
+    // P = hi*2^32 + (mid1+mid2)*2^16 + lo. Dropping 31 bits always
+    // fits; if that leaves p below 2^30 (P < 2^61) drop 30 instead so
+    // the rounding happens at the normalized precision.
+    t = 31
+    while true {
+        k = t - 16
+        p = (hi << (32 - t)) + (mid1 >> k) + (mid2 >> k) + ((lo >> t) & ((1 << (32 - t)) - 1))
+        // the dropped bits, in units of 2^16
+        rem = (mid1 & ((1 << k) - 1)) + (mid2 & ((1 << k) - 1)) + ((lo & ((1 << t) - 1)) >> 16)
+        p = p + (rem >> k)
+        if t == 30 or p >= 0x40000000 { break }
+        t = 30
+    }
+    if (rem & ((1 << k) - 1)) >= (1 << (k - 1)) and p != 0x7FFFFFFF { p = p + 1 }
     if neg { p = -p }
-    return numNormalize(p, a.e + b.e + 32)
+    return numNormalize(p, a.e + b.e + t)
 }
 
 // Restoring long division on halved mantissas: 31 quotient bits of
@@ -220,4 +242,217 @@ func numRound(x: Num): Num {
     r = numFloor(numAdd(numAbs(x), half))
     if x.m < 0 { return numNeg(r) }
     return r
+}
+
+// --- Decimal conversion ------------------------------------------------
+
+func numTen(): Num { return numFromInt(10) }
+
+// 10^k by squaring; negative k divides.
+func numPow10(k: int): Num {
+    var r: Num = numFromInt(1)
+    var b: Num = numTen()
+    var kk: int = k
+    if kk < 0 { return numDiv(numFromInt(1), numPow10(-kk)) }
+    while kk > 0 {
+        if (kk & 1) != 0 { r = numMul(r, b) }
+        kk = kk >> 1
+        if kk > 0 { b = numMul(b, b) }
+    }
+    return r
+}
+
+// x * 10^k, applied in chunks so a large |k| never builds an
+// intermediate power that overflows on its own.
+func numMulPow10(x: Num, k: int): Num {
+    var r: Num = x
+    var kk: int = k
+    while kk > 30 {
+        r = numMul(r, numPow10(30))
+        kk = kk - 30
+    }
+    while kk < -30 {
+        r = numDiv(r, numPow10(30))
+        kk = kk + 30
+    }
+    if kk != 0 { r = numMul(r, numPow10(kk)) }
+    return r
+}
+
+// Index just past the text the last numParsePrefix/numParse consumed.
+var numParseEnd: int = 0
+
+func numDigit(c: char): int {
+    if c >= '0' and c <= '9' { return int(c) - int('0') }
+    return -1
+}
+
+// Parse the longest numeric prefix of s after leading blanks:
+// [-+]digits[.digits][E[-+]digits], or &H/&O integers. Sets numParseEnd;
+// nothing parsed gives zero with numParseEnd at the first non-blank.
+func numParsePrefix(s: string): Num {
+    var i: int = 0
+    var acc: int = 0
+    var dropped: int = 0
+    var frac: int = 0
+    var exp: int = 0
+    var expNeg: bool = false
+    var neg: bool = false
+    var digits: int = 0
+    var d: int
+    var j: int
+    var r: Num
+    var c: char
+    while i < s.length and (s[i] == ' ' or s[i] == '\x09') { i = i + 1 }
+    numParseEnd = i
+    if i + 1 < s.length and s[i] == '&' {
+        c = s[i + 1]
+        if c == 'H' or c == 'h' {
+            j = i + 2
+            while j < s.length {
+                c = s[j]
+                d = numDigit(c)
+                if d < 0 and c >= 'A' and c <= 'F' { d = int(c) - int('A') + 10 }
+                if d < 0 and c >= 'a' and c <= 'f' { d = int(c) - int('a') + 10 }
+                if d < 0 { break }
+                acc = (acc << 4) | d
+                j = j + 1
+            }
+            numParseEnd = j
+            return numFromInt(acc)
+        }
+        if c == 'O' or c == 'o' {
+            j = i + 2
+            while j < s.length {
+                d = numDigit(s[j])
+                if d < 0 or d > 7 { break }
+                acc = (acc << 3) | d
+                j = j + 1
+            }
+            numParseEnd = j
+            return numFromInt(acc)
+        }
+    }
+    if i < s.length and (s[i] == '-' or s[i] == '+') {
+        neg = s[i] == '-'
+        i = i + 1
+    }
+    while i < s.length {
+        d = numDigit(s[i])
+        if d < 0 { break }
+        if acc < 100000000 { acc = acc * 10 + d } else { dropped = dropped + 1 }
+        digits = digits + 1
+        i = i + 1
+    }
+    if i < s.length and s[i] == '.' {
+        i = i + 1
+        while i < s.length {
+            d = numDigit(s[i])
+            if d < 0 { break }
+            if acc < 100000000 {
+                acc = acc * 10 + d
+                frac = frac + 1
+            }
+            digits = digits + 1
+            i = i + 1
+        }
+    }
+    if digits == 0 { return r }
+    if i < s.length and (s[i] == 'E' or s[i] == 'e' or s[i] == 'D' or s[i] == 'd') {
+        j = i + 1
+        if j < s.length and (s[j] == '-' or s[j] == '+') {
+            expNeg = s[j] == '-'
+            j = j + 1
+        }
+        if j < s.length and numDigit(s[j]) >= 0 {
+            while j < s.length and numDigit(s[j]) >= 0 {
+                if exp < 1000 { exp = exp * 10 + numDigit(s[j]) }
+                j = j + 1
+            }
+            if expNeg { exp = -exp }
+            i = j
+        }
+    }
+    numParseEnd = i
+    exp = exp - frac + dropped
+    if acc == 0 { return r }
+    if exp > 60 { abort("Overflow") }
+    if exp < -60 { return r }
+    r = numMulPow10(numFromInt(acc), exp)
+    if neg { r = numNeg(r) }
+    return r
+}
+
+// The whole string (blanks aside) must be a number: BASIC's numeric
+// input conversion. Aborts "Type mismatch" otherwise.
+func numParse(s: string): Num {
+    var r: Num = numParsePrefix(s)
+    var i: int = numParseEnd
+    var start: int = 0
+    while start < s.length and (s[start] == ' ' or s[start] == '\x09') { start = start + 1 }
+    if i == start { abort("Type mismatch") }
+    while i < s.length {
+        if s[i] != ' ' and s[i] != '\x09' { abort("Type mismatch") }
+        i = i + 1
+    }
+    return r
+}
+
+// GW-BASIC single-precision PRINT form: 7 significant digits, a
+// leading space for non-negative values (or "-"), no point on integral
+// values, no zero before the point, E notation at 1E+07 and below
+// 1E-04. PRINT adds its own trailing space.
+func numStr(x: Num): string {
+    var ax: Num
+    var y: Num
+    var d: int
+    var digits: int
+    var ds: string
+    var r: string
+    var i: int
+    var intDigits: int
+    if x.m == 0 { return " 0" }
+    ax = numAbs(x)
+    // decimal exponent estimate from the binary one, then exact adjust
+    d = (ax.e + 31) * 30103
+    if d < 0 { d = -((-d + 99999) / 100000) } else { d = d / 100000 }
+    while d < 38 and numCmp(ax, numPow10(d + 1)) >= 0 { d = d + 1 }
+    while numCmp(ax, numPow10(d)) < 0 { d = d - 1 }
+    // scale to a 7-digit integer and round
+    y = numMulPow10(ax, 6 - d)
+    digits = numToInt(numRound(y))
+    if digits >= 10000000 {
+        digits = 1000000
+        d = d + 1
+    }
+    ds = string(digits)
+    while ds.length > 1 and ds[ds.length - 1] == '0' { ds = ds[0, ds.length - 1] }
+    if d >= 7 or d <= -5 {
+        r = ds[0, 1]
+        if ds.length > 1 { r = r + "." + ds[1, ds.length - 1] }
+        r = r + "E"
+        if d < 0 { r = r + "-" } else { r = r + "+" }
+        i = d
+        if i < 0 { i = -i }
+        if i < 10 { r = r + "0" }
+        r = r + string(i)
+    } else if d >= 0 {
+        intDigits = d + 1
+        if ds.length <= intDigits {
+            r = ds
+            while r.length < intDigits { r = r + "0" }
+        } else {
+            r = ds[0, intDigits] + "." + ds[intDigits, ds.length - intDigits]
+        }
+    } else {
+        r = "."
+        i = -d - 1
+        while i > 0 {
+            r = r + "0"
+            i = i - 1
+        }
+        r = r + ds
+    }
+    if x.m < 0 { return "-" + r }
+    return " " + r
 }
