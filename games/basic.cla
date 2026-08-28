@@ -94,7 +94,7 @@ func basicPath(name: string, write: bool): string {
     if name.indexOf(':') >= 0 { return "" }
     if basicGameMode {
         folder = basicGamesFolder
-        if write and user.access != accessSysop { return "" }
+        if write and not hasPermission(Sysop) { return "" }
     } else {
         folder = basicGamesFolder + ":" + user.name
         if write and not file.exists(folder) {
@@ -106,10 +106,9 @@ func basicPath(name: string, write: bool): string {
 }
 
 func basicEnv(name: string): string {
-    var s: string(1)
     switch name {
     case "USER"    { return user.name }
-    case "ACCESS"  { return s + user.access }
+    case "ACCESS"  { return intStr(user.access) }
     case "COLUMNS" { return intStr(terminal.columns + 1) }
     case "ROWS"    { return intStr(terminal.rows) }
     }
@@ -156,7 +155,7 @@ func drawGamesMenu() {
     }
     sendLine("")
     if gameNames.count > 0 { sendLine("V) Play a game by number") }
-    if user.access == accessSysop { sendLine("B) BASIC prompt") }
+    if hasPermission(BasicRepl) { sendLine("B) BASIC prompt") }
     sendLine("Q) Return to Main Menu")
     sendLine("")
 }
@@ -170,7 +169,7 @@ func gamesChoice(input: string) {
     case "Q" { gotoScreen("main") }
     case "V" { promptNumber("gamenum", "") }
     case "B" {
-        if user.access == accessSysop {
+        if hasPermission(BasicRepl) {
             startBasicPrompt()
         } else {
             displayPrompt()

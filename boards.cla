@@ -171,8 +171,8 @@ func drawPostsMenu() {
     sendLine("+) Next Page (or Enter)")
     sendLine("-) Previous Page")
     sendLine("L) List Posts")
-    sendLine("N) New Post")
-    if user.access == accessSysop {
+    if hasPermission(PostBoards) { sendLine("N) New Post") }
+    if hasPermission(Sysop) {
         sendLine("D) Delete Post")
     }
     sendLine("Q) Return to Board List")
@@ -212,9 +212,11 @@ func postsChoice(input: string) {
         displayPrompt()
     }
     case "V" { promptNumber("postnum", "") }
-    case "N" { startNewPost() }
+    case "N" {
+        if hasPermission(PostBoards) { startNewPost() } else { displayPrompt() }
+    }
     case "D" {
-        if user.access == accessSysop {
+        if hasPermission(Sysop) {
             delFromView = false
             user.screen = "delpostnum"
         }
@@ -335,8 +337,8 @@ func drawPostViewMenu() {
     sendLine(">) Next Post (or .)")
     sendLine("<) Previous Post (or ,)")
     sendLine("L) Redraw This Page")
-    sendLine("R) Reply")
-    if user.access == accessSysop {
+    if hasPermission(PostBoards) { sendLine("R) Reply") }
+    if hasPermission(Sysop) {
         sendLine("D) Delete Post")
     }
     sendLine("Q) Return to Post List")
@@ -387,9 +389,11 @@ func postViewChoice(input: string) {
         drawPostView()
         displayPrompt()
     }
-    case "R" { startReply() }
+    case "R" {
+        if hasPermission(PostBoards) { startReply() } else { displayPrompt() }
+    }
     case "D" {
-        if user.access == accessSysop {
+        if hasPermission(Sysop) {
             delFromView = true
             user.screen = "delpostconfirm"
         }

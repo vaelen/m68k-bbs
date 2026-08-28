@@ -11,19 +11,60 @@ record User {
     buffer:        string(255)        // line-mode input so far
     id:            int                // vDB record ID; 0 = not stored
     email:         string(63)
-    access:        char = 'U'         // 'U' user, 'S' sysop
+    access:        int                // Access flag bits (below)
     created:       int                // Mac-epoch seconds
     lastSeen:      int                // Mac-epoch seconds
 }
 
 var user: User
 
-// Access levels for the `access` field above (a plain char so richer
-// levels can slot in later). Also reused by the file-area access byte
-// (areasdb.cla): accessAll = visible to everyone, accessSysop = staff
-// only.
+// Access flags: `access` is a bit set, one bit per Access member
+// (the member's value is its bit number). Each gate checks its own
+// bit; Sysop implies nothing else, so the first account is created
+// with every bit and everyone after with accessDefault.
+enum Access {
+    Login          "Login"
+    SendMail       "Send Mail"
+    PostBoards     "Post to Boards"
+    UploadFiles    "Upload Files"
+    ApproveUploads "Approve Uploads"
+    PostWall       "Post on Wall"
+    Games          "Access Games"
+    Sysop          "Sysop"
+    BasicRepl      "BASIC Prompt"
+}
+const accessFlagCount: int = 9
+const accessDefault:  int = 111        // Login SendMail PostBoards UploadFiles PostWall Games
+const accessAllFlags: int = 511        // bits 0-8
+
+func getBit(v: int, n: int): bool { return (v & (1 << n)) != 0 }
+func setBit(v: int, n: int): int { return v | (1 << n) }
+func clearBit(v: int, n: int): int { return v & ~(1 << n) }
+
+func accessHas(v: int, f: Access): bool { return getBit(v, int(f)) }
+func hasPermission(f: Access): bool { return accessHas(user.access, f) }
+func setPermission(f: Access, grant: bool) {
+    if grant { user.access = setBit(user.access, int(f)) } else { user.access = clearBit(user.access, int(f)) }
+}
+
+func accessLabel(f: Access): string {
+    switch f {
+    case Login          { return "Login" }
+    case SendMail       { return "Send Mail" }
+    case PostBoards     { return "Post to Boards" }
+    case UploadFiles    { return "Upload Files" }
+    case ApproveUploads { return "Approve Uploads" }
+    case PostWall       { return "Post on Wall" }
+    case Games          { return "Access Games" }
+    case Sysop          { return "Sysop" }
+    case BasicRepl      { return "BASIC Prompt" }
+    }
+    return ""
+}
+
+// The file-area access byte (areasdb.cla): accessAll = visible to
+// everyone, accessSysop = staff only.
 const accessAll:   char = '\x00'
-const accessUser:  char = 'U'
 const accessSysop: char = 'S'
 
 // djb2 hash of a password, masked positive -- the same per-byte step

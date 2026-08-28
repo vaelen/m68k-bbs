@@ -14,7 +14,7 @@ var editId: int = 0
 var editField: char = ' '
 var editName: string(31)
 var editEmail: string(63)
-var editAccess: char = 'U'
+var editAccess: int = 0
 var editHash: int = 0
 var editCreated: int = 0
 var editLastSeen: int = 0
@@ -238,8 +238,8 @@ func resolveNetwork(input: string): int {
     return -1
 }
 
-func accessName(a: char): string {
-    if a == accessSysop { return "Sysop" }
+func accessName(a: int): string {
+    if accessHas(a, Sysop) { return "Sysop" }
     return "User"
 }
 
@@ -330,7 +330,7 @@ func drawUserListPage() {
             cells.clear()
             cells.add(intStr(id))
             cells.add(dbExtractString(rec, uOffName))
-            cells.add(accessName(rec[uOffAccess]))
+            cells.add(accessName(rec.intAt(uOffAccess)))
             if terminal.columns >= minimumWideTerminalWidth {
                 if rec.intAt(uOffLastSeen) != 0 {
                     cells.add(dateTimeStr(rec.intAt(uOffLastSeen)))
@@ -462,7 +462,7 @@ func drawUserDetails(id: int, rec: text) {
     sendTableTitle("User Details", w)
     sendDetailRow("ID",       intStr(id), w)
     sendDetailRow("Username", dbExtractString(rec, uOffName), w)
-    sendDetailRow("Access",   accessName(rec[uOffAccess]), w)
+    sendDetailRow("Access",   accessName(rec.intAt(uOffAccess)), w)
     sendDetailRow("Email",    dbExtractString(rec, uOffEmail), w)
     sendDetailRow("Created",  dateTimeStr(rec.intAt(uOffCreated)), w)
     if rec.intAt(uOffLastSeen) != 0 {
@@ -547,7 +547,7 @@ func editUserIdInput(input: string) {
     editName = dbExtractString(rec, uOffName)
     editHash = rec.intAt(uOffHash)
     editEmail = dbExtractString(rec, uOffEmail)
-    editAccess = rec[uOffAccess]
+    editAccess = rec.intAt(uOffAccess)
     editCreated = rec.intAt(uOffCreated)
     editLastSeen = rec.intAt(uOffLastSeen)
     user.screen = "edituser"
@@ -580,12 +580,17 @@ func drawEditUserCard() {
 
 func editUserChoice(input: string) {
     switch upperStr(input) {
-    case "N", "E", "A", "P" {
-        if upperStr(input) == "A" and editId == user.id {
+    case "A" {
+        if editId == user.id {
             sendLine("You cannot change your own access level.")
             displayPrompt()
             return
         }
+        user.screen = "useraccess"
+        drawAccessTable()
+        displayPrompt()
+    }
+    case "N", "E", "P" {
         editField = upperStr(input)[0]
         user.screen = "edituserval"
         displayPrompt()
@@ -608,11 +613,55 @@ func editUserChoice(input: string) {
     }
 }
 
+// The access-flag table for the user being edited (buffered in
+// editAccess; the edit card's S saves it).
+func drawAccessTable() {
+    var w: list of int
+    var cells: list of string
+    var i: int = 0
+    w.add(2)
+    w.add(20)
+    w.add(7)
+    cells.add("N")
+    cells.add("Access Level")
+    cells.add("Granted")
+    sendTableHeader("Access: " + editName, cells, w)
+    while i < accessFlagCount {
+        cells.clear()
+        cells.add(intStr(i))
+        cells.add(accessLabel(Access(i)))
+        if getBit(editAccess, i) { cells.add("Yes") } else { cells.add("No") }
+        sendLine(rowLine(cells, w))
+        i = i + 1
+    }
+    sendRule(BottomLeft, BottomCenter, BottomRight, w)
+}
+
+// "useraccess": a flag number flips that bit and redraws; Enter
+// returns to the edit card.
+func accessToggleInput(input: string) {
+    var n: int
+    if input == "" {
+        user.screen = "edituser"
+        drawEditUserCard()
+        displayPrompt()
+        return
+    }
+    n = parseIntStr(input)
+    if (n == 0 and input != "0") or n >= accessFlagCount {
+        sendLine("0-" + intStr(accessFlagCount - 1) + ".")
+        displayPrompt()
+        return
+    }
+    if getBit(editAccess, n) { editAccess = clearBit(editAccess, n) } else { editAccess = setBit(editAccess, n) }
+    drawAccessTable()
+    displayPrompt()
+}
+
 func editUserValuePrompt() {
     switch editField {
     case 'N' { sendData("Username [" + editName + "]: ") }
     case 'E' { sendData("Email [" + editEmail + "]: ") }
-    case 'A' { sendData("Access (U/S) [" + editAccess + "]: ") }
     case 'P' { sendData("New password (Enter keeps): ") }
     }
 }
@@ -641,16 +690,6 @@ func editUserValue(input: string) {
                 ok = false
             } else {
                 editEmail = input
-            }
-        }
-        case 'A' {
-            switch upperStr(input) {
-            case "U" { editAccess = accessUser }
-            case "S" { editAccess = accessSysop }
-            else {
-                sendLine("U or S.")
-                ok = false
-            }
             }
         }
         case 'P' { editHash = hashPassword(input) }

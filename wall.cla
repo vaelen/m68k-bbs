@@ -80,8 +80,7 @@ func drawWall() {
         cells.add("Nothing on the wall yet.")
         sendLine(rowLine(cells, span))
         sendRule(BottomLeft, BottomCenter, BottomRight, span)
-        user.screen = "wallask"
-        displayPrompt()
+        askWall()
         return
     }
     while wallIndex < wallIds.count {
@@ -162,8 +161,7 @@ func finishWall() {
     var w: list of int
     wallWidths(w)
     sendRule(BottomLeft, BottomCenter, BottomRight, w)
-    user.screen = "wallask"
-    displayPrompt()
+    askWall()
 }
 
 // "wallmore": Y reopens the box and keeps drawing; anything else
@@ -177,8 +175,17 @@ func wallMoreChoice(input: string) {
         wallPageHasEntry = false
         drawWall()
     } else {
+        askWall()
+    }
+}
+
+// "Sign the wall?" -- skipped for callers without the PostWall flag.
+func askWall() {
+    if hasPermission(PostWall) {
         user.screen = "wallask"
         displayPrompt()
+    } else {
+        wallDone()
     }
 }
 

@@ -482,7 +482,7 @@ func lineScreen(s: string): bool {
     case "banadd", "bandel" { return true }
     case "showuser", "showboard", "showarea" { return true }
     case "edituserid", "editboardid", "editareaid" { return true }
-    case "edituserval", "editboardval", "editareaval" { return true }
+    case "edituserval", "editboardval", "editareaval", "useraccess" { return true }
     case "deluserid", "delboardid", "delareaid" { return true }
     case "boardnum", "areanum", "postnum", "filenum", "mailnum" { return true }
     case "mailto", "mailaddr", "editsubject", "editbody", "delpostnum", "delfilenum" { return true }
@@ -521,6 +521,7 @@ func displayPrompt() {
     case "editareaid"  { sendData("Area ID: ") }
     case "edituser", "editboard", "editarea" { sendData("Field letter, S)ave, Q)uit: ") }
     case "edituserval"  { editUserValuePrompt() }
+    case "useraccess"   { sendData("Flag to toggle (Enter = done): ") }
     case "editboardval" { editBoardValuePrompt() }
     case "editareaval"  { editAreaValuePrompt() }
     case "deluserid"    { sendData("User ID or name: ") }
@@ -606,12 +607,12 @@ func drawMainMenu() {
     } else {
         sendLine("M) Mail")
     }
-    sendLine("G) Games")
+    if hasPermission(Games) { sendLine("G) Games") }
     sendLine("")
     sendLine("D) Message of the Day")
     sendLine("W) Wall")
     sendLine("L) Recent Logins")
-    if user.access == accessSysop {
+    if hasPermission(Sysop) {
         sendLine("S) Sysop Menu")
     }
     sendLine("T) Terminal Settings")
@@ -696,6 +697,7 @@ func processInput(input: string) {
     case "edituserid"   { editUserIdInput(input) }
     case "edituser"     { editUserChoice(input) }
     case "edituserval"  { editUserValue(input) }
+    case "useraccess"   { accessToggleInput(input) }
     case "editboardid"  { editBoardIdInput(input) }
     case "editboard"    { editBoardChoice(input) }
     case "editboardval" { editBoardValue(input) }
@@ -789,7 +791,14 @@ func loginName(input: string) {
 
 func loginPassword(input: string) {
     if pendingId >= 1 and loadUser(pendingId) and hashPassword(input) == user.passwordHash {
-        loginOk()
+        if hasPermission(Login) {
+            loginOk()
+        } else {
+            log("Disabled account at login (" + user.name + "); hanging up.")
+            sendLine("This account is disabled.")
+            user.screen = "logoff"
+            hangupPhase = 1
+        }
     } else {
         sendLine("Invalid password.")
         pendingId = 0
@@ -864,8 +873,8 @@ func newEmail(input: string) {
         return
     }
     user.email = input
-    user.access = accessUser
-    if userCount() == 0 { user.access = accessSysop }
+    user.access = accessDefault
+    if userCount() == 0 { user.access = accessAllFlags }
     user.created = now()
     user.lastSeen = now()
     if createUser() < 1 {
@@ -879,7 +888,7 @@ func newEmail(input: string) {
     sessionNew = true
     sendLine("")
     sendLine("Account created. Welcome, " + user.name + "!")
-    if user.access == accessSysop {
+    if hasPermission(Sysop) {
         sendLine("You are the first user, so you have sysop access.")
     }
     user.authenticated = true
@@ -975,7 +984,7 @@ func postLoginCounts() {
     if unreadCount(user.id) > 0 {
         sendLine("You have " + intStr(unreadCount(user.id)) + " new message(s).")
     }
-    if user.access == accessSysop {
+    if hasPermission(ApproveUploads) {
         pf = pendingFileCount()
         if pf > 0 {
             sendLine(intStr(pf) + " file(s) are awaiting approval.")
@@ -1005,7 +1014,9 @@ func mainChoice(input: string) {
     }
     case "B" { gotoScreen("boards") }
     case "F" { gotoScreen("areas") }
-    case "G" { gotoScreen("games") }
+    case "G" {
+        if hasPermission(Games) { gotoScreen("games") } else { displayPrompt() }
+    }
     case "W" {
         wallFromMenu = true
         startWall()
@@ -1025,7 +1036,7 @@ func mainChoice(input: string) {
         displayPrompt()
     }
     case "S" {
-        if user.access == accessSysop {
+        if hasPermission(Sysop) {
             gotoScreen("sysop")
         } else {
             displayPrompt()

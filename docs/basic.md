@@ -160,8 +160,8 @@ the BBS at all (a per-program `ECHO` setting if someone wants it).
 
 - The Games menu lists `*.BAS` in the `BASIC` folder next to the app
   (`file.list`, sorted), numbered; `V` or a digit opens the `Game
-  number:` prompt (`gamenum`) and the pick runs. Sysops (`user.access
-  == accessSysop`) also see `B) BASIC prompt`.
+  number:` prompt (`gamenum`) and the pick runs. Callers with the
+  BasicRepl access flag also see `B) BASIC prompt`.
 - Screens: `basic` (character mode — keys go to `basicKey`, and
   `echoActive()` is off so `INKEY$` games control what shows) and
   `basicline` (line mode — `INPUT` answers and prompt lines go to
@@ -183,7 +183,8 @@ the BBS at all (a per-program `ECHO` setting if someone wants it).
   rest is ignored; BEEP is a BEL always. `basicPath` refuses any `:`,
   maps to `:BASIC:name` while a game runs (writes below sysop refused)
   and `:BASIC:<username>:name` at the prompt (folder created on first
-  write). `basicEnv` answers `USER`, `ACCESS`, `COLUMNS`, `ROWS`.
+  write). `basicEnv` answers `USER`, `ACCESS` (the flag bits as a decimal
+  int — `docs/access.md`), `COLUMNS`, `ROWS`.
 - `basicWidth = terminal.columns` (the physical width minus one, as
   everywhere in the BBS, so the last column is never written).
 - `disconnected()` calls `basicStop()`; `BDone` (program end,

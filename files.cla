@@ -17,16 +17,16 @@ var filePage: int = 1
 var filePages: int = 1
 
 // A file record is visible to the current caller unless it is pending
-// approval and the caller is not a sysop.
+// approval and the caller cannot approve uploads.
 func fileVisible(rec: text): bool {
-    if user.access == accessSysop { return true }
+    if hasPermission(ApproveUploads) { return true }
     return (rec.intAt(fOffFlags) & fileFlagPending) == 0
 }
 
 // An area is visible to the current caller unless it is sysop-only and
 // the caller is not a sysop.
 func areaVisible(rec: text): bool {
-    if user.access == accessSysop { return true }
+    if hasPermission(Sysop) { return true }
     return rec[aOffAccess] != accessSysop
 }
 
@@ -225,8 +225,8 @@ func drawFilesMenu() {
     sendLine("+) Next Page (or Enter)")
     sendLine("-) Previous Page")
     sendLine("L) List Files")
-    sendLine("U) Upload File")
-    if user.access == accessSysop {
+    if hasPermission(UploadFiles) { sendLine("U) Upload File") }
+    if hasPermission(Sysop) {
         sendLine("D) Delete File")
     }
     sendLine("Q) Return to Area List")
@@ -266,9 +266,11 @@ func filesChoice(input: string) {
         displayPrompt()
     }
     case "V" { promptNumber("filenum", "") }
-    case "U" { gotoScreen("upproto") }
+    case "U" {
+        if hasPermission(UploadFiles) { gotoScreen("upproto") } else { displayPrompt() }
+    }
     case "D" {
-        if user.access == accessSysop {
+        if hasPermission(Sysop) {
             delFileFromView = false
             user.screen = "delfilenum"
         }
@@ -418,8 +420,8 @@ func drawFileViewMenu() {
     sendLine("<) Previous File (or ,)")
     sendLine("L) Redraw This Page")
     sendLine("D) Download File")
-    if user.access == accessSysop {
-        if (fileRec.flags & fileFlagPending) != 0 { sendLine("A) Approve File") }
+    if hasPermission(ApproveUploads) and (fileRec.flags & fileFlagPending) != 0 { sendLine("A) Approve File") }
+    if hasPermission(Sysop) {
         sendLine("E) Edit Descriptions")
         sendLine("X) Delete File")
     }
@@ -480,7 +482,7 @@ func fileViewChoice(input: string) {
         }
     }
     case "A" {
-        if user.access == accessSysop and (fileRec.flags & fileFlagPending) != 0 {
+        if hasPermission(ApproveUploads) and (fileRec.flags & fileFlagPending) != 0 {
             fileRec.flags = fileRec.flags & ~fileFlagPending
             if saveFile() {
                 sendLine("Approved.")
@@ -492,14 +494,14 @@ func fileViewChoice(input: string) {
         displayPrompt()
     }
     case "E" {
-        if user.access == accessSysop {
+        if hasPermission(Sysop) {
             upEditing = true
             user.screen = "editfiledesc"
         }
         displayPrompt()
     }
     case "X" {
-        if user.access == accessSysop {
+        if hasPermission(Sysop) {
             delFileFromView = true
             user.screen = "delfileconfirm"
         }
@@ -818,7 +820,7 @@ func fileDescAbort() {
 
 func addUploadEntry(body: text) {
     var flags: int = fileFlagPending
-    if user.access == accessSysop { flags = 0 }
+    if hasPermission(ApproveUploads) { flags = 0 }
     if addFile(upNames[upIndex], user.name, upShort, upSizes[upIndex], flags, body) < 1 {
         sendLine("Save failed: " + lastError.message)
         log("Upload: addFile failed for " + upNames[upIndex] + ": " + lastError.message)

@@ -1,0 +1,63 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for the access flags in user.cla: the bit helpers,
+// hasPermission/setPermission on the session user, and the presets.
+
+include "../user.cla"
+
+var failures: int = 0
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+on App.startCLI(args: list of string) {
+    var v: int = 0
+    var f: Access = BasicRepl
+    expect(not getBit(0, 3), "getBit on zero")
+    v = setBit(v, 3)
+    expect(v == 8 and getBit(v, 3), "setBit 3")
+    v = setBit(v, 0)
+    expect(v == 9 and getBit(v, 0) and getBit(v, 3), "setBit 0 keeps 3")
+    v = setBit(v, 3)
+    expect(v == 9, "setBit is idempotent")
+    v = clearBit(v, 3)
+    expect(v == 1 and not getBit(v, 3) and getBit(v, 0), "clearBit 3")
+    v = clearBit(v, 3)
+    expect(v == 1, "clearBit is idempotent")
+    v = setBit(0, 31)
+    expect(getBit(v, 31) and not getBit(v, 30), "bit 31 (sign bit) works")
+
+    user = new User
+    expect(user.access == 0, "new user has no flags")
+    expect(not hasPermission(Login), "no Login flag")
+    setPermission(Login, true)
+    expect(hasPermission(Login) and user.access == 1, "grant Login")
+    setPermission(Sysop, true)
+    expect(hasPermission(Sysop) and user.access == 129, "grant Sysop (bit 7)")
+    setPermission(Login, false)
+    expect(not hasPermission(Login) and hasPermission(Sysop), "revoke Login only")
+    expect(int(f) == 8, "BasicRepl is bit 8")
+
+    user.access = accessDefault
+    expect(hasPermission(Login) and hasPermission(SendMail) and hasPermission(PostBoards) and hasPermission(UploadFiles) and hasPermission(PostWall) and hasPermission(Games), "default grants the caller flags")
+    expect(not hasPermission(ApproveUploads) and not hasPermission(Sysop) and not hasPermission(BasicRepl), "default withholds staff flags")
+    user.access = accessAllFlags
+    expect(hasPermission(Sysop) and hasPermission(BasicRepl) and hasPermission(ApproveUploads) and hasPermission(Login), "all flags")
+    expect(accessAllFlags == 511, "all flags is bits 0-8")
+    expect(accessFlagCount == 9, "nine flags defined")
+    expect(accessLabel(Login) == "Login" and accessLabel(BasicRepl) == "BASIC Prompt", "labels")
+    expect(accessLabel(Access(4)) == "Approve Uploads", "int to flag")
+
+    if failures > 0 {
+        log("access-test: FAILED")
+        quit 1
+    }
+    log("access-test: all passed")
+}

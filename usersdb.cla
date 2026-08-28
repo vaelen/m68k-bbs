@@ -8,24 +8,21 @@
 //   0    username, 64-byte Pascal field (indexed, case-insensitive)
 //   64   password hash (i32, djb2 -- hashPassword in user.cla)
 //   68   email, 64-byte Pascal field
-//   132  access level (1 byte: 'U' user, 'S' sysop)
-//   133  created (i32, Mac-epoch seconds)
-//   137  last seen (i32, Mac-epoch seconds)
-//   141+ reserved for future fields (record_size 160 leaves slack)
+//   132  access flags (i32, one bit per Access member -- user.cla)
+//   136  created (i32, Mac-epoch seconds)
+//   140  last seen (i32, Mac-epoch seconds)
+//   144+ reserved for future fields (record_size 160 leaves slack)
 
 include "vdb.cla"
 
 const userRecordSize: int = 160
 
-// accessUser / accessSysop live in user.cla, next to the `access`
-// field they describe.
-
 const uOffName: int = 0
 const uOffHash: int = 64
 const uOffEmail: int = 68
 const uOffAccess: int = 132
-const uOffCreated: int = 133
-const uOffLastSeen: int = 137
+const uOffCreated: int = 136
+const uOffLastSeen: int = 140
 
 var usersDb: Database
 
@@ -56,7 +53,7 @@ func findUserId(name: string): int {
 // Serialize user fields into a record image (dbAdd/dbUpdate zero-pad
 // it to record_size). name/email are assumed to fit their fields
 // (callers pass string(31)/string(63) values vs 64-byte fields).
-func packUserFields(name: string, hash: int, email: string, access: char, created: int, lastSeen: int): text {
+func packUserFields(name: string, hash: int, email: string, access: int, created: int, lastSeen: int): text {
     var t: text
     t.append(char(name.length))
     t.append(name)
@@ -69,7 +66,7 @@ func packUserFields(name: string, hash: int, email: string, access: char, create
     while t.length < uOffAccess {
         t.append(char(0))
     }
-    t.append(access)
+    btAppendInt(t, access)
     btAppendInt(t, created)
     btAppendInt(t, lastSeen)
     return t
@@ -82,7 +79,7 @@ func packUser(): text {
 
 // Write arbitrary field values to user record `id` (the session user
 // is untouched). dbUpdate keeps the username index current on rename.
-func updateUserFields(id: int, name: string, hash: int, email: string, access: char, created: int, lastSeen: int): bool {
+func updateUserFields(id: int, name: string, hash: int, email: string, access: int, created: int, lastSeen: int): bool {
     if id < 1 { return false }
     return dbUpdate(usersDb, id, packUserFields(name, hash, email, access, created, lastSeen))
 }
@@ -96,7 +93,7 @@ func loadUser(id: int): bool {
     user.name = dbExtractString(rec, uOffName)
     user.passwordHash = rec.intAt(uOffHash)
     user.email = dbExtractString(rec, uOffEmail)
-    user.access = rec[uOffAccess]
+    user.access = rec.intAt(uOffAccess)
     user.created = rec.intAt(uOffCreated)
     user.lastSeen = rec.intAt(uOffLastSeen)
     return true

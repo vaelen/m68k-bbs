@@ -33,7 +33,7 @@ on App.startCLI(args: list of string) {
     user.name = "Alice"
     user.passwordHash = hashPassword("secret")
     user.email = "alice@example.com"
-    user.access = accessSysop
+    user.access = accessAllFlags
     user.created = t0
     user.lastSeen = t0
     id1 = createUser()
@@ -48,7 +48,7 @@ on App.startCLI(args: list of string) {
     expect(user.name == "Alice", "canonical name loaded")
     expect(user.passwordHash == hashPassword("secret"), "password hash roundtrip")
     expect(user.email == "alice@example.com", "email roundtrip")
-    expect(user.access == accessSysop, "access level roundtrip")
+    expect(user.access == accessAllFlags, "access flags roundtrip")
     expect(user.created == t0 and user.lastSeen == t0, "timestamps roundtrip")
     expect(not loadUser(99), "missing ID fails to load")
 
@@ -72,7 +72,7 @@ on App.startCLI(args: list of string) {
     expect(loadUser(id2), "load second user")
     expect(user.lastSeen == t0 + 60, "last-seen update persisted")
     expect(user.email == "", "empty email roundtrip")
-    expect(user.access == accessUser, "default access is user")
+    expect(user.access == 0, "unset access reads as no flags")
     usersClose()
 
     if failures > 0 {

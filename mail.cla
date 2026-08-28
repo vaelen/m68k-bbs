@@ -105,7 +105,7 @@ func drawMailMenu() {
     sendLine("+) Next Page (or Enter)")
     sendLine("-) Previous Page")
     sendLine("L) List Messages")
-    sendLine("N) New Message")
+    if hasPermission(SendMail) { sendLine("N) New Message") }
     sendLine("Q) Return to Main Menu")
     sendLine("")
 }
@@ -147,7 +147,9 @@ func mailChoice(input: string) {
         displayPrompt()
     }
     case "V" { promptNumber("mailnum", "") }
-    case "N" { startNewMail() }
+    case "N" {
+        if hasPermission(SendMail) { startNewMail() } else { displayPrompt() }
+    }
     case "Q" { gotoScreen("main") }
     else { displayPrompt() }
     }
@@ -256,7 +258,7 @@ func drawMailViewMenu() {
     sendLine(">) Next Message (or .)")
     sendLine("<) Previous Message (or ,)")
     sendLine("L) Redraw This Page")
-    sendLine("R) Reply")
+    if hasPermission(SendMail) { sendLine("R) Reply") }
     sendLine("D) Delete Message")
     sendLine("Q) Return to Inbox")
     sendLine("")
@@ -304,7 +306,9 @@ func mailViewChoice(input: string) {
         drawMessageView()
         displayPrompt()
     }
-    case "R" { startMailReply() }
+    case "R" {
+        if hasPermission(SendMail) { startMailReply() } else { displayPrompt() }
+    }
     case "D" {
         user.screen = "delmailconfirm"
         displayPrompt()

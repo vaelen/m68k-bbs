@@ -93,7 +93,7 @@ func seed() {
     var n: Network
     expect(usersOpen() and boardsOpen() and mailOpen() and networksOpen(), "databases open")
     user.name = "sysop"
-    user.access = accessSysop
+    user.access = accessAllFlags
     expect(createUser() == 1, "sysop is user 1")
     n.name = "fsxNet"
     n.addr = parseAddress("21:1/141")

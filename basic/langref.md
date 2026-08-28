@@ -199,7 +199,7 @@ it (a bare number deletes it), or any statement to run it now.
 | `HEX$(n)` `OCT$(n)` | hex and octal digits |
 | `INKEY$` | see Input |
 | `POS(0)` `CSRLIN` | cursor column and row (from 1) |
-| `ENVIRON$("name")` | on the BBS: `USER` (your name), `ACCESS`, `COLUMNS`, `ROWS` |
+| `ENVIRON$("name")` | on the BBS: `USER` (your name), `ACCESS` (your access flags as a number), `COLUMNS`, `ROWS` |
 | `EOF(n)` `FRE(x)` | end of file; free memory (a constant) |
 | `ERR` `ERL` | the last error's number and line (see Error handling) |
 

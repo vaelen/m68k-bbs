@@ -171,8 +171,9 @@ inputChar (bbs.cla) → processInput`.
   deletion) over a `filehandle`; `vdb.cla` — journaled page database
   with secondary indexes on top of it (formats: `docs/vdb-clarus.md`;
   design: `docs/vdb.md`). `usersdb.cla` — the "Users" vDB database
-  (160-byte records: username/hash/email/access/created/lastSeen;
-  vDB record ID = user ID; username indexed case-insensitively).
+  (160-byte records: username/hash/email/access flags (i32)/created/
+  lastSeen; vDB record ID = user ID; username indexed
+  case-insensitively).
   `boardsdb.cla` — the "Boards" database (256-byte records:
   name/description/echo tag/networkId — 0 = local — /lastExported —
   the scan high-water mark — /flags, record ID = board ID;
@@ -207,7 +208,14 @@ inputChar (bbs.cla) → processInput`.
 - `user.cla` — `User` record (name, authenticated, passwordHash,
   screen, buffer, id, email, access, created, lastSeen)
   + global `user`; `hashPassword` (djb2,
-  non-cryptographic). `terminal.cla` — `Terminal` record (columns —
+  non-cryptographic). `access` is a bit set: `enum Access` (Login,
+  SendMail, PostBoards, UploadFiles, ApproveUploads, PostWall, Games,
+  Sysop, BasicRepl — member value = bit number), `getBit`/`setBit`/
+  `clearBit`, `hasPermission(f)`/`setPermission(f, grant)`/
+  `accessHas(v, f)`, `accessLabel`, `accessDefault` (the caller bits)
+  and `accessAllFlags`. Every gate checks its own bit — Sysop implies
+  nothing else (`docs/access.md`). `accessAll`/`accessSysop` chars are
+  the file-area byte only. `terminal.cla` — `Terminal` record (columns —
   stored as the physical width **minus one** via `setColumns`, so
   the last column is never written: SyncTERM/ANSI.SYS auto-wrap
   there while Unix terminals need the newline; layouts compare
@@ -252,9 +260,11 @@ inputChar (bbs.cla) → processInput`.
   `processInput` dispatches on `user.screen`: login → password →
   terminal-type menu → main menu; typing NEW at the login prompt
   enters the signup flow (newname → newpass → newpass2 → newemail,
-  empty name cancels; first account gets sysop access). Logins are
-  checked against the Users database (case-insensitive; wrong
-  password returns to login). Last-seen is updated at login. Once the
+  empty name cancels; first account gets `accessAllFlags`, later ones
+  `accessDefault`). Logins are checked against the Users database
+  (case-insensitive; wrong password returns to login; a correct
+  password on an account without the Login flag says "This account is
+  disabled." and hangs up). Last-seen is updated at login. Once the
   terminal type is known, `applyTerminal` runs the once-per-login
   chain when `postLogin` is set (`loginOk`/`newEmail`): "Welcome back
   / Last on" (or "Welcome" for a new account) → `pause` → the
@@ -293,11 +303,13 @@ inputChar (bbs.cla) → processInput`.
   cursor tracking); `xferStart(proto, path, name)`/`xferChar`/
   `xferTick`/`xferAbort` switch on `xferProto` (`'X'`/`'1'`/`'Y'`
   `xmodem.cla`, `'Z'` `zmodem.cla`). `docs/file-transfers.md`.
-- `sysop.cla` — the sysop menu tree (gated on `user.access`): paged
+- `sysop.cla` — the sysop menu tree (gated on the Sysop flag): paged
   user/board lists (`listFromId` cursor, `[Enter] More` prompt),
   detail cards, lettered-field edit cards (buffered; `S` saves, `Q`
-  discards; a sysop cannot change their own access level or delete
-  their own account), Y/N delete confirmations over the detail card,
+  discards; the user card's `A` opens the `useraccess` flag table —
+  `N | Access Level | Granted`, a flag number toggles the buffered bit,
+  Enter returns to the card; a sysop cannot change their own access
+  or delete their own account), Y/N delete confirmations over the detail card,
   the New Board wizard, folder-syntax help (`sendFolderHelp`) before
   both area folder prompts, and the same L/S/E/N/D tree over file areas
   (`Areas` database: name/description/folder/access; Sysop menu `F`).
