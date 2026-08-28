@@ -2188,6 +2188,9 @@ func execStatement() {
     case K_FILES { stmtFiles() }
     case K_CONT { stmtCont() }
     case K_SYSTEM { stmtSystem() }
+    case K_OPEN { stmtOpen() }
+    case K_CLOSE { stmtClose() }
+    case K_WRITE { stmtWrite() }
     else {
         if t.ival >= K_NOTSUP_FIRST { abort("Not supported") }
         abort("Syntax error")
@@ -2717,22 +2720,235 @@ func stmtCont() {
 
 func stmtSystem() { basicStop() }
 
-func stmtInputFile(lineMode: bool) {
-    abort("Bad file number")
+// --- Data files -------------------------------------------------------
+// Sequential files 1-3. Each open file is a whole text: read on open
+// for INPUT/APPEND, written on close for OUTPUT/APPEND.
+// ponytail: whole-file buffering; stream it if someone writes a log.
+
+record BasFile {
+    isOpen: bool
+    mode: char          // 'I', 'O', 'A'
+    path: string
+    data: text
+    pos: int
 }
 
-// --- Files (stubs filled in later) ------------------------------------
+var files: BasFile[4]
 
-func fileWrite(n: int, s: string) { }
+func fileCheck(n: int) {
+    if n < 1 or n > 3 or not files[n].isOpen { abort("Bad file number") }
+}
+
 func fileForWrite(n: int): int {
-    abort("Bad file number")
-    return 0
+    fileCheck(n)
+    if files[n].mode == 'I' { abort("Bad file mode") }
+    return n
 }
+
+func fileWrite(n: int, s: string) { files[n].data.append(s) }
+
 func fileEof(n: int): bool {
-    abort("Bad file number")
-    return true
+    fileCheck(n)
+    return files[n].pos >= files[n].data.length
 }
-func closeAllFiles() { }
+
+func fileClose(n: int) {
+    var empty: text
+    if not files[n].isOpen { return }
+    if files[n].mode != 'I' {
+        if not file.writeText(files[n].path, files[n].data, "TEXT", "ttxt") { abort("Device I/O error") }
+    }
+    files[n].isOpen = false
+    files[n].data = empty
+}
+
+func closeAllFiles() {
+    var n: int = 1
+    while n <= 3 {
+        fileClose(n)
+        n = n + 1
+    }
+}
+
+// OPEN "name" FOR INPUT|OUTPUT|APPEND AS [#]n  |  OPEN "I"|"O"|"A", [#]n, "name"
+func stmtOpen() {
+    var s: string = evalStr()
+    var name: string
+    var mode: char
+    var n: int
+    var p: string
+    var t: text
+    if skipKw(K_FOR) {
+        name = s
+        if skipKw(K_INPUT) {
+            mode = 'I'
+        } else if skipKw(K_OUTPUT) {
+            mode = 'O'
+        } else if skipKw(K_APPEND) {
+            mode = 'A'
+        } else {
+            abort("Syntax error")
+        }
+        if not skipKw(K_AS) { abort("Syntax error") }
+        skipOp('#')
+        n = evalInt()
+    } else {
+        if s.length == 0 { abort("Bad file mode") }
+        mode = upperChar(s[0])
+        if mode != 'I' and mode != 'O' and mode != 'A' { abort("Bad file mode") }
+        expectOp(',')
+        skipOp('#')
+        n = evalInt()
+        expectOp(',')
+        name = evalStr()
+    }
+    if n < 1 or n > 3 { abort("Bad file number") }
+    if files[n].isOpen { abort("File already open") }
+    p = basicPath(name, mode != 'I')
+    if p == "" { abort("Bad file name") }
+    if mode == 'I' {
+        if not file.readText(p, t) { abort("File not found") }
+    } else if mode == 'A' {
+        file.readText(p, t)
+    }
+    files[n].isOpen = true
+    files[n].mode = mode
+    files[n].path = p
+    files[n].data = t
+    if mode == 'I' { files[n].pos = 0 } else { files[n].pos = t.length }
+    fileCol = 0
+}
+
+// CLOSE [[#]n[,[#]m]...]; no list closes everything.
+func stmtClose() {
+    var n: int
+    if atStmtEnd() {
+        closeAllFiles()
+        return
+    }
+    while true {
+        skipOp('#')
+        n = evalInt()
+        if n < 1 or n > 3 { abort("Bad file number") }
+        fileClose(n)
+        if not skipOp(',') { break }
+    }
+}
+
+// WRITE [#n,] items: strings quoted, numbers bare, commas between.
+func stmtWrite() {
+    var first: bool = true
+    var v: Val
+    var s: string
+    var n: int
+    if isOp('#') {
+        pc = pc + 1
+        n = evalInt()
+        expectOp(',')
+        printFile = fileForWrite(n)
+    }
+    while not atStmtEnd() {
+        if not first { outStr(",") }
+        first = false
+        v = evalExpr()
+        if v.isStr {
+            outStr("\"" + v.s + "\"")
+        } else {
+            s = numStr(v.n)
+            if s[0] == ' ' { s = s[1, s.length - 1] }
+            outStr(s)
+        }
+        skipOp(',')
+        skipOp(';')
+    }
+    outNewline()
+    printFile = 0
+}
+
+func fileAtEnd(n: int): bool { return files[n].pos >= files[n].data.length }
+
+// The next comma- or line-delimited item of an input file.
+func fileReadItem(n: int): string {
+    var item: string
+    var c: char
+    fileCheck(n)
+    if files[n].mode != 'I' { abort("Bad file mode") }
+    while not fileAtEnd(n) {
+        c = files[n].data[files[n].pos]
+        if c != ' ' and c != '\x0D' and c != '\x0A' { break }
+        files[n].pos = files[n].pos + 1
+    }
+    if fileAtEnd(n) { abort("Input past end") }
+    if files[n].data[files[n].pos] == '"' {
+        files[n].pos = files[n].pos + 1
+        while not fileAtEnd(n) and files[n].data[files[n].pos] != '"' {
+            if item.length < 255 { item = item + files[n].data[files[n].pos] }
+            files[n].pos = files[n].pos + 1
+        }
+        if not fileAtEnd(n) { files[n].pos = files[n].pos + 1 }
+    } else {
+        while not fileAtEnd(n) {
+            c = files[n].data[files[n].pos]
+            if c == ',' or c == '\x0D' or c == '\x0A' { break }
+            if item.length < 255 { item = item + c }
+            files[n].pos = files[n].pos + 1
+        }
+        while item.length > 0 and item[item.length - 1] == ' ' { item = item[0, item.length - 1] }
+    }
+    // consume the delimiter: a comma, or the line end (so EOF turns true
+    // right after the last item, as in GW-BASIC)
+    while not fileAtEnd(n) and files[n].data[files[n].pos] == ' ' { files[n].pos = files[n].pos + 1 }
+    if not fileAtEnd(n) and files[n].data[files[n].pos] == ',' {
+        files[n].pos = files[n].pos + 1
+    } else {
+        if not fileAtEnd(n) and files[n].data[files[n].pos] == '\x0D' { files[n].pos = files[n].pos + 1 }
+        if not fileAtEnd(n) and files[n].data[files[n].pos] == '\x0A' { files[n].pos = files[n].pos + 1 }
+    }
+    return item
+}
+
+// The rest of the current line of an input file.
+func fileReadLine(n: int): string {
+    var item: string
+    var c: char
+    fileCheck(n)
+    if files[n].mode != 'I' { abort("Bad file mode") }
+    if fileAtEnd(n) { abort("Input past end") }
+    while not fileAtEnd(n) {
+        c = files[n].data[files[n].pos]
+        if c == '\x0D' or c == '\x0A' { break }
+        if item.length < 255 { item = item + c }
+        files[n].pos = files[n].pos + 1
+    }
+    if not fileAtEnd(n) and files[n].data[files[n].pos] == '\x0D' { files[n].pos = files[n].pos + 1 }
+    if not fileAtEnd(n) and files[n].data[files[n].pos] == '\x0A' { files[n].pos = files[n].pos + 1 }
+    return item
+}
+
+// INPUT #n, vars  /  LINE INPUT #n, var$   (pc at the '#')
+func stmtInputFile(lineMode: bool) {
+    var n: int
+    var key: string
+    var idx: int
+    var item: string
+    var v: Val
+    expectOp('#')
+    n = evalInt()
+    expectOp(',')
+    while true {
+        parseLValue()
+        key = lvKey
+        idx = lvIdx
+        if lineMode { item = fileReadLine(n) } else { item = fileReadItem(n) }
+        if isStrKey(key) {
+            v = valStr(item)
+        } else {
+            v = valNum(numParsePrefix(item))
+        }
+        assignLValue(key, idx, v)
+        if lineMode or not skipOp(',') { break }
+    }
+}
 
 // --- Lifecycle -----------------------------------------------------------
 
