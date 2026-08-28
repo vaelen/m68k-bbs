@@ -15,6 +15,8 @@ var editField: char = ' '
 var editName: string(31)
 var editEmail: string(63)
 var editAccess: int = 0
+var accessTitle: string(63)          // useraccess table title
+var accessReturn: string(31)         // screen Enter returns to: "edituser" or "sysopconfig"
 var editHash: int = 0
 var editCreated: int = 0
 var editLastSeen: int = 0
@@ -25,6 +27,7 @@ func drawSysopMenu() {
     sendLine("")
     sendLine("Sysop Menu:")
     sendLine("B) Message Boards")
+    sendLine("C) Configuration")
     sendLine("F) File Areas")
     sendLine("M) Message of the Day")
     sendLine("N) Networks")
@@ -32,6 +35,44 @@ func drawSysopMenu() {
     sendLine("X) Banned Names")
     sendLine("Q) Return to Main Menu")
     sendLine("")
+}
+
+func drawSysopConfigMenu() {
+    sendLine("")
+    sendLine("Sysop - Configuration (Config.txt):")
+    sendLine("A) New User Access (" + accessSummary(config.newUserAccess) + ")")
+    sendLine("Q) Return to Sysop Menu")
+    sendLine("")
+}
+
+// "3 of 9 flags" for the config menu line.
+func accessSummary(v: int): string {
+    var n: int = 0
+    var i: int = 0
+    while i < accessFlagCount {
+        if getBit(v, i) { n = n + 1 }
+        i = i + 1
+    }
+    return intStr(n) + " of " + intStr(accessFlagCount) + " flags"
+}
+
+func sysopConfigChoice(input: string) {
+    switch upperStr(input) {
+    case "?" {
+        displayMenu()
+        displayPrompt()
+    }
+    case "A" {
+        editAccess = config.newUserAccess
+        accessTitle = "New User Access"
+        accessReturn = "sysopconfig"
+        user.screen = "useraccess"
+        drawAccessTable()
+        displayPrompt()
+    }
+    case "Q" { gotoScreen("sysop") }
+    else     { displayPrompt() }
+    }
 }
 
 func drawSysopBoardsMenu() {
@@ -85,6 +126,7 @@ func sysopChoice(input: string) {
         displayPrompt()
     }
     case "B" { gotoScreen("sysopboards") }
+    case "C" { gotoScreen("sysopconfig") }
     case "F" { gotoScreen("sysopareas") }
     case "M" { startMotdEditor() }
     case "N" { gotoScreen("sysopnets") }
@@ -586,6 +628,8 @@ func editUserChoice(input: string) {
             displayPrompt()
             return
         }
+        accessTitle = "Access: " + editName
+        accessReturn = "edituser"
         user.screen = "useraccess"
         drawAccessTable()
         displayPrompt()
@@ -613,8 +657,8 @@ func editUserChoice(input: string) {
     }
 }
 
-// The access-flag table for the user being edited (buffered in
-// editAccess; the edit card's S saves it).
+// The access-flag table over editAccess: for a user being edited (the
+// edit card's S saves it) or the new-user default (saved on Enter).
 func drawAccessTable() {
     var w: list of int
     var cells: list of string
@@ -625,7 +669,7 @@ func drawAccessTable() {
     cells.add("N")
     cells.add("Access Level")
     cells.add("Granted")
-    sendTableHeader("Access: " + editName, cells, w)
+    sendTableHeader(accessTitle, cells, w)
     while i < accessFlagCount {
         cells.clear()
         cells.add(intStr(i))
@@ -638,10 +682,20 @@ func drawAccessTable() {
 }
 
 // "useraccess": a flag number flips that bit and redraws; Enter
-// returns to the edit card.
+// returns to accessReturn (saving the config on the way back).
 func accessToggleInput(input: string) {
     var n: int
     if input == "" {
+        if accessReturn == "sysopconfig" {
+            config.newUserAccess = editAccess
+            if configSave() {
+                sendLine("Saved.")
+            } else {
+                sendLine("Save failed: " + lastError.message)
+            }
+            gotoScreen("sysopconfig")
+            return
+        }
         user.screen = "edituser"
         drawEditUserCard()
         displayPrompt()

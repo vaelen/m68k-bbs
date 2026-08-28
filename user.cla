@@ -34,7 +34,7 @@ enum Access {
     BasicRepl      "BASIC Prompt"
 }
 const accessFlagCount: int = 9
-const accessDefault:  int = 111        // Login SendMail PostBoards UploadFiles PostWall Games
+const accessDefault:  int = 367        // all but ApproveUploads and Sysop
 const accessAllFlags: int = 511        // bits 0-8
 
 func getBit(v: int, n: int): bool { return (v & (1 << n)) != 0 }

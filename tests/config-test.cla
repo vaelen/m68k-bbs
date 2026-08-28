@@ -1,0 +1,59 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for config.cla (Config.txt). Runs from a scratch
+// directory: a missing file yields the defaults and is written out;
+// then roundtrip, tolerance for comments/LF/unknown keys, and a
+// missing key keeping its default.
+
+include "../user.cla"
+include "../config.cla"
+
+var failures: int = 0
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+func writeConfig(body: string) {
+    var f: filehandle = file.create(configFileName, "TEXT", "ttxt")
+    var t: text = body
+    f.writeAt(0, t)
+    f.flush()
+    f.close()
+}
+
+on App.startCLI(args: list of string) {
+    expect(configLoad(), "missing file loads defaults")
+    expect(config.newUserAccess == accessDefault, "default new-user access")
+    expect(file.exists(configFileName), "defaults written out")
+
+    config.newUserAccess = 5
+    expect(configSave(), "save")
+    config.newUserAccess = 0
+    expect(configLoad(), "reload")
+    expect(config.newUserAccess == 5, "roundtrip")
+
+    writeConfig("# comment\x0A\x0AbogusKey=1\x0AnewUserAccess = 367\x0A")
+    expect(configLoad(), "hand-edited file loads")
+    expect(config.newUserAccess == 367, "LF line ends, spaces around =, unknown key ignored")
+
+    writeConfig("# nothing set\n")
+    expect(configLoad(), "file without the key loads")
+    expect(config.newUserAccess == accessDefault, "missing key keeps its default")
+
+    writeConfig("newUserAccess=abc\n")
+    expect(configLoad(), "bad value loads")
+    expect(config.newUserAccess == accessDefault, "bad int keeps the default")
+
+    if failures > 0 {
+        log("config-test: FAILED")
+        quit 1
+    }
+    log("config-test: all passed")
+}

@@ -1,0 +1,24 @@
+# Configuration file
+
+`Config.txt` (TEXT/ttxt, next to the app) holds BBS settings the sysop
+can change without a rebuild. Format: one `key=value` per CR line,
+`#` comments, blank lines ignored, LF line ends tolerated (a host
+editor), spaces around `=` trimmed, unknown keys ignored. Every setting
+has a compiled-in default in `config.cla`'s `Config` record; a missing
+file or a missing/unparsable key means the default. A missing file is
+written out at launch so the keys are there to edit.
+
+| key | default | meaning |
+|---|---|---|
+| `newUserAccess` | 367 (`accessDefault`) | Access flag bits given to a new signup (`docs/access.md`); the first account always gets every flag |
+
+`configLoad()` runs at launch (before the databases open); `configSave()`
+rewrites the whole file. The live values are `config.<field>`.
+
+Sysop menu `C) Configuration` lists the settings; `A) New User Access`
+opens the flag toggle table (the same one the user edit card uses) and
+Enter saves at once.
+
+To add a setting: a field on `Config` with its default, a `case` in
+`configApply`, a line in `configSave`, a row in the menu if the sysop
+should edit it, and a row in the table above.

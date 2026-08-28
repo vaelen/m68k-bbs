@@ -215,7 +215,12 @@ inputChar (bbs.cla) → processInput`.
   `accessHas(v, f)`, `accessLabel`, `accessDefault` (the caller bits)
   and `accessAllFlags`. Every gate checks its own bit — Sysop implies
   nothing else (`docs/access.md`). `accessAll`/`accessSysop` chars are
-  the file-area byte only. `terminal.cla` — `Terminal` record (columns —
+  the file-area byte only. `config.cla` — `Config.txt` (`key=value`
+  per CR line, `#` comments, unknown keys ignored, missing file/key =
+  the compiled default, missing file written out at launch):
+  `config: Config` record (`newUserAccess`, default `accessDefault`),
+  `configLoad`/`configSave`; Sysop menu `C` edits it (`docs/config.md`).
+  `terminal.cla` — `Terminal` record (columns —
   stored as the physical width **minus one** via `setColumns`, so
   the last column is never written: SyncTERM/ANSI.SYS auto-wrap
   there while Unix terminals need the newline; layouts compare
@@ -261,7 +266,7 @@ inputChar (bbs.cla) → processInput`.
   terminal-type menu → main menu; typing NEW at the login prompt
   enters the signup flow (newname → newpass → newpass2 → newemail,
   empty name cancels; first account gets `accessAllFlags`, later ones
-  `accessDefault`). Logins are checked against the Users database
+  `config.newUserAccess`). Logins are checked against the Users database
   (case-insensitive; wrong password returns to login; a correct
   password on an account without the Login flag says "This account is
   disabled." and hangs up). Last-seen is updated at login. Once the
@@ -308,7 +313,8 @@ inputChar (bbs.cla) → processInput`.
   detail cards, lettered-field edit cards (buffered; `S` saves, `Q`
   discards; the user card's `A` opens the `useraccess` flag table —
   `N | Access Level | Granted`, a flag number toggles the buffered bit,
-  Enter returns to the card; a sysop cannot change their own access
+  Enter returns to `accessReturn` — the card, or the Configuration
+  menu where it saves `newUserAccess` at once; a sysop cannot change their own access
   or delete their own account), Y/N delete confirmations over the detail card,
   the New Board wizard, folder-syntax help (`sendFolderHelp`) before
   both area folder prompts, and the same L/S/E/N/D tree over file areas
@@ -553,6 +559,7 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
   /L /D /E /I /R)
 - `loginlog.cla` — fixed-width text login log + newest-N reader
 - `banned.cla` — banned-username list (`Banned.txt`), sysop-editable
+- `config.cla` — `Config.txt` settings with compiled defaults
 - `walldb.cla`, `wall.cla` — wall database and screens
 - `motd.cla` — Message of the Day file
 - `scanner.cla`, `telnet.cla`, `user.cla`, `usersdb.cla`, `boardsdb.cla`,

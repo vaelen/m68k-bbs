@@ -18,8 +18,9 @@ member's value is its bit number, so `int(f)` is the shift.
 
 Bits 9-31 are free. Each gate checks exactly its own bit — Sysop does
 not imply the rest. The first account created gets `accessAllFlags`
-(bits 0-8); every later signup gets `accessDefault` (Login, SendMail,
-PostBoards, UploadFiles, PostWall, Games).
+(bits 0-8); every later signup gets `config.newUserAccess`
+(`docs/config.md`), whose default is `accessDefault` = 367: everything
+except ApproveUploads and Sysop.
 
 Menu items the caller lacks are not drawn and the key does nothing
 (the same convention the sysop menu item always had).
@@ -49,6 +50,8 @@ Flag to toggle (Enter = done):
 
 A number flips that bit in the buffered `editAccess` and redraws;
 Enter returns to the edit card, where `S` saves. A sysop cannot open
-the table for their own account.
+the table for their own account. Sysop > Configuration > `A` opens
+the same table over the new-user default; there Enter saves
+`Config.txt` straight away.
 
 `ENVIRON$("ACCESS")` in BASIC returns the bits as a decimal number.

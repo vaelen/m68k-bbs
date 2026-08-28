@@ -46,8 +46,8 @@ on App.startCLI(args: list of string) {
     expect(int(f) == 8, "BasicRepl is bit 8")
 
     user.access = accessDefault
-    expect(hasPermission(Login) and hasPermission(SendMail) and hasPermission(PostBoards) and hasPermission(UploadFiles) and hasPermission(PostWall) and hasPermission(Games), "default grants the caller flags")
-    expect(not hasPermission(ApproveUploads) and not hasPermission(Sysop) and not hasPermission(BasicRepl), "default withholds staff flags")
+    expect(hasPermission(Login) and hasPermission(SendMail) and hasPermission(PostBoards) and hasPermission(UploadFiles) and hasPermission(PostWall) and hasPermission(Games) and hasPermission(BasicRepl), "default grants the caller flags")
+    expect(not hasPermission(ApproveUploads) and not hasPermission(Sysop), "default withholds the staff flags")
     user.access = accessAllFlags
     expect(hasPermission(Sysop) and hasPermission(BasicRepl) and hasPermission(ApproveUploads) and hasPermission(Login), "all flags")
     expect(accessAllFlags == 511, "all flags is bits 0-8")

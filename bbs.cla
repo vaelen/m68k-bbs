@@ -24,6 +24,7 @@ include "files.cla"
 include "editor.cla"
 include "loginlog.cla"
 include "banned.cla"
+include "config.cla"
 include "wall.cla"
 include "motd.cla"
 include "games/basic.cla"
@@ -439,6 +440,7 @@ func displayMenu() {
     case "sysopusers"  { drawSysopUsersMenu() }
     case "sysopnets"   { drawSysopNetsMenu() }
     case "sysopbanned" { drawSysopBannedMenu() }
+    case "sysopconfig" { drawSysopConfigMenu() }
     case "boards"      { drawBoardPicker() }
     case "areas"       { drawAreaPicker() }
     case "posts"       { drawPostsMenu() }
@@ -563,6 +565,7 @@ func displayPrompt() {
     case "newareaaccess" { sendData("Access (A=all, S=sysop) [A]: ") }
     case "sysopnets"   { sendData("Sysop:Networks> ") }
     case "sysopbanned" { sendData("Sysop:Banned> ") }
+    case "sysopconfig" { sendData("Sysop:Config> ") }
     case "banadd"      { sendData("Name to ban (Enter = cancel): ") }
     case "bandel"      { sendData("Name to remove (Enter = cancel): ") }
     case "netlist"     { }
@@ -747,6 +750,7 @@ func processInput(input: string) {
     case "newareaaccess" { newAreaAccess(input) }
     case "sysopnets"   { sysopNetsChoice(input) }
     case "sysopbanned" { sysopBannedChoice(input) }
+    case "sysopconfig" { sysopConfigChoice(input) }
     case "banadd"      { banAddInput(input) }
     case "bandel"      { banDelInput(input) }
     case "netlist"     { netListInput(input) }
@@ -873,7 +877,7 @@ func newEmail(input: string) {
         return
     }
     user.email = input
-    user.access = accessDefault
+    user.access = config.newUserAccess
     if userCount() == 0 { user.access = accessAllFlags }
     user.created = now()
     user.lastSeen = now()
@@ -1198,6 +1202,11 @@ on App.launch {
         log("Banned names loaded (" + intStr(bannedNames.count) + ").")
     } else {
         log("Banned names unavailable: " + lastError.message)
+    }
+    if configLoad() {
+        log("Configuration loaded (new user access " + intStr(config.newUserAccess) + ").")
+    } else {
+        log("Configuration unavailable: " + lastError.message)
     }
     if motdLoad() {
         log("Message of the day loaded (" + intStr(motdText.length) + " bytes).")

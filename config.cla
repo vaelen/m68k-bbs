@@ -1,0 +1,99 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// BBS settings, kept in Config.txt next to the app: one `key=value`
+// per CR line, `#` comments, LF tolerated, unknown keys ignored, so
+// the sysop can hand-edit it. Every setting has a default here; a
+// missing file or key means the default. A missing file is written
+// out so the keys are there to edit. Include after user.cla.
+//
+// To add a setting: a field on Config with its default, a case in
+// configApply, a line in configSave.
+
+const configFileName: string = "Config.txt"
+
+record Config {
+    newUserAccess: int = accessDefault     // Access flags for a new signup (docs/access.md)
+}
+
+var config: Config
+
+func configSave(): bool {
+    var f: filehandle = file.create(configFileName, "TEXT", "ttxt")
+    var data: text
+    var ok: bool
+    if f == nil { return false }
+    data.append("# 68kBBS settings. key=value, # comments.\n")
+    data.append("newUserAccess=" + string(config.newUserAccess) + "\n")
+    ok = f.writeAt(0, data)
+    if ok { ok = f.flush() }
+    f.close()
+    return ok
+}
+
+// Digits only, else -1.
+func configInt(s: string): int {
+    var n: int = 0
+    var i: int = 0
+    if s.length == 0 { return -1 }
+    while i < s.length {
+        if s[i] < '0' or s[i] > '9' { return -1 }
+        n = n * 10 + (int(s[i]) - int('0'))
+        i = i + 1
+    }
+    return n
+}
+
+func configTrim(s: string): string {
+    var a: int = 0
+    var b: int = s.length
+    while a < b and (s[a] == ' ' or s[a] == '\t') { a = a + 1 }
+    while b > a and (s[b - 1] == ' ' or s[b - 1] == '\t') { b = b - 1 }
+    return s[a, b - a]
+}
+
+// One `key=value` line; unknown keys and bad values leave the default.
+func configApply(line: string) {
+    var eq: int = line.indexOf('=')
+    var key: string
+    var val: string
+    var n: int
+    if eq < 0 { return }
+    key = configTrim(line[0, eq])
+    val = configTrim(line[eq + 1, line.length - eq - 1])
+    switch key {
+    case "newUserAccess" {
+        n = configInt(val)
+        if n >= 0 { config.newUserAccess = n }
+    }
+    }
+}
+
+func configLoad(): bool {
+    var f: filehandle = file.open(configFileName)
+    var data: text
+    var line: string
+    var start: int = 0
+    var i: int = 0
+    var c: char
+    config = new Config
+    if f == nil { return configSave() }
+    if not f.readAt(0, f.size(), data) {
+        f.close()
+        return false
+    }
+    f.close()
+    while i <= data.length {
+        c = ' '
+        if i < data.length { c = data[i] }
+        if i == data.length or c == '\n' or c == '\x0A' {
+            if i - start > 0 and i - start < 256 {
+                line = data[start, i - start]
+                if line != "" and line[0] != '#' { configApply(line) }
+            }
+            start = i + 1
+        }
+        i = i + 1
+    }
+    return true
+}
