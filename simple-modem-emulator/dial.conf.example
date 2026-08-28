@@ -1,0 +1,7 @@
+# simple-modem-emulator address book: pass this file as the third argument.
+#   name = tcp:host:port      call a TCP service (telnet BBS, another emulator)
+#   name = exec:command       run a program with its stdin/stdout on the line
+# Names match the ATDT string case-insensitively, spaces and dashes ignored.
+# Anything not listed here can still be dialed as ATDT host[:port].
+fsxnet = exec:fnemsi -c /etc/fnemsi.ini -n fsxnet --answer 2>>/var/log/fnemsi.log
+555 = tcp:bbs.example.com:23

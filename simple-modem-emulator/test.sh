@@ -34,8 +34,15 @@ def listener(port):
     l.bind(("127.0.0.1", port)); l.listen(1); l.settimeout(3)
     return l
 
+conf = tempfile.NamedTemporaryFile("w", suffix=".conf", delete=False)
+conf.write("# name = target\n"
+           "bbs = tcp:127.0.0.1:1236\n"
+           "echo = exec:echo hi; cat\n"
+           "quiet = exec:true\n"
+           "slow = exec:sleep 5\n")
+conf.close()
 ser = listener(1235)
-m = subprocess.Popen(["./modem", "2324", "1235"], stderr=subprocess.DEVNULL)
+m = subprocess.Popen(["./modem", "2324", "1235", conf.name], stderr=subprocess.DEVNULL)
 try:
     local, _ = ser.accept()                     # the modem is on the line from the start
     # 1. inbound call: CONNECT, data both ways
@@ -82,10 +89,27 @@ try:
     local.sendall(b"ATDT555\r"); assert rd(local) == NOCARRIER
     local.sendall(b"ATDT 127.0.0.1:1\r"); assert rd(local, t=5) == NOCARRIER
     local.sendall(b"AT\r"); assert rd(local) == OK
+    # 12. address book: a tcp entry by name; hanging up closes the peer
+    local.sendall(b"ATDTbbs\r"); peer, _ = peer_l.accept(); assert rd(local) == CONNECT
+    time.sleep(1.1); local.sendall(b"+++"); assert rd(local) == OK
+    local.sendall(b"ATH\r"); assert rd(local) == NOCARRIER
+    assert rd(peer) == b""; peer.close(); peer_l.close()
+    # 13. exec entry: CONNECT on the child's first byte, then bridged
+    local.sendall(b"ATDTecho\r")
+    got = rd_until(local, b"hi\n"); assert got.startswith(CONNECT) and got.endswith(b"hi\n"), got
+    local.sendall(b"ping\n"); assert rd(local) == b"ping\n"
+    time.sleep(1.1); local.sendall(b"+++"); assert rd(local) == OK
+    local.sendall(b"ATH\r"); assert rd(local) == NOCARRIER
+    # 14. a child that exits without output -> NO CARRIER
+    local.sendall(b"ATDTquiet\r"); assert rd(local) == NOCARRIER
+    # 15. a byte from the computer aborts a dial in progress, promptly
+    local.sendall(b"ATDTslow\r"); time.sleep(0.5); t0 = time.time()
+    local.sendall(b"ATH\r"); assert rd(local) == NOCARRIER and time.time() - t0 < 2
+    local.sendall(b"AT\r"); assert rd(local) == OK
     # 7. serial port down -> caller rejected with NO ANSWER
     ser.close(); local.close(); time.sleep(0.3)
     caller = call(); assert rd(caller) == NOANSWER
     print("ok")
 finally:
-    m.kill()
+    m.kill(); os.unlink(conf.name)
 PY

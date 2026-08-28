@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -38,6 +39,7 @@ static long local_retry_ms = 0;         // when to try connecting it again
 static int rin = -1, rout = -1;         // the remote: one socket for now
 static pid_t child = 0;                 // an exec: target's pid, 0 for a socket
 static long dial_ms = 0;                // when the current dial started
+static const char *dialconf = NULL;     // address book, or NULL
 static char held[3];                    // '+' bytes held back pending guard time
 static int nheld = 0;
 static long last_local_ms = 0;          // time of last byte from local
@@ -69,6 +71,7 @@ static int connect_local(int port) {
     struct sockaddr_in a;
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
     memset(&a, 0, sizeof a);
     a.sin_family = AF_INET;
     a.sin_port = htons((unsigned short)port);
@@ -85,6 +88,7 @@ static int listen_on(int port) {
     int one = 1;
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
     memset(&a, 0, sizeof a);
     a.sin_family = AF_INET;
@@ -167,15 +171,72 @@ static void dial_tcp(const char *host, const char *port) {
     dial_ms = now_ms();
 }
 
-// Place a call for the dial string s: "host[:port]", port 23 by default.
+// dial.conf: "name = target" per line, '#' comments. Names compare
+// case-insensitively with spaces/dashes stripped, like dial strings.
+static int lookup(const char *name, char *out, int outlen) {
+    FILE *f;
+    char line[512], key[512];
+    if (dialconf == NULL || (f = fopen(dialconf, "r")) == NULL) return 0;
+    while (fgets(line, sizeof line, f)) {
+        char *eq = strchr(line, '='), *p;
+        int n = 0;
+        if (line[0] == '#' || eq == NULL) continue;
+        *eq = 0;
+        for (p = line; *p; p++) if (*p != ' ' && *p != '\t' && *p != '-') key[n++] = *p;
+        key[n] = 0;
+        if (strcasecmp(key, name) != 0) continue;
+        p = eq + 1;
+        while (*p == ' ' || *p == '\t') p++;
+        p[strcspn(p, "\r\n")] = 0;
+        snprintf(out, (size_t)outlen, "%s", p);
+        fclose(f);
+        return 1;
+    }
+    fclose(f);
+    return 0;
+}
+
+// Spawn "sh -c command" with its stdin/stdout on the line; CONNECT waits
+// for its first byte (the loop), EOF before that is NO CARRIER.
+static void dial_exec(const char *command) {
+    int to_child[2], from_child[2];
+    if (pipe(to_child) < 0 || pipe(from_child) < 0) { hangup("pipe failed"); return; }
+    child = fork();
+    if (child < 0) { child = 0; hangup("fork failed"); return; }
+    if (child == 0) {
+        dup2(to_child[0], 0);
+        dup2(from_child[1], 1);
+        close(to_child[0]); close(to_child[1]); close(from_child[0]); close(from_child[1]);
+        execl("/bin/sh", "sh", "-c", command, (char *)0);
+        _exit(127);
+    }
+    close(to_child[0]);
+    close(from_child[1]);
+    rin = from_child[0];
+    rout = to_child[1];
+    state = DIALING;
+    dial_ms = now_ms();
+}
+
+// Place a call for the dial string s: an address-book name, else
+// "host[:port]" (port 23 by default), else no such number.
 static void dial(const char *s) {
-    char num[256], *host, *port;
+    char num[256], target[512], *host, *port;
     int i, n = 0;
     for (i = 0; s[i]; i++) if (s[i] != ' ' && s[i] != '-') num[n++] = s[i];
     num[n] = 0;
-    if (strchr(num, '.') == NULL && strchr(num, ':') == NULL) { hangup("no such number"); return; }
-    fprintf(stderr, "dialing %s\n", num);
-    host = num;
+    if (lookup(num, target, sizeof target)) {
+        fprintf(stderr, "dialing %s -> %s\n", num, target);
+        if (strncmp(target, "exec:", 5) == 0) { dial_exec(target + 5); return; }
+        if (strncmp(target, "tcp:", 4) != 0) { hangup("bad target"); return; }
+        host = target + 4;
+    } else if (strchr(num, '.') || strchr(num, ':')) {
+        fprintf(stderr, "dialing %s\n", num);
+        host = num;
+    } else {
+        hangup("no such number");
+        return;
+    }
     port = strrchr(host, ':');
     if (port) *port++ = 0; else port = "23";
     dial_tcp(host, port);
@@ -278,8 +339,9 @@ int main(int argc, char **argv) {
     char buf[4096];
 
     cport = argc > 2 ? atoi(argv[2]) : 1234;
+    dialconf = argc > 3 ? argv[3] : NULL;
     if (lport <= 0 || cport <= 0) {
-        fprintf(stderr, "usage: %s [listen_port [connect_port]]\n", argv[0]);
+        fprintf(stderr, "usage: %s [listen_port [connect_port [dial.conf]]]\n", argv[0]);
         return 2;
     }
     signal(SIGPIPE, SIG_IGN);
@@ -328,8 +390,15 @@ int main(int argc, char **argv) {
         }
         if (rin >= 0 && FD_ISSET(rin, &r)) {
             n = (int)read(rin, buf, sizeof buf);
-            if (n <= 0) hangup("call ended");
-            else if (state == ONLINE) send_all(local, buf, n);
+            if (n <= 0) {
+                hangup(state == DIALING ? "no answer" : "call ended");
+            } else {
+                if (state == DIALING) {         // exec: target's first byte
+                    go_online();
+                    fprintf(stderr, "call connected\n");
+                }
+                if (state == ONLINE) send_all(local, buf, n);
+            }
             // ponytail: in command mode remote data is dropped, like a real
             // modem with no buffer; it would be forwarded after ATO anyway.
         }
