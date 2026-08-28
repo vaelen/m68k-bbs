@@ -26,6 +26,7 @@ include "loginlog.cla"
 include "banned.cla"
 include "wall.cla"
 include "motd.cla"
+include "games/basic.cla"
 include "xmodem.cla"
 include "zmodem.cla"
 include "ftntoss.cla"
@@ -185,6 +186,7 @@ var inputSoft: bool = false
 func echoActive(): bool {
     if not terminal.echo { return false }
     if user.screen == "probe" or user.screen == "logoff" or user.screen == "xfer" { return false }
+    if user.screen == "basic" { return false }    // INKEY$ keys: the program decides what shows
     return true
 }
 
@@ -439,6 +441,7 @@ func numberScreen(list: string): string {
     case "posts"  { return "postnum" }
     case "files"  { return "filenum" }
     case "mail"   { return "mailnum" }
+    case "games"  { return "gamenum" }
     }
     return ""
 }
@@ -467,6 +470,7 @@ func lineScreen(s: string): bool {
     case "upname", "updesc", "editfiledesc" { return true }
     case "shownet", "editnetid", "editnetval", "delnetid", "newnetname", "areafixreq" { return true }
     case "wallentry" { return true }
+    case "basicline", "gamenum" { return true }
     }
     return false
 }
@@ -551,6 +555,8 @@ func displayPrompt() {
     case "wallmore"  { sendData("Display More? (Y/[N]) ") }
     case "wallask"   { sendData("Sign the wall? (Y/[N]) ") }
     case "wallentry" { sendData("Your message (" + intStr(wallMessageMax) + " chars max): ") }
+    case "gamenum"   { sendData("Game number: ") }
+    case "basic", "basicline" { }     // the interpreter prints its own prompts
     }
 }
 
@@ -592,26 +598,6 @@ func drawMainMenu() {
     sendLine("Q) Quit (Logoff)")
     sendLine("?) Display This Menu")
     sendLine("")
-}
-
-// Games: nothing in it yet.
-func drawGamesMenu() {
-    sendLine("")
-    sendLine("Games:")
-    sendLine("No games are available yet.")
-    sendLine("Q) Return to Main Menu")
-    sendLine("")
-}
-
-func gamesChoice(input: string) {
-    switch upperStr(input) {
-    case "?" {
-        displayMenu()
-        displayPrompt()
-    }
-    case "Q" { gotoScreen("main") }
-    else     { displayPrompt() }
-    }
 }
 
 // The last 20 sessions from the login log, newest first. Narrow
@@ -674,6 +660,8 @@ func processInput(input: string) {
     case "terminal"    { terminalChoice(input) }
     case "main"        { mainChoice(input) }
     case "games"       { gamesChoice(input) }
+    case "gamenum"     { gameNumberInput(input) }
+    case "basic", "basicline" { basicScreenInput(input) }
     case "sysop"       { sysopChoice(input) }
     case "sysopboards" { sysopBoardsChoice(input) }
     case "sysopareas"  { sysopAreasChoice(input) }
@@ -1064,6 +1052,11 @@ func logoff() {
     hangupPhase = 1
 }
 
+// Keeps a BASIC program moving between caller keystrokes (games/basic.cla).
+every 2 ticks {
+    if basicActive and (basicState == BRunning or basicState == BSleeping) { basicPump() }
+}
+
 every 30 ticks {
     if ftnPolling { emsiTick() }
     ftnSchedMinutes = ftnSchedMinutes + 1
@@ -1127,6 +1120,10 @@ func disconnected() {
         return
     }
     if user.screen == "xfer" { xferAbort() }
+    if basicActive {
+        basicStop()
+        basicActive = false
+    }
     postsClose()
     if sessionName != "" {
         if not loginLogAppend(sessionNew, sessionName, sessionStart, now() - sessionStart) {

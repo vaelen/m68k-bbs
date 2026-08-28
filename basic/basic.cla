@@ -780,8 +780,16 @@ func varKey(id: int): string {
     return name
 }
 
-func getNum(key: string): Num { return nums.get(key, numZero()) }
-func getStr(key: string): string { return strs.get(key, "") }
+// (assigned to locals first: the 68k backend can't return a map get)
+func getNum(key: string): Num {
+    var v: Num = nums.get(key, numZero())
+    return v
+}
+
+func getStr(key: string): string {
+    var v: string = strs.get(key, "")
+    return v
+}
 
 func storeNum(key: string, v: Num) {
     var r: Num = v
@@ -1420,63 +1428,54 @@ func evalFunction(k: int): Val {
 // --- Arrays -----------------------------------------------------------
 
 // Parse "(i[,j[,k]])" after an array name and return its heap slot,
-// DIMing 10 per subscript on first use.
+// DIMing 10 per subscript on first use. (Subscripts travel as three
+// ints: the 68k backend can't pass a fixed array by value.)
 func arrayIndex(key: string): int {
-    var subs: int[3]
-    var sizes: int[3]
+    var s0: int = 0
+    var s1: int = 0
+    var s2: int = 0
     var n: int = 0
     var info: ArrayInfo
-    var i: int
     expectOp('(')
     while true {
         if n >= 3 { abort("Subscript out of range") }
-        subs[n] = evalInt()
+        if n == 0 { s0 = evalInt() } else if n == 1 { s1 = evalInt() } else { s2 = evalInt() }
         n = n + 1
         if not skipOp(',') { break }
     }
     expectOp(')')
-    if not arrays.has(key) {
-        i = 0
-        while i < n {
-            sizes[i] = 10
-            i = i + 1
-        }
-        dimArray(key, n, sizes)
-    }
+    if not arrays.has(key) { dimArray(key, n, 10, 10, 10) }
     info = arrays[key]
     if info.dims != n { abort("Subscript out of range") }
-    return arraySlot(info, subs)
+    return arraySlot(info, s0, s1, s2)
 }
 
-func arraySlot(info: ArrayInfo, subs: int[3]): int {
-    var idx: int = 0
-    var i: int = 0
-    var d: int
-    while i < info.dims {
-        if i == 0 { d = info.d0 } else if i == 1 { d = info.d1 } else { d = info.d2 }
-        if subs[i] < info.lower or subs[i] > d { abort("Subscript out of range") }
-        idx = idx * (d - info.lower + 1) + (subs[i] - info.lower)
-        i = i + 1
-    }
+func arraySlotDim(idx: int, sub: int, d: int, lower: int): int {
+    if sub < lower or sub > d { abort("Subscript out of range") }
+    return idx * (d - lower + 1) + (sub - lower)
+}
+
+func arraySlot(info: ArrayInfo, s0: int, s1: int, s2: int): int {
+    var idx: int = arraySlotDim(0, s0, info.d0, info.lower)
+    if info.dims > 1 { idx = arraySlotDim(idx, s1, info.d1, info.lower) }
+    if info.dims > 2 { idx = arraySlotDim(idx, s2, info.d2, info.lower) }
     return info.heap + idx
 }
 
-func dimArray(key: string, dims: int, sizes: int[3]) {
+func dimArray(key: string, dims: int, d0: int, d1: int, d2: int) {
     var info: ArrayInfo
     var count: int = 1
-    var i: int = 0
     if arrays.has(key) { abort("Duplicate definition") }
     info.lower = optionBase
     info.dims = dims
-    info.d0 = sizes[0]
-    info.d1 = sizes[1]
-    info.d2 = sizes[2]
+    info.d0 = d0
+    info.d1 = d1
+    info.d2 = d2
     info.isStr = isStrKey(key)
-    while i < dims {
-        if sizes[i] < optionBase { abort("Subscript out of range") }
-        count = count * (sizes[i] - optionBase + 1)
-        i = i + 1
-    }
+    if d0 < optionBase or (dims > 1 and d1 < optionBase) or (dims > 2 and d2 < optionBase) { abort("Subscript out of range") }
+    count = d0 - optionBase + 1
+    if dims > 1 { count = count * (d1 - optionBase + 1) }
+    if dims > 2 { count = count * (d2 - optionBase + 1) }
     if info.isStr {
         info.heap = astrs.count
         while count > 0 {
@@ -1826,7 +1825,9 @@ func stmtLet() {
 func stmtDim() {
     var t: Tok
     var key: string
-    var sizes: int[3]
+    var d0: int
+    var d1: int
+    var d2: int
     var n: int
     while true {
         t = tok()
@@ -1835,14 +1836,17 @@ func stmtDim() {
         key = varKey(t.ival)
         expectOp('(')
         n = 0
+        d0 = 0
+        d1 = 0
+        d2 = 0
         while true {
             if n >= 3 { abort("Subscript out of range") }
-            sizes[n] = evalInt()
+            if n == 0 { d0 = evalInt() } else if n == 1 { d1 = evalInt() } else { d2 = evalInt() }
             n = n + 1
             if not skipOp(',') { break }
         }
         expectOp(')')
-        dimArray(key, n, sizes)
+        dimArray(key, n, d0, d1, d2)
         if not skipOp(',') { break }
     }
 }

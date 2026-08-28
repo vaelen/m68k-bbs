@@ -1,0 +1,270 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// The BASIC interpreter on the BBS: the Games menu lists the .BAS
+// files in the BASIC folder and runs the caller's pick; sysops also get
+// the Ok prompt (immediate mode) with files in a folder of their own.
+// This file defines the interpreter's four hooks over the BBS's output
+// and terminal state, and the "basic" (character mode) / "basicline"
+// (line mode) screens the session parks on while a program runs.
+// docs/basic.md.
+
+include "../basic/basic.cla"
+
+const basicGamesFolder: string = ":BASIC"
+
+var basicActive: bool = false      // a program or the prompt owns the session
+var basicGameMode: bool = false    // running from the Games folder (read-only)
+var gameNames: list of string
+
+// --- Hooks -------------------------------------------------------------
+
+// Program output: CR becomes the caller's line ending.
+func basicOut(s: string) {
+    var i: int = 0
+    var start: int = 0
+    while i < s.length {
+        if s[i] == '\x0D' {
+            if i > start { sendData(s[start, i - start]) }
+            sendData(terminal.eol)
+            start = i + 1
+        }
+        i = i + 1
+    }
+    if i > start { sendData(s[start, i - start]) }
+}
+
+// QBasic color 0-15 (0 black, 1 blue, 2 green, 3 cyan, 4 red, 5 magenta,
+// 6 brown, 7 white, +8 bright) to the terminal's ANSI-ordered Color.
+func qbColor(c: int): Color {
+    var order: int[8]
+    var k: int = c mod 16
+    var bright: int = 0
+    order[0] = 0
+    order[1] = 4
+    order[2] = 2
+    order[3] = 6
+    order[4] = 1
+    order[5] = 5
+    order[6] = 3
+    order[7] = 7
+    if k >= 8 {
+        bright = 8
+        k = k - 8
+    }
+    return Color(order[k] + bright)
+}
+
+func basicScreen(op: char, a: int, b: int) {
+    var i: int = 0
+    switch op {
+    case 'C' {
+        if terminal.ansi {
+            sendData("\x1B[2J\x1B[H")
+        } else {
+            while i < terminal.rows {
+                sendData(terminal.eol)
+                i = i + 1
+            }
+        }
+    }
+    case 'L' {
+        if not terminal.ansi { return }
+        if a > 0 and b > 0 {
+            sendData("\x1B[" + intStr(a) + ";" + intStr(b) + "H")
+        } else if a > 0 {
+            sendData("\x1B[" + intStr(a) + ";1H")
+        } else if b > 0 {
+            sendData("\x1B[" + intStr(b) + "G")
+        }
+    }
+    case 'K' {
+        if a >= 0 { setColor(modem, qbColor(a)) }
+        if b >= 0 { setBackground(modem, qbColor(b mod 8)) }
+    }
+    case 'B' { sendData("\x07") }
+    }
+}
+
+// A bare BASIC file name into the sandbox: the shared Games folder
+// (read-only below sysop) while a game runs, the caller's own folder
+// under it at the prompt. Never an HFS path.
+func basicPath(name: string, write: bool): string {
+    var folder: string
+    if name.indexOf(':') >= 0 { return "" }
+    if basicGameMode {
+        folder = basicGamesFolder
+        if write and user.access != accessSysop { return "" }
+    } else {
+        folder = basicGamesFolder + ":" + user.name
+        if write and not file.exists(folder) {
+            if not file.makeDir(folder) { return "" }
+        }
+    }
+    if name == "" { return folder }
+    return folder + ":" + name
+}
+
+func basicEnv(name: string): string {
+    var s: string(1)
+    switch name {
+    case "USER"    { return user.name }
+    case "ACCESS"  { return s + user.access }
+    case "COLUMNS" { return intStr(terminal.columns + 1) }
+    case "ROWS"    { return intStr(terminal.rows) }
+    }
+    return ""
+}
+
+// --- Games menu --------------------------------------------------------
+
+func hasBasExtension(name: string): bool {
+    var n: int = name.length
+    if n < 5 { return false }
+    return upperStr(name[n - 4, 4]) == ".BAS"
+}
+
+// The .BAS files in the Games folder, alphabetically, into gameNames.
+func loadGameNames() {
+    var found: list of string
+    var name: string
+    var i: int
+    var j: int
+    gameNames.clear()
+    if not file.list(basicGamesFolder, found) { return }
+    for name in found {
+        if not hasBasExtension(name) { continue }
+        gameNames.add(name)
+        j = gameNames.count - 1
+        while j > 0 and upperStr(gameNames[j - 1]) > upperStr(name) {
+            gameNames[j] = gameNames[j - 1]
+            j = j - 1
+        }
+        gameNames[j] = name
+    }
+}
+
+func drawGamesMenu() {
+    var i: int = 0
+    loadGameNames()
+    sendLine("")
+    sendLine("Games:")
+    if gameNames.count == 0 { sendLine("No games are available yet.") }
+    while i < gameNames.count {
+        sendLine(intStr(i + 1) + ") " + gameNames[i])
+        i = i + 1
+    }
+    sendLine("")
+    if gameNames.count > 0 { sendLine("V) Play a game by number") }
+    if user.access == accessSysop { sendLine("B) BASIC prompt") }
+    sendLine("Q) Return to Main Menu")
+    sendLine("")
+}
+
+func gamesChoice(input: string) {
+    switch upperStr(input) {
+    case "?" {
+        displayMenu()
+        displayPrompt()
+    }
+    case "Q" { gotoScreen("main") }
+    case "V" { promptNumber("gamenum", "") }
+    case "B" {
+        if user.access == accessSysop {
+            startBasicPrompt()
+        } else {
+            displayPrompt()
+        }
+    }
+    else     { displayPrompt() }
+    }
+}
+
+func gameNumberInput(input: string) {
+    var n: int = parseIntStr(input)
+    if input == "" {
+        gotoScreen("games")
+        return
+    }
+    if n < 1 or n > gameNames.count {
+        sendLine("No such game.")
+        gotoScreen("games")
+        return
+    }
+    startBasicFile(gameNames[n - 1])
+}
+
+// --- Running -----------------------------------------------------------
+
+func startBasicFile(name: string) {
+    var src: text
+    basicNew()
+    basicGameMode = true
+    basicWidth = terminal.columns        // physical width - 1: last column stays free
+    if not file.readText(basicGamesFolder + ":" + name, src) {
+        sendLine("Cannot read " + name + ".")
+        gotoScreen("games")
+        return
+    }
+    sendLine("")
+    if not basicLoad(src) {
+        gotoScreen("games")
+        return
+    }
+    log("BASIC: " + user.name + " runs " + name)
+    basicRun()
+    basicActive = true
+    basicPump()
+}
+
+func startBasicPrompt() {
+    basicNew()
+    basicGameMode = false
+    basicWidth = terminal.columns
+    sendLine("")
+    sendLine("68kBBS BASIC. SYSTEM returns to the Games menu.")
+    basicPrompt()
+    basicActive = true
+    basicPump()
+}
+
+// Park the session on the screen the interpreter's state calls for:
+// line mode for INPUT and the prompt, character mode otherwise.
+func syncBasicScreen() {
+    var s: string
+    if not basicActive { return }
+    if basicState == BDone {
+        leaveBasic()
+        return
+    }
+    if basicState == BWaitLine or basicState == BPrompt { s = "basicline" } else { s = "basic" }
+    if user.screen != s {
+        user.screen = s
+        displayPrompt()      // sets terminal.linemode; prints nothing
+    }
+}
+
+func leaveBasic() {
+    basicActive = false
+    basicStop()
+    gotoScreen("games")
+}
+
+// One slice of interpretation; the 2-tick timer in bbs.cla calls this
+// while a program runs so a compute loop never blocks the Mac.
+func basicPump() {
+    basicStep(300)
+    syncBasicScreen()
+}
+
+// A completed line (basicline) or a single key (basic) from the caller.
+func basicScreenInput(input: string) {
+    if user.screen == "basicline" {
+        basicLine(input)
+    } else if input == "" {
+        basicKey('\x0D')
+    } else {
+        basicKey(input[0])
+    }
+    basicPump()
+}
