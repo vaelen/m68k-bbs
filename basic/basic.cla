@@ -732,8 +732,17 @@ func needStr(v: Val): string {
     return v.s
 }
 
-// Nearest int, as BASIC converts arguments (CINT).
-func numAsInt(n: Num): int { return numToInt(numRound(n)) }
+// Nearest int with ties to even, as GW-BASIC's CINT converts arguments.
+func numCint(n: Num): Num {
+    var r: Num = numRound(n)
+    var frac: Num = numSub(numAbs(n), numFloor(numAbs(n)))
+    if numCmp(frac, numNormalize(0x40000000, -31)) == 0 and (numToInt(r) & 1) != 0 {
+        if r.m < 0 { r = numAdd(r, numFromInt(1)) } else { r = numSub(r, numFromInt(1)) }
+    }
+    return r
+}
+
+func numAsInt(n: Num): int { return numToInt(numCint(n)) }
 
 var nums: map of Num
 var strs: map of string
@@ -777,7 +786,7 @@ func getStr(key: string): string { return strs.get(key, "") }
 func storeNum(key: string, v: Num) {
     var r: Num = v
     if isIntKey(key) {
-        r = numRound(v)
+        r = numCint(v)
         if numCmp(numAbs(r), numFromInt(32767)) > 0 { abort("Overflow") }
     }
     nums[key] = r
@@ -1415,9 +1424,9 @@ func evalFunction(k: int): Val {
 // DIMing 10 per subscript on first use.
 func arrayIndex(key: string): int {
     var subs: int[3]
+    var sizes: int[3]
     var n: int = 0
     var info: ArrayInfo
-    var idx: int
     var i: int
     expectOp('(')
     while true {
@@ -1430,12 +1439,10 @@ func arrayIndex(key: string): int {
     if not arrays.has(key) {
         i = 0
         while i < n {
-            subs[i] = 10
+            sizes[i] = 10
             i = i + 1
         }
-        dimArray(key, n, subs)
-        // subs were the dims; re-read is impossible, so recompute from the parsed values:
-        // simpler -- fall through with the original subscripts restored below
+        dimArray(key, n, sizes)
     }
     info = arrays[key]
     if info.dims != n { abort("Subscript out of range") }
@@ -1508,16 +1515,18 @@ func callUserFn(id: int): Val {
     var v: Val
     if not fns.has(name) { abort("Undefined user function") }
     fn = fns[name]
-    expectOp('(')
-    arg = evalExpr()
-    expectOp(')')
-    pkey = varKey(fn.param)
-    if isStrKey(pkey) {
-        savedStr = getStr(pkey)
-        strs[pkey] = needStr(arg)
-    } else {
-        savedNum = getNum(pkey)
-        storeNum(pkey, needNum(arg))
+    if fn.param >= 0 {
+        expectOp('(')
+        arg = evalExpr()
+        expectOp(')')
+        pkey = varKey(fn.param)
+        if isStrKey(pkey) {
+            savedStr = getStr(pkey)
+            strs[pkey] = needStr(arg)
+        } else {
+            savedNum = getNum(pkey)
+            storeNum(pkey, needNum(arg))
+        }
     }
     savedPc = pc
     savedCur = cur
@@ -1526,7 +1535,9 @@ func callUserFn(id: int): Val {
     v = evalExpr()
     cur = savedCur
     pc = savedPc
-    if isStrKey(pkey) { strs[pkey] = savedStr } else { nums[pkey] = savedNum }
+    if fn.param >= 0 {
+        if isStrKey(pkey) { strs[pkey] = savedStr } else { nums[pkey] = savedNum }
+    }
     if isStrKey(name) { needStr(v) } else { needNum(v) }
     return v
 }
@@ -1768,19 +1779,20 @@ func stmtStop() {
 
 // --- Statements -------------------------------------------------------
 
-func stmtLet() {
-    var t: Tok
-    var key: string
-    var idx: int = -1
-    var v: Val
-    skipKw(K_LET)
-    t = tok()
+// An assignment target at pc: a scalar or an array element.
+var lvKey: string
+var lvIdx: int = -1
+
+func parseLValue() {
+    var t: Tok = tok()
     if t.kind != TId { abort("Syntax error") }
     pc = pc + 1
-    key = varKey(t.ival)
-    if isOp('(') { idx = arrayIndex(key) }
-    expectOp('=')
-    v = evalExpr()
+    lvKey = varKey(t.ival)
+    lvIdx = -1
+    if isOp('(') { lvIdx = arrayIndex(lvKey) }
+}
+
+func assignLValue(key: string, idx: int, v: Val) {
     if idx < 0 {
         storeVal(key, v)
     } else if isStrKey(key) {
@@ -1788,6 +1800,258 @@ func stmtLet() {
     } else {
         anums[idx] = needNum(v)
     }
+}
+
+func readLValue(key: string, idx: int): Val {
+    if idx < 0 {
+        if isStrKey(key) { return valStr(getStr(key)) }
+        return valNum(getNum(key))
+    }
+    if isStrKey(key) { return valStr(astrs[idx]) }
+    return valNum(anums[idx])
+}
+
+func stmtLet() {
+    var key: string
+    var idx: int
+    var v: Val
+    skipKw(K_LET)
+    parseLValue()
+    key = lvKey
+    idx = lvIdx
+    expectOp('=')
+    v = evalExpr()
+    assignLValue(key, idx, v)
+}
+
+func stmtDim() {
+    var t: Tok
+    var key: string
+    var sizes: int[3]
+    var n: int
+    while true {
+        t = tok()
+        if t.kind != TId { abort("Syntax error") }
+        pc = pc + 1
+        key = varKey(t.ival)
+        expectOp('(')
+        n = 0
+        while true {
+            if n >= 3 { abort("Subscript out of range") }
+            sizes[n] = evalInt()
+            n = n + 1
+            if not skipOp(',') { break }
+        }
+        expectOp(')')
+        dimArray(key, n, sizes)
+        if not skipOp(',') { break }
+    }
+}
+
+func stmtOption() {
+    var n: int
+    if not skipKw(K_BASE) { abort("Syntax error") }
+    n = evalInt()
+    if n != 0 and n != 1 { abort("Syntax error") }
+    if arrays.count > 0 { abort("Duplicate definition") }
+    optionBase = n
+}
+
+func stmtDefFn() {
+    var t: Tok = tok()
+    var name: string
+    var fn: FnInfo
+    if t.kind != TId or names[t.ival].length < 3 or names[t.ival][0] != 'F' or names[t.ival][1] != 'N' { abort("Syntax error") }
+    name = names[t.ival]
+    pc = pc + 1
+    fn.param = -1
+    if skipOp('(') {
+        t = tok()
+        if t.kind != TId { abort("Syntax error") }
+        fn.param = t.ival
+        pc = pc + 1
+        expectOp(')')
+    }
+    expectOp('=')
+    fn.pc = pc
+    fns[name] = fn
+    skipToStmtEnd()
+}
+
+// DEFINT A-C, X: the implied suffix for names starting with those letters.
+func stmtDefType(suffix: char) {
+    var t: Tok
+    var a: int
+    var b: int
+    var i: int
+    while true {
+        t = tok()
+        if t.kind != TId or names[t.ival].length != 1 { abort("Syntax error") }
+        a = int(names[t.ival][0]) - int('A')
+        b = a
+        pc = pc + 1
+        if skipOp('-') {
+            t = tok()
+            if t.kind != TId or names[t.ival].length != 1 { abort("Syntax error") }
+            b = int(names[t.ival][0]) - int('A')
+            pc = pc + 1
+        }
+        i = a
+        while i <= b {
+            defTypes[i] = suffix
+            i = i + 1
+        }
+        if not skipOp(',') { break }
+    }
+}
+
+// DATA is read from the raw text the tokenizer saved per statement.
+var dataIdx: int = 0
+var dataPos: int = 0
+
+func readDataItem(): string {
+    var s: string
+    var item: string
+    while true {
+        if dataIdx >= dataText.count { abort("Out of DATA") }
+        s = dataText[dataIdx]
+        while dataPos < s.length and s[dataPos] == ' ' { dataPos = dataPos + 1 }
+        if dataPos >= s.length and s.length > 0 and s[s.length - 1] != ',' {
+            dataIdx = dataIdx + 1
+            dataPos = 0
+            continue
+        }
+        break
+    }
+    if dataPos < s.length and s[dataPos] == '"' {
+        dataPos = dataPos + 1
+        while dataPos < s.length and s[dataPos] != '"' {
+            item = item + s[dataPos]
+            dataPos = dataPos + 1
+        }
+        if dataPos < s.length { dataPos = dataPos + 1 }
+        while dataPos < s.length and s[dataPos] == ' ' { dataPos = dataPos + 1 }
+    } else {
+        while dataPos < s.length and s[dataPos] != ',' {
+            item = item + s[dataPos]
+            dataPos = dataPos + 1
+        }
+        while item.length > 0 and item[item.length - 1] == ' ' { item = item[0, item.length - 1] }
+    }
+    if dataPos < s.length and s[dataPos] == ',' {
+        dataPos = dataPos + 1
+    } else {
+        dataIdx = dataIdx + 1
+        dataPos = 0
+    }
+    return item
+}
+
+func stmtRead() {
+    var key: string
+    var idx: int
+    var item: string
+    var v: Val
+    while true {
+        parseLValue()
+        key = lvKey
+        idx = lvIdx
+        item = readDataItem()
+        if isStrKey(key) {
+            v = valStr(item)
+        } else if item == "" {
+            v = valInt(0)
+        } else {
+            numParsePrefix(item)
+            if numParseEnd != item.length { abort("Syntax error") }
+            v = valNum(numParsePrefix(item))
+        }
+        assignLValue(key, idx, v)
+        if not skipOp(',') { break }
+    }
+}
+
+func stmtRestore() {
+    var n: int
+    var i: int = 0
+    dataIdx = 0
+    dataPos = 0
+    if atStmtEnd() { return }
+    n = lineTarget()
+    while i < dataLine.count and dataLine[i] < n { i = i + 1 }
+    dataIdx = i
+}
+
+func stmtSwap() {
+    var k1: string
+    var i1: int
+    var v1: Val
+    var v2: Val
+    parseLValue()
+    k1 = lvKey
+    i1 = lvIdx
+    expectOp(',')
+    parseLValue()
+    if isStrKey(k1) != isStrKey(lvKey) { abort("Type mismatch") }
+    v1 = readLValue(k1, i1)
+    v2 = readLValue(lvKey, lvIdx)
+    assignLValue(k1, i1, v2)
+    assignLValue(lvKey, lvIdx, v1)
+}
+
+func stmtRandomize() {
+    if basicFixedSeed != 0 {
+        rndSeed = basicFixedSeed
+        if not atStmtEnd() { evalNum() }
+        return
+    }
+    if atStmtEnd() {
+        rndSeed = now()
+    } else {
+        rndSeed = numToInt(numFloor(evalNum()))
+    }
+}
+
+// MID$(s$, n[, m]) = e$
+func stmtMidAssign() {
+    var key: string
+    var idx: int
+    var n: int
+    var m: int = 255
+    var e: string
+    var s: string
+    var count: int
+    var i: int
+    expectOp('(')
+    parseLValue()
+    key = lvKey
+    idx = lvIdx
+    if not isStrKey(key) { abort("Type mismatch") }
+    expectOp(',')
+    n = evalInt()
+    if skipOp(',') { m = evalInt() }
+    expectOp(')')
+    expectOp('=')
+    e = evalStr()
+    s = needStr(readLValue(key, idx))
+    if n < 1 or m < 0 { abort("Illegal function call") }
+    if n > s.length { return }
+    count = e.length
+    if m < count { count = m }
+    if s.length - n + 1 < count { count = s.length - n + 1 }
+    i = 0
+    while i < count {
+        s[n - 1 + i] = e[i]
+        i = i + 1
+    }
+    assignLValue(key, idx, valStr(s))
+}
+
+func stmtClear() {
+    while not atStmtEnd() { pc = pc + 1 }    // CLEAR [,n[,m]] arguments are ignored
+    clearVars()
+    fns.clear()
+    closeAllFiles()
 }
 
 func stmtPrint() {
@@ -1890,6 +2154,19 @@ func execStatement() {
     case K_WEND { stmtWend() }
     case K_ON { stmtOn() }
     case K_STOP { stmtStop() }
+    case K_DIM { stmtDim() }
+    case K_OPTION { stmtOption() }
+    case K_DEF { stmtDefFn() }
+    case K_DEFINT { stmtDefType('%') }
+    case K_DEFSNG, K_DEFDBL { stmtDefType('!') }
+    case K_DEFSTR { stmtDefType('$') }
+    case K_DATA { }
+    case K_READ { stmtRead() }
+    case K_RESTORE { stmtRestore() }
+    case K_SWAP { stmtSwap() }
+    case K_RANDOMIZE { stmtRandomize() }
+    case K_MIDS { stmtMidAssign() }
+    case K_CLEAR { stmtClear() }
     else {
         if t.ival >= K_NOTSUP_FIRST { abort("Not supported") }
         abort("Syntax error")
@@ -1941,6 +2218,8 @@ func basicRun() {
     pc = 0
     runLine = 0
     contPc = -1
+    dataIdx = 0
+    dataPos = 0
     basicState = BRunning
 }
 
