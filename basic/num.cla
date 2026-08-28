@@ -275,7 +275,9 @@ func numMulPow10(x: Num, k: int): Num {
         r = numDiv(r, numPow10(30))
         kk = kk + 30
     }
-    if kk != 0 { r = numMul(r, numPow10(kk)) }
+    // divide for negative k: 225 / 100 is exact where 225 * (1/100) is not
+    if kk < 0 { return numDiv(r, numPow10(-kk)) }
+    if kk > 0 { r = numMul(r, numPow10(kk)) }
     return r
 }
 

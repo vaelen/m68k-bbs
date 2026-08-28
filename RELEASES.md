@@ -29,8 +29,8 @@ Also in this release:
 - The main menu is grouped (boards/files/mail/games, then the
   informational screens, then quit).
 - Games: a BASIC interpreter (`basic/basic.cla`, GW-BASIC dialect with
-  a software float, sequential files, `INKEY$`/`SLEEP`, `CLS`/`LOCATE`/
-  `COLOR` over ANSI). `G) Games` lists and runs the `.BAS` files in the
+  a software float, sequential files, `PRINT USING`, `ON ERROR`/
+  `RESUME`, `INKEY$`/`SLEEP`, `CLS`/`LOCATE`/`COLOR` over ANSI). `G) Games` lists and runs the `.BAS` files in the
   `BASIC` folder; sysops get the `Ok` prompt (`LIST`, `RUN`, `LOAD`,
   `SAVE`, `FILES`). Runs Super Star Trek. Also runs on the host over
   TCP (`scripts/basic-host.sh`). `docs/basic.md`, `basic/langref.md`.

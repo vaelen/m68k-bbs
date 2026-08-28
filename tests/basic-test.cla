@@ -347,7 +347,6 @@ func screenTests() {
     check("10 WIDTH 20:PRINT \"123456789012345\";\"ABCDEFG\"", "", "123456789012345\nABCDEFG\n", "width wrap")
     check("10 WIDTH 40:PRINT 1,2,3,4", "", " 1             2             3 \n 4 \n", "zones respect width")
     check("10 SCREEN 1", "", "Not supported in 10\n", "graphics refused")
-    check("10 PRINT USING \"##\";1", "", "Not supported in 10\n", "print using refused")
     check("10 LOCATE ,5:PRINT POS(0)", "", " 5 \n", "locate col only")
     expect(screenOps == "L0,5;", "locate col only op")
     check("10 COLOR 7:PRINT \"X\"", "", "X\n", "color fg only")
@@ -475,6 +474,53 @@ func sstTest() {
     }
 }
 
+func usingTests() {
+    check("10 PRINT USING \"##.##\";5.5", "", " 5.50\n", "using ##.##")
+    check("10 PRINT USING \"$$###.##\";12.5", "", "  $12.50\n", "using floating dollar")
+    check("10 PRINT USING \"**#.#\";5", "", "**5.0\n", "using asterisk fill")
+    check("10 PRINT USING \"**$##.##\";1.5", "", "***$1.50\n", "using **$")
+    check("10 PRINT USING \"+##\";-5;5", "", " -5 +5\n", "using leading plus")
+    check("10 PRINT USING \"##+\";-5;5", "", " 5- 5+\n", "using trailing plus")
+    check("10 PRINT USING \"##-\";-5;5", "", " 5- 5 \n", "using trailing minus")
+    check("10 PRINT USING \"###,###\";1234567;12", "", "%1,234,567     12\n", "using commas and overflow")
+    check("10 PRINT USING \"##\";123", "", "%123\n", "using overflow")
+    check("10 PRINT USING \"A ## B\";5", "", "A  5 B\n", "using literals")
+    check("10 PRINT USING \"!\";\"HELLO\"", "", "H\n", "using !")
+    check("10 PRINT USING \"\\  \\|\";\"HELLO\";\"HI\"", "", "HELL|HI  |\n", "using backslash field")
+    check("10 PRINT USING \"&|\";\"HI\"", "", "HI|\n", "using &")
+    check("10 PRINT USING \"#.##\";.5;-.5", "", "0.50-.50\n", "using leading zero")
+    check("10 PRINT USING \"##.##^^^^\";12345;-.00123", "", " 1.23E+04-1.23E-03\n", "using exponent")
+    check("10 PRINT USING \"## \";1;2;3", "", " 1  2  3 \n", "using format reused")
+    check("10 PRINT USING \"##\";1;", "", " 1", "using trailing semicolon")
+    check("10 X$=\"##.#\":PRINT USING X$;3.14159", "", " 3.1\n", "using format variable")
+    check("10 PRINT USING \"###\";\"A\"", "", "Type mismatch in 10\n", "using type mismatch")
+    check("10 PRINT USING \"&\";1", "", "Type mismatch in 10\n", "using string field number")
+    check("10 PRINT USING \"ABC\";1", "", "Illegal function call in 10\n", "using no field")
+    check("10 PRINT USING \"_##\";5", "", "#5\n", "using underscore escape")
+    check("10 PRINT USING \"##.#\";2.25;-0", "", " 2.3 0.0\n", "using rounding")
+    check("10 PRINT USING \"#####\";0;-1", "", "    0   -1\n", "using integers")
+    check("10 OPEN \"U1\" FOR OUTPUT AS #1:PRINT #1,USING \"##.#\";2.5:CLOSE:OPEN \"U1\" FOR INPUT AS #1:LINE INPUT #1,L$:PRINT L$", "", " 2.5\n", "using to file")
+    check("10 PRINT USING \"Total: $$#,###.## each\";1234.5;7", "", "Total:  $1,234.50 eachTotal:      $7.00 each\n", "using mixed line")
+}
+
+func errorTests() {
+    check("10 ON ERROR GOTO 100\n20 PRINT 1/0\n30 PRINT \"AFTER\":END\n100 PRINT \"ERR\";ERR;ERL:RESUME NEXT", "", "ERR 11  20 \nAFTER\n", "on error resume next")
+    check("10 ON ERROR GOTO 100\n20 PRINT 1/A\n30 END\n100 A=2:RESUME", "", " .5 \n", "resume retries")
+    check("10 ON ERROR GOTO 100\n20 X=1/0\n30 PRINT \"NO\":END\n40 PRINT \"YES\":END\n100 RESUME 40", "", "YES\n", "resume line")
+    check("10 ON ERROR GOTO 100\n20 ON ERROR GOTO 0\n30 PRINT 1/0\n100 RESUME NEXT", "", "Division by zero in 30\n", "on error goto 0")
+    check("10 ON ERROR GOTO 100\n20 PRINT 1/0\n100 PRINT 1/0", "", "Division by zero in 100\n", "error in handler is fatal")
+    check("10 RESUME", "", "RESUME without error in 10\n", "resume without error")
+    check("10 ERROR 5", "", "Illegal function call in 10\n", "error statement")
+    check("10 ERROR 200", "", "Unprintable error in 10\n", "error unknown code")
+    check("10 ON ERROR GOTO 100\n20 ERROR 200\n30 END\n100 PRINT ERR:RESUME NEXT", "", " 200 \n", "error code in handler")
+    check("10 ON ERROR GOTO 100\n20 OPEN \"NOPE\" FOR INPUT AS #1\n30 PRINT \"OPENED\":END\n100 PRINT \"E\";ERR:RESUME NEXT", "", "E 53 \nOPENED\n", "file error caught")
+    check("10 ON ERROR GOTO 999", "", "Undefined line number in 10\n", "on error undefined line")
+    check("10 ON ERROR GOTO 100\n20 A$=\"X\"+1\n30 PRINT ERR;ERL:END\n100 RESUME NEXT", "", " 13  20 \n", "err erl persist")
+    check("10 ON ERROR GOTO 100\n20 FOR I=1 TO 3:PRINT I;:X=1/0:NEXT:PRINT:END\n100 RESUME NEXT", "", " 1  2  3 \n", "resume next inside for")
+    check("10 ON ERROR GOTO 100\n20 SCREEN 1\n30 PRINT \"OK\":END\n100 PRINT ERR:RESUME NEXT", "", " 73 \nOK\n", "not supported code 73")
+    check("10 ON ERROR GOTO 100\n20 INPUT A\n30 PRINT A:END\n100 PRINT \"H\":RESUME NEXT", "5", "?  5 \n", "handler armed does not disturb input")
+}
+
 on App.startCLI(args: list of string) {
     tokenizerTests()
     evalTests()
@@ -484,6 +530,8 @@ on App.startCLI(args: list of string) {
     screenTests()
     immediateTests()
     fileTests()
+    usingTests()
+    errorTests()
     sstTest()
     if failures > 0 { quit 1 }
     log("basic-test: all passed")

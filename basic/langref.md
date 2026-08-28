@@ -98,6 +98,21 @@ Square brackets mark optional parts.
   and a trailing space; a trailing `;` or `,` suppresses the newline.
   `TAB(n)` moves to column n (1-based; a new line if already past it),
   `SPC(n)` prints n spaces. Output wraps at the screen width.
+- `PRINT [#n,] USING fmt$; items[;]` — formatted output. The format
+  string is printed literally except for its fields, each of which
+  consumes the next item (the format is reused from the start when
+  items remain, on the same line):
+  - numeric: `#` a digit position, `.` the point, `,` thousands
+    separators, a leading `+` prints the sign, a trailing `+` or `-`
+    prints it after the number, `**` fills the left with asterisks,
+    `$$` puts a `$` before the number, `**$` both, `^^^^` after the
+    digits prints in exponent form. A number that doesn't fit is
+    printed anyway with a `%` in front. `PRINT USING "$$#,###.##";
+    1234.5` prints ` $1,234.50`.
+  - string: `!` the first character, `\ \` (a pair of backslashes,
+    with spaces between) a fixed-width field of that many characters,
+    `&` the whole string.
+  - `_` prints the next character literally.
 - `WRITE [items]` — comma-separated, strings quoted.
 - `CLS` — clear the screen. `LOCATE [row][, col]` — move the cursor.
   `COLOR [fg][, bg]` — set colors (QBasic numbers: 0 black, 1 blue, 2
@@ -134,6 +149,18 @@ Square brackets mark optional parts.
   falls through.
 - `END` — stop and close files. `STOP` — stop with `Break in n`; at the
   prompt `CONT` resumes. `SYSTEM` — leave BASIC.
+
+**Error handling**
+
+- `ON ERROR GOTO line` — from then on, an error jumps to `line`
+  instead of stopping; `ON ERROR GOTO 0` turns it off again. In the
+  handler `ERR` is the error number and `ERL` the line it happened on.
+- `RESUME` — run the failing statement again; `RESUME NEXT` — continue
+  with the statement after it; `RESUME line` — go to `line`. An error
+  inside the handler, or `RESUME` with no error pending, stops the
+  program.
+- `ERROR n` — raise error `n` (a program's own errors use numbers
+  above 76).
 
 **Files** — three sequential files, numbered 1–3, in the folder the
 BBS gives you (no paths; `:` is refused). A name without a `.` gets
@@ -172,6 +199,7 @@ it (a bare number deletes it), or any statement to run it now.
 | `POS(0)` `CSRLIN` | cursor column and row (from 1) |
 | `ENVIRON$("name")` | on the BBS: `USER` (your name), `ACCESS`, `COLUMNS`, `ROWS` |
 | `EOF(n)` `FRE(x)` | end of file; free memory (a constant) |
+| `ERR` `ERL` | the last error's number and line (see Error handling) |
 
 ## Errors
 
@@ -182,9 +210,18 @@ it (a bare number deletes it), or any statement to run it now.
 `Duplicate definition`, `String too long`, `Undefined user function`,
 `Not supported`, `File not found`, `Bad file number`, `Bad file mode`,
 `Bad file name`, `File already open`, `Input past end`, `Path not
-found`, `Device I/O error`, `Can't continue`. Each is reported as
-`<error> in <line>`; the program stops (back to `Ok` if it was started
-from the prompt).
+found`, `Device I/O error`, `Can't continue`, `RESUME without error`.
+Each is reported as `<error> in <line>`; the program stops (back to
+`Ok` if it was started from the prompt) unless an `ON ERROR` handler
+is armed. Error numbers follow GW-BASIC: 1 NEXT without FOR, 2 Syntax
+error, 3 RETURN without GOSUB, 4 Out of DATA, 5 Illegal function call,
+6 Overflow, 8 Undefined line number, 9 Subscript out of range, 10
+Duplicate definition, 11 Division by zero, 13 Type mismatch, 15 String
+too long, 17 Can't continue, 18 Undefined user function, 20 RESUME
+without error, 26 FOR without NEXT, 29 WHILE without WEND, 30 WEND
+without WHILE, 52 Bad file number, 53 File not found, 54 Bad file
+mode, 55 File already open, 57 Device I/O error, 62 Input past end, 64
+Bad file name, 73 Not supported, 76 Path not found.
 
 ## Differences from GW-BASIC and QBasic
 
@@ -193,8 +230,9 @@ from the prompt).
   in E notation at 10⁷ and below 10⁻⁴.
 - Arrays have at most three dimensions.
 - Keywords must be delimited (see Programs and lines).
-- Not implemented: `PRINT USING`, `ON ERROR`/`RESUME`/`ERR`/`ERL`,
-  `CHAIN`/`COMMON`, random-access files (`FIELD`, `GET`, `PUT`),
+- `PRINT USING` with `^^^^` always prints one digit before the point.
+- Not implemented: `CHAIN`/`COMMON`, random-access files (`FIELD`,
+  `GET`, `PUT`),
   `PEEK`/`POKE`/`INP`/`OUT`/`CALL`/`USR`/`DEF SEG`, `LPRINT`/`LLIST`,
   `DATE$`/`TIME$`, and everything graphical or musical (`SCREEN`,
   `PSET`, `LINE (…)`, `CIRCLE`, `PAINT`, `DRAW`, `PLAY`, `SOUND`, …).

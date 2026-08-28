@@ -1411,6 +1411,8 @@ func evalFunction(k: int): Val {
         return valInt(curCol() + 1)
     }
     case K_CSRLIN { return valInt(cursorRow) }
+    case K_ERR { return valInt(errCode) }
+    case K_ERL { return valInt(errLine) }
     case K_ENVIRONS { return valStr(basicEnv(parenStr())) }
     case K_EOF { return boolVal(fileEof(parenInt())) }
     case K_FRE {
@@ -1747,15 +1749,18 @@ func stmtWend() {
 }
 
 func stmtOn() {
-    var n: int = evalInt()
+    var n: int
     var gosub: bool
     var targets: list of int
+    if skipKw(K_ERROR) {
+        stmtOnError()
+        return
+    }
+    n = evalInt()
     if skipKw(K_GOTO) {
         gosub = false
     } else if skipKw(K_GOSUB) {
         gosub = true
-    } else if isKw(K_ERROR) {
-        abort("Not supported")
     } else {
         abort("Syntax error")
     }
@@ -2068,6 +2073,10 @@ func stmtPrint() {
         expectOp(',')
         printFile = fileForWrite(n)
     }
+    if skipKw(K_USING) {
+        stmtPrintUsing()
+        return
+    }
     while not atStmtEnd() {
         if isOp(';') {
             pc = pc + 1
@@ -2089,9 +2098,6 @@ func stmtPrint() {
             n = parenInt()
             if n > 0 { outStr(spaces(n)) }
             lastSep = false
-        } else if isKw(K_USING) {
-            printFile = 0
-            abort("Not supported")
         } else {
             v = evalExpr()
             if v.isStr { outStr(v.s) } else { outStr(numStr(v.n) + " ") }
@@ -2100,6 +2106,453 @@ func stmtPrint() {
     }
     if not lastSep { outNewline() }
     printFile = 0
+}
+
+// --- PRINT USING ------------------------------------------------------
+// One field spec at a time, parsed out of the format string into the
+// u* globals by usingField.
+
+var uKind: char            // 'N' numeric, '!', '\\', '&'; 0 = not a field
+var uEnd: int = 0          // index just past the field
+var uWidth: int = 0        // characters the field occupies
+var uDecDigits: int = 0
+var uHasInt: bool = false  // any digit position before the point
+var uPoint: bool = false
+var uComma: bool = false
+var uPlusLead: bool = false
+var uPlusTrail: bool = false
+var uMinusTrail: bool = false
+var uAst: bool = false
+var uDollar: bool = false
+var uExpo: bool = false
+
+func fmtAt(fmt: string, i: int): char {
+    if i < fmt.length { return fmt[i] }
+    return char(0)
+}
+
+// Recognize a field starting at fmt[i]; uKind is 0 when there is none.
+func usingField(fmt: string, i: int) {
+    var j: int = i
+    var c: char = fmtAt(fmt, i)
+    var digits: bool = false
+    uKind = char(0)
+    if c == '!' {
+        uKind = '!'
+        uEnd = i + 1
+        return
+    }
+    if c == '&' {
+        uKind = '&'
+        uEnd = i + 1
+        return
+    }
+    if c == '\\' {
+        j = i + 1
+        while j < fmt.length and fmt[j] != '\\' { j = j + 1 }
+        if j >= fmt.length { return }
+        uKind = '\\'
+        uWidth = j - i + 1
+        uEnd = j + 1
+        return
+    }
+    uDecDigits = 0
+    uHasInt = false
+    uPoint = false
+    uComma = false
+    uPlusLead = false
+    uPlusTrail = false
+    uMinusTrail = false
+    uAst = false
+    uDollar = false
+    uExpo = false
+    if c == '+' {
+        uPlusLead = true
+        j = j + 1
+    }
+    if fmtAt(fmt, j) == '*' and fmtAt(fmt, j + 1) == '*' {
+        uAst = true
+        uHasInt = true
+        digits = true
+        j = j + 2
+        if fmtAt(fmt, j) == '$' {
+            uDollar = true
+            j = j + 1
+        }
+    } else if fmtAt(fmt, j) == '$' and fmtAt(fmt, j + 1) == '$' {
+        uDollar = true
+        uHasInt = true
+        digits = true
+        j = j + 2
+    }
+    while fmtAt(fmt, j) == '#' or fmtAt(fmt, j) == ',' {
+        if fmt[j] == ',' { uComma = true } else { uHasInt = true }
+        digits = true
+        j = j + 1
+    }
+    if fmtAt(fmt, j) == '.' and (digits or fmtAt(fmt, j + 1) == '#') {
+        uPoint = true
+        j = j + 1
+        while fmtAt(fmt, j) == '#' {
+            uDecDigits = uDecDigits + 1
+            digits = true
+            j = j + 1
+        }
+    }
+    if not digits { return }
+    if fmtAt(fmt, j) == '^' and fmtAt(fmt, j + 1) == '^' and fmtAt(fmt, j + 2) == '^' and fmtAt(fmt, j + 3) == '^' {
+        uExpo = true
+        j = j + 4
+        if fmtAt(fmt, j) == '^' { j = j + 1 }
+    }
+    if fmtAt(fmt, j) == '+' and not uPlusLead {
+        uPlusTrail = true
+        j = j + 1
+    } else if fmtAt(fmt, j) == '-' {
+        uMinusTrail = true
+        j = j + 1
+    }
+    uKind = 'N'
+    uWidth = j - i
+    uEnd = j
+}
+
+// Decimal exponent d with 10^d <= x < 10^(d+1), x > 0.
+func decExponent(x: Num): int {
+    var d: int = (x.e + 31) * 30103
+    if d < 0 { d = -((-d + 99999) / 100000) } else { d = d / 100000 }
+    while d < 38 and numCmp(x, numPow10(d + 1)) >= 0 { d = d + 1 }
+    while numCmp(x, numPow10(d)) < 0 { d = d - 1 }
+    return d
+}
+
+func twoDigits(n: int): string {
+    if n < 10 { return "0" + string(n) }
+    return string(n)
+}
+
+func padLeftFill(s: string, width: int, fill: char): string {
+    var r: string = s
+    while r.length < width { r = fill + r }
+    return r
+}
+
+// x rendered in the numeric field usingField just parsed.
+func usingNumber(x: Num): string {
+    var neg: bool = x.m < 0
+    var ax: Num = numAbs(x)
+    var scaled: Num
+    var digits: string
+    var intPart: string
+    var fracPart: string
+    var body: string
+    var prefix: string
+    var suffix: string
+    var d: int
+    var n: int
+    var k: int
+    var fill: char = ' '
+    if uExpo {
+        if ax.m == 0 {
+            d = 0
+            n = 0
+        } else {
+            d = decExponent(ax)
+            scaled = numRound(numMulPow10(ax, uDecDigits - d))
+            n = numToInt(scaled)
+            if numCmp(scaled, numPow10(uDecDigits + 1)) >= 0 {
+                n = n / 10
+                d = d + 1
+            }
+        }
+        digits = padLeftFill(string(n), uDecDigits + 1, '0')
+        body = digits[0, 1]
+        if uPoint { body = body + "." + digits[1, digits.length - 1] }
+        if d < 0 { body = body + "E-" + twoDigits(-d) } else { body = body + "E+" + twoDigits(d) }
+    } else {
+        scaled = numRound(numMulPow10(ax, uDecDigits))
+        if numCmp(scaled, numFromInt(2147483647)) > 0 {
+            body = numStr(x)
+            if body[0] == ' ' { body = body[1, body.length - 1] }
+            return "%" + body
+        }
+        digits = padLeftFill(string(numToInt(scaled)), uDecDigits + 1, '0')
+        intPart = digits[0, digits.length - uDecDigits]
+        fracPart = digits[digits.length - uDecDigits, uDecDigits]
+        if intPart == "0" and not uHasInt { intPart = "" }
+        if uComma {
+            body = ""
+            k = 0
+            n = intPart.length
+            while n > 0 {
+                n = n - 1
+                if k > 0 and k mod 3 == 0 { body = ',' + body }
+                body = intPart[n] + body
+                k = k + 1
+            }
+            intPart = body
+        }
+        body = intPart
+        if uPoint { body = body + "." + fracPart }
+    }
+    if neg {
+        if uMinusTrail or uPlusTrail { suffix = "-" } else { prefix = "-" }
+    } else if uPlusLead {
+        prefix = "+"
+    } else if uPlusTrail {
+        suffix = "+"
+    } else if uMinusTrail {
+        suffix = " "
+    }
+    if uDollar { prefix = prefix + "$" }
+    if prefix.length + body.length + suffix.length > uWidth and body.length > 1 and body[0] == '0' and body[1] == '.' {
+        body = body[1, body.length - 1]        // -0.50 in #.## prints as -.50
+    }
+    body = prefix + body + suffix
+    if body.length > uWidth { return "%" + body }
+    if uAst { fill = '*' }
+    return padLeftFill(body, uWidth, fill)
+}
+
+// Any field in the format at all? (A format without one can't take values.)
+func usingHasField(fmt: string): bool {
+    var i: int = 0
+    while i < fmt.length {
+        if fmt[i] == '_' {
+            i = i + 2
+            continue
+        }
+        usingField(fmt, i)
+        if uKind != char(0) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+// PRINT [#n,] USING fmt$; items -- pc is just past USING.
+func stmtPrintUsing() {
+    var fmt: string = evalStr()
+    var vals: list of Val
+    var lastSep: bool = false
+    var v: Val
+    var i: int = 0
+    var vi: int = 0
+    var s: string
+    if not skipOp(';') { expectOp(',') }
+    while not atStmtEnd() {
+        if isOp(';') or isOp(',') {
+            pc = pc + 1
+            lastSep = true
+        } else {
+            vals.add(evalExpr())
+            lastSep = false
+        }
+    }
+    if vals.count > 0 and not usingHasField(fmt) { abort("Illegal function call") }
+    while true {
+        if i >= fmt.length {
+            if vi >= vals.count { break }
+            i = 0
+        }
+        if fmt[i] == '_' and i + 1 < fmt.length {
+            outStr(fmt[i + 1, 1])
+            i = i + 2
+            continue
+        }
+        usingField(fmt, i)
+        if uKind == char(0) {
+            outStr(fmt[i, 1])
+            i = i + 1
+            continue
+        }
+        if vi >= vals.count { break }
+        v = vals[vi]
+        vi = vi + 1
+        if uKind == 'N' {
+            outStr(usingNumber(needNum(v)))
+        } else {
+            s = needStr(v)
+            if uKind == '!' {
+                if s.length == 0 { s = " " }
+                outStr(s[0, 1])
+            } else if uKind == '&' {
+                outStr(s)
+            } else {
+                if s.length > uWidth { s = s[0, uWidth] }
+                while s.length < uWidth { s = s + " " }
+                outStr(s)
+            }
+        }
+        i = uEnd
+    }
+    if not lastSep { outNewline() }
+    printFile = 0
+}
+
+// --- ON ERROR ---------------------------------------------------------
+// A handler line, armed by ON ERROR GOTO; handleAbort jumps there with
+// ERR/ERL set instead of reporting; RESUME clears the handling state.
+
+var onErrorLine: int = 0
+var errCode: int = 0
+var errLine: int = 0
+var inHandler: bool = false
+var stmtStartPc: int = 0      // where the statement now executing began
+var errStmtPc: int = 0        // ... of the statement that failed
+var pendingErrCode: int = 0   // set by ERROR n so ERR carries n
+
+// GW-BASIC error numbers.
+func errorCode(msg: string): int {
+    var n: int = pendingErrCode
+    if n != 0 {
+        pendingErrCode = 0
+        return n
+    }
+    switch msg {
+    case "NEXT without FOR" { return 1 }
+    case "Syntax error" { return 2 }
+    case "RETURN without GOSUB" { return 3 }
+    case "Out of DATA" { return 4 }
+    case "Illegal function call" { return 5 }
+    case "Overflow" { return 6 }
+    case "Undefined line number" { return 8 }
+    case "Subscript out of range" { return 9 }
+    case "Duplicate definition" { return 10 }
+    case "Division by zero" { return 11 }
+    case "Type mismatch" { return 13 }
+    case "String too long" { return 15 }
+    case "Can't continue" { return 17 }
+    case "Undefined user function" { return 18 }
+    case "RESUME without error" { return 20 }
+    case "FOR without NEXT" { return 26 }
+    case "WHILE without WEND" { return 29 }
+    case "WEND without WHILE" { return 30 }
+    case "Bad file number" { return 52 }
+    case "File not found" { return 53 }
+    case "Bad file mode" { return 54 }
+    case "File already open" { return 55 }
+    case "Device I/O error" { return 57 }
+    case "Input past end" { return 62 }
+    case "Bad file name" { return 64 }
+    case "Not supported" { return 73 }
+    case "Path not found" { return 76 }
+    }
+    return 51
+}
+
+func errorMessage(code: int): string {
+    switch code {
+    case 1 { return "NEXT without FOR" }
+    case 2 { return "Syntax error" }
+    case 3 { return "RETURN without GOSUB" }
+    case 4 { return "Out of DATA" }
+    case 5 { return "Illegal function call" }
+    case 6 { return "Overflow" }
+    case 7 { return "Out of memory" }
+    case 8 { return "Undefined line number" }
+    case 9 { return "Subscript out of range" }
+    case 10 { return "Duplicate definition" }
+    case 11 { return "Division by zero" }
+    case 12 { return "Illegal direct" }
+    case 13 { return "Type mismatch" }
+    case 14 { return "Out of string space" }
+    case 15 { return "String too long" }
+    case 16 { return "String formula too complex" }
+    case 17 { return "Can't continue" }
+    case 18 { return "Undefined user function" }
+    case 19 { return "No RESUME" }
+    case 20 { return "RESUME without error" }
+    case 22 { return "Missing operand" }
+    case 24 { return "Device Timeout" }
+    case 25 { return "Device Fault" }
+    case 26 { return "FOR without NEXT" }
+    case 27 { return "Out of paper" }
+    case 29 { return "WHILE without WEND" }
+    case 30 { return "WEND without WHILE" }
+    case 50 { return "FIELD overflow" }
+    case 51 { return "Internal error" }
+    case 52 { return "Bad file number" }
+    case 53 { return "File not found" }
+    case 54 { return "Bad file mode" }
+    case 55 { return "File already open" }
+    case 57 { return "Device I/O error" }
+    case 58 { return "File already exists" }
+    case 61 { return "Disk full" }
+    case 62 { return "Input past end" }
+    case 63 { return "Bad record number" }
+    case 64 { return "Bad file name" }
+    case 67 { return "Too many files" }
+    case 68 { return "Device Unavailable" }
+    case 70 { return "Permission denied" }
+    case 71 { return "Disk not ready" }
+    case 72 { return "Disk media error" }
+    case 73 { return "Not supported" }
+    case 75 { return "Path/File access error" }
+    case 76 { return "Path not found" }
+    }
+    return "Unprintable error"
+}
+
+// ON ERROR GOTO line  (pc just past ERROR)
+func stmtOnError() {
+    var t: Tok
+    var n: int
+    if not skipKw(K_GOTO) { abort("Syntax error") }
+    t = tok()
+    if t.kind != TNum { abort("Syntax error") }
+    pc = pc + 1
+    n = numAsInt(t.num)
+    if n != 0 and lineIndex.get(n, -1) < 0 { abort("Undefined line number") }
+    onErrorLine = n
+}
+
+// RESUME | RESUME NEXT | RESUME line
+func stmtResume() {
+    var t: Tok
+    if not inHandler { abort("RESUME without error") }
+    inHandler = false
+    if skipKw(K_NEXT) {
+        pc = errStmtPc
+        skipToStmtEnd()
+        return
+    }
+    t = tok()
+    if t.kind == TNum {
+        pc = pc + 1
+        jumpToLine(numAsInt(t.num))
+        return
+    }
+    pc = errStmtPc
+}
+
+// ERROR n: raise error n.
+func stmtError() {
+    var n: int = evalInt()
+    if n < 1 or n > 255 { abort("Illegal function call") }
+    pendingErrCode = n
+    abort(errorMessage(n))
+}
+
+// An abort from execution: into the handler if one is armed and we are
+// not already in it, else reported.
+func handleAbort(msg: string) {
+    var idx: int
+    if onErrorLine > 0 and not inHandler {
+        idx = lineIndex.get(onErrorLine, -1)
+        if idx < 0 {
+            reportError("Undefined line number")
+            return
+        }
+        errCode = errorCode(msg)
+        errLine = runLine
+        errStmtPc = stmtStartPc
+        inHandler = true
+        cur = prog
+        pc = idx
+        basicState = BRunning
+        return
+    }
+    reportError(msg)
 }
 
 func endRun() {
@@ -2119,6 +2572,7 @@ func stmtEnd() {
 // One statement at pc.
 func execStatement() {
     var t: Tok = tok()
+    stmtStartPc = pc
     if t.kind == TLine {
         runLine = t.ival
         pc = pc + 1
@@ -2162,6 +2616,8 @@ func execStatement() {
     case K_WEND { stmtWend() }
     case K_ON { stmtOn() }
     case K_STOP { stmtStop() }
+    case K_RESUME { stmtResume() }
+    case K_ERROR { stmtError() }
     case K_DIM { stmtDim() }
     case K_OPTION { stmtOption() }
     case K_DEF { stmtDefFn() }
@@ -2212,6 +2668,8 @@ func reportError(msg: string) {
         basicOut(msg + "\n")
     }
     contPc = -1
+    inHandler = false
+    pendingErrCode = 0
     endRun()
 }
 
@@ -2230,7 +2688,7 @@ func basicStep(budget: int): bool {
             n = n + 1
         }
     } aborted msg {
-        reportError(msg)
+        handleAbort(msg)
     }
     return basicState == BRunning or basicState == BSleeping or basicState == BWaitKey
 }
@@ -2422,7 +2880,7 @@ func basicLine(s: string) {
             showInputPrompt()
         }
     } aborted msg {
-        reportError(msg)
+        handleAbort(msg)
     }
 }
 
@@ -2570,6 +3028,10 @@ func startProgram(line: int) {
     dataPos = 0
     keyQueue = ""
     inkeyMisses = 0
+    onErrorLine = 0
+    inHandler = false
+    errCode = 0
+    errLine = 0
     basicState = BRunning
 }
 
@@ -2653,6 +3115,8 @@ func stmtNew() {
     fns.clear()
     closeAllFiles()
     contPc = -1
+    onErrorLine = 0
+    inHandler = false
 }
 
 // DELETE a[-b]

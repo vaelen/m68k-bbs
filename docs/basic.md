@@ -126,7 +126,20 @@ Sections in file order:
   `CSRLIN`, `TAB` and the 14-column comma zones, wraps an item that
   would cross `basicWidth`, and ends the line when an item exactly
   fills it (GW-BASIC's own quirk). `PRINT #n` redirects through
-  `printFile`.
+  `printFile`. `PRINT USING` (`stmtPrintUsing`) evaluates the items,
+  then walks the format: `usingField` parses one field spec into the
+  `u*` globals (kind, width, decimals, comma/sign/fill/dollar/exponent
+  flags) and `usingNumber` renders a value into it — body first
+  (digits, commas, point), then sign and `$`, then `%` if it won't
+  fit, else left-padded with spaces or `*`.
+- **ON ERROR** — `execStatement` notes each statement's start in
+  `stmtStartPc`; when an abort reaches `handleAbort` with a handler
+  armed (`onErrorLine`) and not already inside it, it sets `ERR`/`ERL`
+  (`errorCode` maps message → GW-BASIC number; `ERROR n` pre-sets
+  `pendingErrCode`), remembers `errStmtPc`, and jumps to the handler
+  instead of reporting. `RESUME` returns to `errStmtPc`, `RESUME NEXT`
+  to the statement after it, `RESUME line` elsewhere; an error inside
+  the handler is reported as usual.
 - **Statements** — `execStatement` switches on the keyword; `stmt*`
   functions consume their own tokens. Control flow is the `forStack`
   (`key`, limit, step, pc), `gosubStack` and `whileStack`.
@@ -208,9 +221,8 @@ via `scripts/deploy.sh` (2026-08-28: signup → Games → play → prompt →
 
 ## Not in v1
 
-`PRINT USING`; `ON ERROR`/`RESUME`/`ERR`/`ERL`; `CHAIN`/`COMMON`;
-random-access files (`FIELD`/`GET`/`PUT`); `PEEK`/`POKE`/`INP`/`OUT`/
-`CALL`; graphics and sound (all recognized and refused with `Not
+`CHAIN`/`COMMON`; random-access files (`FIELD`/`GET`/`PUT`);
+`PEEK`/`POKE`/`INP`/`OUT`/`CALL`; graphics and sound (all recognized and refused with `Not
 supported` so a program fails loudly); the QBasic structured forms.
 The tokenizer already accepts unnumbered lines and labels, so block
 `IF`, `DO/LOOP`, `SELECT CASE` and `SUB/FUNCTION` are additive when
