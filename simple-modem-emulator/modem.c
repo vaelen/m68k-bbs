@@ -21,6 +21,8 @@
 #define GUARD_MS 500            // Hayes S12 guard time, 25 x 20ms = 0.5s
 #define CONNECT_MSG "\r\nCONNECT 57600\r\n"
 #define NO_CARRIER_MSG "\r\nNO CARRIER\r\n"
+#define BUSY_MSG "BUSY, PLEASE TRY AGAIN LATER\r\n"
+#define NO_ANSWER_MSG "NO ANSWER, PLEASE TRY AGAIN LATER\r\n"
 #define OK_MSG "\r\nOK\r\n"
 
 static int local = -1, remote = -1;     // local = "serial port", remote = caller
@@ -198,9 +200,11 @@ int main(int argc, char **argv) {
             int fd = accept(lsock, NULL, NULL);
             if (fd < 0) continue;
             if (remote >= 0) {          // ponytail: one call at a time; busy
+                send_all(fd, BUSY_MSG, sizeof BUSY_MSG - 1);
                 close(fd);
             } else if ((local = connect_local(cport)) < 0) {
                 fprintf(stderr, "serial port refused; rejecting caller\n");
+                send_all(fd, NO_ANSWER_MSG, sizeof NO_ANSWER_MSG - 1);
                 close(fd);              // reject the caller
             } else {
                 remote = fd;

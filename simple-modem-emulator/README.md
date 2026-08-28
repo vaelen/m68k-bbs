@@ -32,13 +32,15 @@ Then point a telnet client at `listen_port`.
 
 1. Listens on `listen_port`.
 2. When a caller connects, it connects to `localhost:connect_port`
-   (the "serial port"). If that is refused, the caller is dropped.
+   (the "serial port"). If that is refused, the caller is sent
+   `NO ANSWER, PLEASE TRY AGAIN LATER\r\n` and dropped.
 3. Otherwise it writes `\r\nCONNECT 57600\r\n` to the serial port and bridges
    all traffic between the two, unchanged, in both directions.
 4. If the caller disconnects, it writes `\r\nNO CARRIER\r\n` to the serial port
    and closes that connection. If the serial port side closes, the caller
    is dropped.
-5. One call at a time; further callers during a call are dropped (busy).
+5. One call at a time; further callers during a call are sent
+   `BUSY, PLEASE TRY AGAIN LATER\r\n` and dropped.
 
 ## Hayes subset
 
