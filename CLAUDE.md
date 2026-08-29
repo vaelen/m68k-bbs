@@ -483,6 +483,19 @@ inputChar (bbs.cla) → processInput`.
   `wallRow`; then
   `wallask` (Y → `wallentry`, a line prompt capped at 120) and
   `wallDone` (main menu or `postLoginMotd`). `docs/wall.md`.
+- `heap.cla` — compactor for the append-only `.MSG` body heaps
+  (`heapCompact`/`heapRecover`/`heapFixOffsets`: fresh-file rewrite in
+  ID order with deterministic offsets, `.NEW`/`.OLD` crash recovery on
+  every open; a clean heap is skipped); `postsCompact`/`mailCompact`/
+  `filesCompact` wrap it. `maint.cla` — the daily run (`maintStart`/
+  `maintTick`, one unit per 30-tick firing: expire boards with
+  `keepDays` via `expirePosts`, then compact every database, Users
+  last = the done marker via `dbLastCompacted`), the window rule
+  (`maintDueNow`, `config.maintenanceHour`), and the `rejectCallers`/
+  `maintaining` flags `connected()` and `ftnSchedule` honour; the Mac
+  `Maintenance` menu toggles/runs it. A `FileInfo` temp is too big for
+  the 68k backend — assign `file.info(p)` to a local, never
+  `file.info(p).size`. `docs/maintenance.md`.
 - `motd.cla` — the Message of the Day, `MOTD.txt` (TEXT/ttxt):
   `motdText` loaded at launch (`motdLoad`, missing → empty), `motdSave`
   writes and updates it; shown wrapped by `showMotd` (bbs.cla). Sysop
@@ -591,6 +604,7 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
 - `config.cla` — `Config.txt` settings with compiled defaults
 - `walldb.cla`, `wall.cla` — wall database and screens
 - `motd.cla` — Message of the Day file
+- `heap.cla`, `maint.cla` — body-heap compactor and the daily maintenance run
 - `scanner.cla`, `telnet.cla`, `user.cla`, `usersdb.cla`, `boardsdb.cla`,
   `postsdb.cla`, `maildb.cla`, `areasdb.cla`, `filesdb.cla`,
   `networksdb.cla`, `terminal.cla`, `termio.cla`, `btree.cla`,

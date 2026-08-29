@@ -104,14 +104,11 @@ disk.
 
 **Deletion & compaction:** deleting a post (a sysop-only `dbDelete`
 of its header record, available from the post list and post view)
-orphans its body bytes in the heap; they are not reclaimed. There is
-deliberately no heap compactor yet — post deletion is rare, and
-compacting the heap means rewriting every surviving header's
-offset. Deleting a whole board likewise leaves its `BRD<nn>` files
-behind. If heap growth ever matters, the compactor's shape is:
-`dbCompact` the headers, then sweep posts in ID order appending each
-body to a fresh heap while rewriting offsets via `dbUpdate`, then
-swap the files.
+orphans its body bytes in the heap. The daily maintenance run reclaims
+them: `postsCompact` compacts the headers and rewrites the heap, and
+`expirePosts` deletes posts older than the board's `keepDays`
+(`docs/maintenance.md`). Deleting a whole board still leaves its
+`BRD<nn>` files behind.
 
 ### Enumeration
 

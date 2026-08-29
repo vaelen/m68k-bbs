@@ -113,8 +113,8 @@ offset/length pair is the only map. **Write ordering:** `addFile`
 appends the description and calls `flush()` **before** the journaled
 header add, so a crash leaves either a complete entry or orphaned heap
 bytes, never a header pointing at missing text. Deleting an entry
-orphans its bytes; there is no compactor (the same deferred shape as
-posts). Long descriptions are CR-joined lines, re-wrapped per reader
+orphans its bytes until `filesCompact` reclaims them during the daily
+maintenance run (`docs/maintenance.md`). Long descriptions are CR-joined lines, re-wrapped per reader
 like post bodies, and immutable once written.
 
 ### The physical file

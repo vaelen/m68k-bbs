@@ -87,8 +87,8 @@ crash leaves either a complete message or orphaned heap bytes nothing
 references — never a header pointing at text that didn't reach disk.
 
 **Deletion:** `deleteMessage` is a `dbDelete` of the header; the body
-bytes are orphaned, not reclaimed. No heap compactor — same reasoning
-and same compactor shape as `docs/boards.md` if it ever matters.
+bytes are orphaned until `mailCompact` reclaims them during the daily
+maintenance run (`docs/maintenance.md`).
 
 ## API (`maildb.cla`)
 
