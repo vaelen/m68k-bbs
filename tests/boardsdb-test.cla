@@ -46,6 +46,12 @@ on App.startCLI(args: list of string) {
     board.flags = boardFlagSubscribed
     expect(saveBoard(), "save marks")
     expect(loadBoard(id2) and board.lastExported == 17 and board.flags == boardFlagSubscribed, "marks roundtrip")
+    expect(board.keepDays == 0, "expiry defaults to never")
+    board.keepDays = 90
+    expect(saveBoard(), "save expiry")
+    expect(loadBoard(id2) and board.keepDays == 90, "expiry roundtrip")
+    expect(loadBoard(id1) and board.keepDays == 0, "other board untouched")
+    expect(dbFind(boardsDb, id2).intAt(bOffKeepDays) == 90, "expiry stored at offset 202")
     expect(dbFind(boardsDb, id2).length == 256, "record is 256 bytes")
 
     boardsClose()

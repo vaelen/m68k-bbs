@@ -13,7 +13,8 @@
 //   192  networkId (i32; 0 = local)
 //   196  lastExported (i32; highest post ID already scanned out)
 //   200  flags (u16; bit 0 = subscribed via AreaFix)
-//   202+ reserved
+//   202  keepDays (i32; days to keep posts, 0 = never -- docs/maintenance.md)
+//   206+ reserved
 
 include "vdb.cla"
 
@@ -24,6 +25,7 @@ const bOffTag: int = 128
 const bOffNetwork: int = 192
 const bOffLastExported: int = 196
 const bOffFlags: int = 200
+const bOffKeepDays: int = 202
 const boardFlagSubscribed: int = 1
 
 record Board {
@@ -34,6 +36,7 @@ record Board {
     networkId: int
     lastExported: int
     flags: int
+    keepDays: int
 }
 
 var boardsDb: Database
@@ -63,7 +66,7 @@ func boardsNextId(): int {
 
 // Serialize board fields into a record image (dbAdd/dbUpdate zero-pad
 // it to record_size).
-func packBoard(name: string, description: string, tag: string, networkId: int, lastExported: int, flags: int): text {
+func packBoard(name: string, description: string, tag: string, networkId: int, lastExported: int, flags: int, keepDays: int): text {
     var t: text
     var n: string = name
     var d: string = description
@@ -89,18 +92,19 @@ func packBoard(name: string, description: string, tag: string, networkId: int, l
     btAppendInt(t, networkId)
     btAppendInt(t, lastExported)
     btAppendWord(t, flags)
+    btAppendInt(t, keepDays)
     return t
 }
 
 // Create a board; returns the new board ID, or -1.
 func createBoard(name: string, description: string, tag: string, networkId: int): int {
-    return dbAdd(boardsDb, packBoard(name, description, tag, networkId, 0, 0))
+    return dbAdd(boardsDb, packBoard(name, description, tag, networkId, 0, 0, 0))
 }
 
 // Write the global `board` back to its record.
 func saveBoard(): bool {
     if board.id < 1 { return false }
-    return dbUpdate(boardsDb, board.id, packBoard(board.name, board.description, board.tag, board.networkId, board.lastExported, board.flags))
+    return dbUpdate(boardsDb, board.id, packBoard(board.name, board.description, board.tag, board.networkId, board.lastExported, board.flags, board.keepDays))
 }
 
 // Load board `id` into the global `board`.
@@ -114,6 +118,7 @@ func loadBoard(id: int): bool {
     board.networkId = rec.intAt(bOffNetwork)
     board.lastExported = rec.intAt(bOffLastExported)
     board.flags = rec.wordAt(bOffFlags)
+    board.keepDays = rec.intAt(bOffKeepDays)
     return true
 }
 
