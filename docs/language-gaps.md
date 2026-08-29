@@ -219,7 +219,7 @@ poly `0x1021` forward (non-reflected), init 0, no final XOR, check value
 - **Former workaround:** `crcXmodem` in `xmodem.cla` (bitwise, 128×8
   iterations per block) — replaced by `t.crc16x(0, 0, n)`.
 
-### 9. Textview scroll control — keep a log window on its newest line
+### 9. Textview scroll control — keep a log window on its newest line — SHIPPED
 
 A `textview`'s only runtime property is `text`; there is no way to
 scroll it. A programmatic set (`LogView.text = t`) keeps the previous
@@ -248,6 +248,15 @@ ones off-screen (2026-08-29, the FidoNet out-of-memory crash).
   view's scrollbar (all already declared in `uitext.cla`).
 - The app-side half (trim to the newest ~16 KB when the window passes
   ~24 KB, via `text.textAt`) needs nothing new and goes in with this.
+- **Shipped** (2026-08-29) — as shipped: `LogView.scrollToEnd()`, a
+  `textview`-only method (statement form, no arguments). Scrolls so the
+  last line is visible and pins the vertical scrollbar; no-op when the
+  content fits; horizontal position untouched; never fires `change`.
+  The implicit follow-if-at-end setter alternative was rejected: "at
+  end" is ambiguous when content fits (opening a short document over
+  another would jump to its end). App side: `LogView.text = t` then
+  `LogView.scrollToEnd()` in `on App.log`; the trim-to-newest-16KB half
+  still needs nothing new.
 
 ## Summary
 
@@ -261,7 +270,7 @@ ones off-screen (2026-08-29, the FidoNet out-of-memory crash).
 | 6 | Create a directory — shipped | Wizard-created area folders | PBDirCreate |
 | 7 | Rename / move — shipped (two calls) | Pending→approved holding-area workflow | PBRename |
 | 8 | `text.crc16x` / `text.crc32` — shipped | Fast XMODEM CRC; ZMODEM | — (pure runtime) |
-| 9 | Textview scroll-to-end / follow | Readable log window (not file areas) | TEScroll |
+| 9 | Textview scroll-to-end — shipped | Readable log window (not file areas) | TEScroll |
 
 Data-fork transfers (1‑to‑1 with the modem) need **none** of these.
 Items 1, 2, 3, 5, 6, 7 shipped in the Clarus filesystem-api phase
@@ -272,4 +281,5 @@ shipped 2026-08-25; the HFS full-path spike (above) is answered. Item 4
 list still unshipped — it is what makes file areas able to carry genuine
 Macintosh software rather than flat files. Item 9 (textview scrolling)
 is a UI gap rather than a file-area one, filed here as the one place
-the project keeps its Clarus asks.
+the project keeps its Clarus asks; it shipped 2026-08-29 as
+`textview.scrollToEnd()`.

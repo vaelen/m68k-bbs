@@ -1252,6 +1252,7 @@ func appendLog(chunk: text) {
     }
     t = m.LogView.text + filtered
     m.LogView.text = t
+    m.LogView.scrollToEnd()
 }
 
 // Every log(...) call lands here (after reaching the diagnostic stream)
