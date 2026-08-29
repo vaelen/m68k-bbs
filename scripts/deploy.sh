@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build, refresh the app on snow/BBSHD.hda, and (re)start Snow.
+# Build, refresh the app on snow/hdd2.img, and (re)start Snow.
 # Snow must not have the image open while hfsutils touches it, so the
 # script quits Snow first and starts it again after.
 set -e
@@ -18,7 +18,7 @@ fi
 # hfsutils keeps state in $HOME/.hcwd -- use a scratch HOME.
 export HOME="$ROOT/build/hfs-scratch"
 mkdir -p "$HOME"
-hmount "$ROOT/snow/BBSHD.hda"
+hmount "$ROOT/snow/hdd2.img"
 hdel :68kBBS 2>/dev/null || true
 hcopy -m "$ROOT/build/68kBBS.bin" :
 humount

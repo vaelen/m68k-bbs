@@ -55,7 +55,7 @@ a newer runtime can mismatch):
 bin/clarusc --rtdir vendor/runtime/clarus/ bbs.cla   # check only
 scripts/build.sh      # 68k Mac app -> build/68kBBS.bin (MacBinary)
 scripts/test.sh       # run every tests/*.cla on the host lane
-scripts/deploy.sh     # build + refresh snow/BBSHD.hda + restart Snow
+scripts/deploy.sh     # build + refresh snow/hdd2.img + restart Snow
 ```
 
 Always pass `--rtdir vendor/runtime/clarus/` (the scripts do): the
@@ -113,9 +113,10 @@ callers during a call get `BUSY`. So: test the BBS with
 
 ## Getting a build into the emulator
 
-`snow/BBSHD.hda` is a persistent 5 MB device image ("BBS HD"), attached at
-SCSI ID 1 in `MacII.snoww`. It is **reused every time** — don't recreate
-it. `scripts/deploy.sh` does the whole cycle (build, quit Snow, refresh
+`snow/hdd2.img` is a persistent 100 MB device image ("BBS HD"), attached
+at SCSI ID 1 in `MacII.snoww` (it replaced the 5 MB `snow/BBSHD.hda` on
+2026-08-29: compaction needs a heap's size in free space while it
+rewrites). It is **reused every time** — don't recreate it. `scripts/deploy.sh` does the whole cycle (build, quit Snow, refresh
 the app on the image with hfsutils, restart Snow); the manual steps, if
 needed, are in its source and `docs/snow-hdd-howto.md`.
 
@@ -139,7 +140,7 @@ onto the image (file type/creator don't matter; the app opens by name).
 `log(...)` lines land in the app's log window (timestamped) and in the
 runtime's exit log, which the Mac writes to a file named `out` on
 "BBS HD" when the app quits. To read it after quitting Snow cleanly:
-`HOME=scratch hmount snow/BBSHD.hda && hcopy -t :out ./out.txt && humount`.
+`HOME=scratch hmount snow/hdd2.img && hcopy -t :out ./out.txt && humount`.
 The file also contains the runtime's UI trace (`T OPEN ...`) and exit
 code — useful for verifying a session after the fact.
 
@@ -617,5 +618,5 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
 - `bin/`, `vendor/` — pinned compiler + runtime/toolbox snapshot
 - `docs/` — language reference + Snow how-to (symlinks), language-gaps.md,
   telnet-negotiation-reference.md and vt100.codes.txt (protocol notes)
-- `snow/` — emulator, ROM, boot disk, workspace, BBSHD.hda (untracked)
+- `snow/` — emulator, ROM, boot disk, workspace, hdd2.img (untracked)
 - `simple-modem-emulator/` — Hayes modem bridge (tracked in this repo)
