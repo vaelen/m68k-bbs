@@ -71,6 +71,17 @@ Both actions are idempotent: the offsets are a pure function of header
 order and lengths. `tests/heap-test.cla` stages each state;
 `tests/maint-test.cla` steps a whole run by hand on the host.
 
+## Note: the index rebuild and B-tree overflow
+
+Compaction rebuilds every secondary index strictly (one `btInsert` per
+record). A board's Thread index keys on `threadId`, and `0` marks every
+thread-starter, so that one key can hold hundreds of values. Before
+B-tree overflow pages existed a key was capped at ~123 values and the
+rebuild failed once a board passed that many starters (leaving it
+`pending`); overflow pages (`btree.cla`, `docs/vdb-clarus.md`) removed
+the cap. A board left `pending` by an old build recovers on next open --
+`dbOpen` replays and rebuilds the indexes, now successfully.
+
 ## Measured
 
 Mac II (Snow), 2026-08-29, the seeded test image: board 1 (20 posts,

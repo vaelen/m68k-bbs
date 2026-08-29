@@ -178,7 +178,8 @@ inputChar (bbs.cla) → processInput`.
   defines `inputChar(c)` and `telnetOut(s)` (raw wire bytes, never
   escaped).
 - `btree.cla` — reusable file-based B-tree (multi-level, lazy
-  deletion) over a `filehandle`; `vdb.cla` — journaled page database
+  deletion, type-4 overflow pages so one key holds unboundedly many
+  values -- `btMaxInline` inline, the rest chained) over a `filehandle`; `vdb.cla` — journaled page database
   with secondary indexes on top of it (formats: `docs/vdb-clarus.md`;
   design: `docs/vdb.md`). `usersdb.cla` — the "Users" vDB database
   (160-byte records: username/hash/email/access flags (i32)/created/

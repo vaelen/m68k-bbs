@@ -181,9 +181,11 @@ in internal nodes need not exist as live keys). The space comes back
 when the tree is rebuilt — which vDB does on crash recovery, and
 compaction will do wholesale.
 
-**Overflow** (type 4) pages are still reserved, unimplemented
-(u16 value_count at 1, i32 next_overflow at 3, then packed i32
-values).
+**Overflow** (type 4) pages hold a key's values past the first
+`btMaxInline` (32): page_type(1), u16 value_count at 1, i32 next at 3,
+then packed i32 values (126 per page). A leaf entry's trailing i32 is
+the chain head (0 = none). A whole-key delete leaks the chain until the
+tree is rebuilt (the same lazy model as emptied leaves).
 
 ### Key generation
 
