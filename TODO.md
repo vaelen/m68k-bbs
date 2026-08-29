@@ -49,6 +49,18 @@ negotiates BINARY at connect; add if some other client turns up that
 won't. `zmodem.cla` receiver's `ZRINIT` builder, plus a unit case in
 `tests/zmodem-test.cla` (the parser side already handles ESCCTL).
 
+## Maintenance follow-ups (docs/maintenance.md)
+
+- **Bulk-load the index rebuild.** `dbCompact` re-inserts one record at
+  a time per index (~15 s for a 20-post board on the Mac II; minutes
+  for a 1,000-post board). Building each B-tree's leaves in sorted
+  order in one pass would cut it to seconds. Measured numbers in
+  docs/maintenance.md "Measured".
+- **Overflow chains leak on whole-key delete.** `btDelete` drops the
+  leaf entry but leaves its type-4 chain pages allocated until the
+  tree is rebuilt (compaction). Harmless at current scale; a free list
+  for overflow pages if it ever matters.
+
 ## FidoNet follow-ups (docs/fidonet.md, "Scope")
 
 Deferred from v0.2, none blocked on a language feature:

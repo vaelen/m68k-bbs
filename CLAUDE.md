@@ -137,7 +137,9 @@ onto the image (file type/creator don't matter; the app opens by name).
 
 ## Reading the Mac-side log
 
-`log(...)` lines land in the app's log window (timestamped) and in the
+`log(...)` lines land in the app's log window (timestamped, each
+line suffixed with `[free NK, max MK]` heap figures -- the 2026-08-29
+OOM diagnostic, kept as a permanent health readout) and in the
 runtime's exit log, which the Mac writes to a file named `out` on
 "BBS HD" when the app quits. To read it after quitting Snow cleanly:
 `HOME=scratch hmount snow/hdd2.img && hcopy -t :out ./out.txt && humount`.
