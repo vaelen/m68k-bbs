@@ -72,6 +72,14 @@ func maintDone(stamp: int): bool {
     return not maintDueAt(stamp, maintWindow)
 }
 
+// A FileInfo temp is too big for the 68k backend's scratch pool, so the
+// record goes through a local (the same shape ftntoss.cla uses).
+func maintFileSize(p: string): int {
+    var fi: FileInfo
+    fi = file.info(p)
+    return fi.size
+}
+
 func maintKb(n: int): string {
     return string((n + 1023) / 1024) + "K"
 }
@@ -134,10 +142,10 @@ func maintBoardStep() {
                 maintCursor = maintCursor + 1
                 return
             }
-            hdrBefore = file.info(name + ".DAT").size
-            heapBefore = file.info(name + ".MSG").size
+            hdrBefore = maintFileSize(name + ".DAT")
+            heapBefore = maintFileSize(name + ".MSG")
             if postsCompact(board.id) {
-                log("Maintenance: board " + string(board.id) + " (" + board.name + "): headers " + maintKb(hdrBefore) + " -> " + maintKb(file.info(name + ".DAT").size) + ", heap " + maintKb(heapBefore) + " -> " + maintKb(file.info(name + ".MSG").size) + ".")
+                log("Maintenance: board " + string(board.id) + " (" + board.name + "): headers " + maintKb(hdrBefore) + " -> " + maintKb(maintFileSize(name + ".DAT")) + ", heap " + maintKb(heapBefore) + " -> " + maintKb(maintFileSize(name + ".MSG")) + ".")
             } else {
                 log("Maintenance: board " + string(board.id) + " (" + board.name + "): compaction failed: " + lastError.message)
             }
@@ -164,10 +172,10 @@ func maintAreaStep() {
                 maintCursor = maintCursor + 1
                 return
             }
-            hdrBefore = file.info(name + ".DAT").size
-            heapBefore = file.info(name + ".MSG").size
+            hdrBefore = maintFileSize(name + ".DAT")
+            heapBefore = maintFileSize(name + ".MSG")
             if filesCompact(area.id) {
-                log("Maintenance: area " + string(area.id) + " (" + area.name + "): headers " + maintKb(hdrBefore) + " -> " + maintKb(file.info(name + ".DAT").size) + ", heap " + maintKb(heapBefore) + " -> " + maintKb(file.info(name + ".MSG").size) + ".")
+                log("Maintenance: area " + string(area.id) + " (" + area.name + "): headers " + maintKb(hdrBefore) + " -> " + maintKb(maintFileSize(name + ".DAT")) + ", heap " + maintKb(heapBefore) + " -> " + maintKb(maintFileSize(name + ".MSG")) + ".")
             } else {
                 log("Maintenance: area " + string(area.id) + " (" + area.name + "): compaction failed: " + lastError.message)
             }
@@ -182,10 +190,10 @@ func maintAreaStep() {
 }
 
 func maintCompactNamed(db: Database, label: string) {
-    var before: int = file.info(label + ".DAT").size
+    var before: int = maintFileSize(label + ".DAT")
     if maintDone(dbLastCompacted(db)) { return }
     if dbCompact(db) {
-        log("Maintenance: " + label + ": " + maintKb(before) + " -> " + maintKb(file.info(label + ".DAT").size) + ".")
+        log("Maintenance: " + label + ": " + maintKb(before) + " -> " + maintKb(maintFileSize(label + ".DAT")) + ".")
     } else {
         log("Maintenance: " + label + ": compaction failed: " + lastError.message)
     }
@@ -197,9 +205,9 @@ func maintRestStep() {
     switch maintRest {
     case 0 {
         if not maintDone(dbLastCompacted(mailDb)) {
-            before = file.info("Mail.MSG").size
+            before = maintFileSize("Mail.MSG")
             if mailCompact() {
-                log("Maintenance: Mail: heap " + maintKb(before) + " -> " + maintKb(file.info("Mail.MSG").size) + ".")
+                log("Maintenance: Mail: heap " + maintKb(before) + " -> " + maintKb(maintFileSize("Mail.MSG")) + ".")
             } else {
                 log("Maintenance: Mail: compaction failed: " + lastError.message)
             }

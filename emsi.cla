@@ -86,7 +86,7 @@ func ftnPollAll() {
 // Start the next queued poll when nothing is on the line.
 func ftnNext() {
     var id: int
-    if ftnPolling or isConnected or ftnQueue.count == 0 { return }
+    if ftnPolling or isConnected or maintaining or ftnQueue.count == 0 { return }
     id = ftnQueue.shift()
     ftnPollStart(id)
 }
@@ -95,7 +95,7 @@ func ftnNext() {
 func ftnSchedule() {
     var id: int = 1
     var last: int
-    if ftnPolling or isConnected { return }
+    if ftnPolling or isConnected or maintaining { return }
     last = networksNextId()
     while id < last {
         if loadNetwork(id) and networkEnabled() and network.pollInterval > 0 {

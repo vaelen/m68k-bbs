@@ -22,6 +22,7 @@ include "$REPO/emsi.cla"
 
 var modem: connection
 var isConnected: bool = false
+var maintaining: bool = false     // bbs.cla's maintenance run; never here
 var hangupPhase: int = 0
 var hungUp: bool = false
 var failures: int = 0

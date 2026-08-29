@@ -32,6 +32,7 @@ include "xmodem.cla"
 include "zmodem.cla"
 include "ftntoss.cla"
 include "emsi.cla"
+include "maint.cla"
 include "toolbox/osutils.cla"   // DateTimeRec / SecondsToDate (via --rtdir)
 include "toolbox/memory.cla"    // FreeMem, for the heap figures on log lines
 external func MaxBlock(): int = trap 0xA061 reg   // largest free block, no compaction
@@ -60,6 +61,11 @@ menu Edit { standard edit }
 
 menu FidoNet {
     item PollAll "Poll All Networks"
+}
+
+menu Maintenance {
+    item ToggleClosed "Closed to Callers (Toggle)"
+    item RunNow "Run Database Maintenance"
 }
 
 var modem: connection
@@ -1141,10 +1147,12 @@ every 2 ticks {
 }
 
 every 30 ticks {
+    if maintaining { maintTick() }
     if ftnPolling { emsiTick() }
     ftnSchedMinutes = ftnSchedMinutes + 1
-    if ftnSchedMinutes >= 120 {      // once a minute: interval polls
+    if ftnSchedMinutes >= 120 {      // once a minute: the maintenance window, then interval polls
         ftnSchedMinutes = 0
+        if not maintaining and not isConnected and not ftnPolling and maintDueNow() { maintStart(false) }
         ftnSchedule()
         if ftnPolling { log("FTN: session in progress.") }
     }
@@ -1181,6 +1189,14 @@ func connected() {
         user.screen = "ftn"
         log("Mailer connected.")
         emsiConnected()
+        return
+    }
+    if rejectCallers {
+        log("Caller refused: maintenance.")
+        sendLine("")
+        sendLine("THE BBS IS CLOSED FOR MAINTENANCE. PLEASE CALL BACK LATER.")
+        user.screen = "probe"    // swallows input until the line drops
+        hangupPhase = 1
         return
     }
     log("Caller connected.")
@@ -1337,6 +1353,24 @@ extend FidoNet {
             log("A caller is online; polls will run after the call.")
         }
         ftnPollAll()
+    }
+}
+
+extend Maintenance {
+    on ToggleClosed.select {
+        rejectCallers = not rejectCallers
+        if rejectCallers {
+            log("Closed to callers.")
+        } else {
+            log("Open to callers.")
+        }
+    }
+    on RunNow.select {
+        if isConnected or ftnPolling {
+            log("Maintenance: not started, line busy.")
+        } else {
+            maintStart(true)
+        }
     }
 }
 
