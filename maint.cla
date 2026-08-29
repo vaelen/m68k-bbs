@@ -1,0 +1,231 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// Daily database maintenance (docs/maintenance.md): delete expired
+// posts, then compact every database -- headers, indexes and body
+// heaps. The run is a state machine stepped by maintTick, one unit per
+// firing of bbs.cla's 30-tick timer, so the log window keeps painting
+// and a refused caller's hang-up can interleave:
+//   phase 1  expire one board per tick (boards with keepDays > 0)
+//   phase 2  compact one board per tick (postsCompact)
+//   phase 3  compact one file area per tick (filesCompact)
+//   phase 4  Mail, Wall, Areas, Networks, Boards, then Users LAST
+// Users' last_compacted stamp is the "run finished" marker; a scheduled
+// run skips any database already stamped since the window opened
+// (force ignores the stamps). rejectCallers is set for the duration and
+// restored after. The including program decides when to call
+// maintStart (idle: no caller, no poll) and calls maintTick from its
+// timer.
+
+include "user.cla"
+include "config.cla"
+include "usersdb.cla"
+include "boardsdb.cla"
+include "postsdb.cla"
+include "networksdb.cla"
+include "areasdb.cla"
+include "filesdb.cla"
+include "maildb.cla"
+include "walldb.cla"
+include "toolbox/osutils.cla"
+
+const maintDay: int = 86400
+
+var maintaining: bool = false
+var rejectCallers: bool = false     // callers are told to call back later
+var maintSavedReject: bool = false
+var maintForce: bool = false
+var maintWindow: int = 0            // this run's window start
+var maintPhase: int = 0
+var maintCursor: int = 0            // next board/area ID in phases 1-3
+var maintRest: int = 0              // next entry of the phase-4 list
+
+// Today's hour:00:00 in Mac local time, or yesterday's if the hour
+// hasn't come yet.
+func maintWindowStart(hour: int): int {
+    var rec: DateTimeRec
+    var t: int = now()
+    var start: int
+    SecondsToDate(t, rec)
+    rec.hour = hour
+    rec.minute = 0
+    rec.second = 0
+    start = DateToSeconds(rec)
+    if start > t { start = start - maintDay }
+    return start
+}
+
+// 0 = never; otherwise stamps and window starts are both Mac-epoch
+// values from the same era, so < compares them correctly.
+func maintDueAt(marker: int, windowStart: int): bool {
+    if marker == 0 { return true }
+    return marker < windowStart
+}
+
+func maintDueNow(): bool {
+    return maintDueAt(dbLastCompacted(usersDb), maintWindowStart(config.maintenanceHour))
+}
+
+// A database stamped since the window opened is done for this run.
+func maintDone(stamp: int): bool {
+    if maintForce { return false }
+    return not maintDueAt(stamp, maintWindow)
+}
+
+func maintKb(n: int): string {
+    return string((n + 1023) / 1024) + "K"
+}
+
+func maintStart(force: bool): bool {
+    if maintaining { return false }
+    maintaining = true
+    maintForce = force
+    maintSavedReject = rejectCallers
+    rejectCallers = true
+    maintWindow = maintWindowStart(config.maintenanceHour)
+    maintPhase = 1
+    maintCursor = 1
+    maintRest = 0
+    log("Maintenance: starting.")
+    return true
+}
+
+func maintEnd() {
+    postsClose()
+    filesClose()
+    maintaining = false
+    maintPhase = 0
+    rejectCallers = maintSavedReject
+    log("Maintenance complete.")
+}
+
+// Phase 1: the next board with keepDays > 0, or on to phase 2.
+func maintExpireStep() {
+    var last: int = boardsNextId()
+    var n: int
+    while maintCursor < last {
+        if loadBoard(maintCursor) and board.keepDays > 0 {
+            n = expirePosts(board.id, now() - board.keepDays * maintDay)
+            if n < 0 {
+                log("Maintenance: board " + string(board.id) + " (" + board.name + "): cannot open: " + lastError.message)
+            } else {
+                log("Maintenance: board " + string(board.id) + " (" + board.name + "): " + string(n) + " expired.")
+            }
+            maintCursor = maintCursor + 1
+            return
+        }
+        maintCursor = maintCursor + 1
+    }
+    postsClose()
+    maintPhase = 2
+    maintCursor = 1
+}
+
+// Phase 2: the next existing board, compacted, or on to phase 3.
+func maintBoardStep() {
+    var last: int = boardsNextId()
+    var name: string
+    var hdrBefore: int
+    var heapBefore: int
+    while maintCursor < last {
+        if loadBoard(maintCursor) {
+            name = postsName(board.id)
+            if postsOpen(board.id) and maintDone(dbLastCompacted(postsDb)) {
+                maintCursor = maintCursor + 1
+                return
+            }
+            hdrBefore = file.info(name + ".DAT").size
+            heapBefore = file.info(name + ".MSG").size
+            if postsCompact(board.id) {
+                log("Maintenance: board " + string(board.id) + " (" + board.name + "): headers " + maintKb(hdrBefore) + " -> " + maintKb(file.info(name + ".DAT").size) + ", heap " + maintKb(heapBefore) + " -> " + maintKb(file.info(name + ".MSG").size) + ".")
+            } else {
+                log("Maintenance: board " + string(board.id) + " (" + board.name + "): compaction failed: " + lastError.message)
+            }
+            maintCursor = maintCursor + 1
+            return
+        }
+        maintCursor = maintCursor + 1
+    }
+    postsClose()
+    maintPhase = 3
+    maintCursor = 1
+}
+
+// Phase 3: the next existing file area, compacted, or on to phase 4.
+func maintAreaStep() {
+    var last: int = areasNextId()
+    var name: string
+    var hdrBefore: int
+    var heapBefore: int
+    while maintCursor < last {
+        if loadArea(maintCursor) {
+            name = filesName(area.id)
+            if filesOpen(area.id) and maintDone(dbLastCompacted(filesDb)) {
+                maintCursor = maintCursor + 1
+                return
+            }
+            hdrBefore = file.info(name + ".DAT").size
+            heapBefore = file.info(name + ".MSG").size
+            if filesCompact(area.id) {
+                log("Maintenance: area " + string(area.id) + " (" + area.name + "): headers " + maintKb(hdrBefore) + " -> " + maintKb(file.info(name + ".DAT").size) + ", heap " + maintKb(heapBefore) + " -> " + maintKb(file.info(name + ".MSG").size) + ".")
+            } else {
+                log("Maintenance: area " + string(area.id) + " (" + area.name + "): compaction failed: " + lastError.message)
+            }
+            maintCursor = maintCursor + 1
+            return
+        }
+        maintCursor = maintCursor + 1
+    }
+    filesClose()
+    maintPhase = 4
+    maintRest = 0
+}
+
+func maintCompactNamed(db: Database, label: string) {
+    var before: int = file.info(label + ".DAT").size
+    if maintDone(dbLastCompacted(db)) { return }
+    if dbCompact(db) {
+        log("Maintenance: " + label + ": " + maintKb(before) + " -> " + maintKb(file.info(label + ".DAT").size) + ".")
+    } else {
+        log("Maintenance: " + label + ": compaction failed: " + lastError.message)
+    }
+}
+
+// Phase 4: the fixed list, Users last.
+func maintRestStep() {
+    var before: int
+    switch maintRest {
+    case 0 {
+        if not maintDone(dbLastCompacted(mailDb)) {
+            before = file.info("Mail.MSG").size
+            if mailCompact() {
+                log("Maintenance: Mail: heap " + maintKb(before) + " -> " + maintKb(file.info("Mail.MSG").size) + ".")
+            } else {
+                log("Maintenance: Mail: compaction failed: " + lastError.message)
+            }
+        }
+    }
+    case 1 { maintCompactNamed(wallDb, "Wall") }
+    case 2 { maintCompactNamed(areasDb, "Areas") }
+    case 3 { maintCompactNamed(networksDb, "Networks") }
+    case 4 { maintCompactNamed(boardsDb, "Boards") }
+    case 5 { maintCompactNamed(usersDb, "Users") }
+    else {
+        maintEnd()
+        return
+    }
+    }
+    maintRest = maintRest + 1
+}
+
+// One unit of work; call from the timer while `maintaining`.
+func maintTick() {
+    if not maintaining { return }
+    switch maintPhase {
+    case 1 { maintExpireStep() }
+    case 2 { maintBoardStep() }
+    case 3 { maintAreaStep() }
+    case 4 { maintRestStep() }
+    else   { maintEnd() }
+    }
+}

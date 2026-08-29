@@ -816,6 +816,15 @@ func dbNextRecordId(db: Database): int {
     return hdr.intAt(14)
 }
 
+// Header last_compacted: Mac-epoch seconds of the last dbCompact, 0 =
+// never. maint.cla uses it as each database's own "done" marker.
+func dbLastCompacted(db: Database): int {
+    var hdr: text
+    if not dbIsOpen(db) { return 0 }
+    if not dbReadHeader(db, hdr) { return 0 }
+    return hdr.intAt(18)
+}
+
 // --- Maintenance ------------------------------------------------------
 
 // Compact the database: slide every active record down into the empty

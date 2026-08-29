@@ -1,0 +1,110 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for maint.cla: the window rule, then a whole run
+// stepped by hand over seeded databases. Run by scripts/test.sh from
+// a scratch directory. Exits 0 on pass, 1 on the first failure.
+
+include "../maint.cla"
+
+var failures: int = 0
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+func windowTests() {
+    var t: int = now()
+    var rec: DateTimeRec
+    var start: int
+    var h: int
+    SecondsToDate(t, rec)
+    h = rec.hour
+    start = maintWindowStart(h)
+    expect(start <= t and t - start < 3600, "this hour's window opened within the hour")
+    start = maintWindowStart((h + 1) mod 24)
+    expect(start <= t and t - start >= 23 * 3600 and t - start < 24 * 3600, "next hour's window is yesterday's")
+    expect(maintDueAt(0, start), "never run is due")
+    expect(maintDueAt(start - 1, start), "run before the window is due")
+    expect(not maintDueAt(start, start), "run at the window start is not due")
+    expect(not maintDueAt(t, start), "run just now is not due")
+}
+
+func seed() {
+    var none: FtnAddress
+    expect(usersOpen() and boardsOpen() and networksOpen() and mailOpen() and areasOpen() and wallOpen(), "databases open")
+    user.name = "sysop"
+    user.access = accessAllFlags
+    expect(createUser() == 1, "sysop")
+    expect(createBoard("Keep", "never expires", "", 0) == 1, "board 1")
+    expect(createBoard("Expire", "30 days", "", 0) == 2, "board 2")
+    expect(loadBoard(2), "load board 2")
+    board.keepDays = 30
+    expect(saveBoard(), "board 2 keeps 30 days")
+    expect(postsOpen(1) and addPostFtn("a", now() - 300000000, 0, "ancient but kept", "b", 0, none, 0) > 0, "old post on board 1")
+    expect(postsOpen(2), "board 2")
+    expect(addPostFtn("a", now() - 40 * 86400, 0, "40 days old", "old body", 0, none, 0) == 1, "old post on board 2")
+    expect(addPost("a", 0, "fresh", "fresh body") == 2, "fresh post on board 2")
+    postsClose()
+    expect(createArea("Files", "d", "", accessAll) == 1, "area 1")
+    expect(filesOpen(1) and addFile("x.txt", "u", "s", 1, 0, "desc") == 1, "a file entry")
+    filesClose()
+}
+
+func runTests() {
+    var steps: int = 0
+    var orphaned: int
+    rejectCallers = false
+    expect(maintStart(true), "manual run starts")
+    expect(maintaining and rejectCallers, "run in progress closes the BBS")
+    expect(not maintStart(true), "a second start is refused")
+    while maintaining and steps < 200 {
+        maintTick()
+        steps = steps + 1
+    }
+    expect(not maintaining, "run finished")
+    expect(not rejectCallers, "manual flag restored")
+    expect(steps > 5 and steps < 200, "one unit per tick")
+    expect(postsOpen(2) and postCount() == 1 and not loadPost(1) and loadPost(2), "40-day-old post expired, fresh one kept")
+    postsClose()
+    expect(postsOpen(1) and postCount() == 1, "board with keepDays 0 untouched")
+    postsClose()
+    expect(dbLastCompacted(usersDb) != 0 and dbLastCompacted(boardsDb) != 0 and dbLastCompacted(mailDb) != 0, "databases stamped")
+    expect(not maintDueNow(), "not due right after a run")
+    // a scheduled run right after a completed one skips everything already
+    // stamped: orphan bytes left on board 1 stay put; a forced run reclaims them
+    expect(postsOpen(1) and addPost("a", 0, "doomed", "orphan bytes") == 2 and dbDelete(postsDb, 2), "leave an orphan on board 1")
+    postsClose()
+    orphaned = file.info("BRD01.MSG").size
+    expect(maintStart(false), "scheduled run starts")
+    steps = 0
+    while maintaining and steps < 200 {
+        maintTick()
+        steps = steps + 1
+    }
+    expect(not maintaining and file.info("BRD01.MSG").size == orphaned, "stamped board skipped: orphan still there")
+    expect(maintStart(true), "forced run starts")
+    steps = 0
+    while maintaining and steps < 200 {
+        maintTick()
+        steps = steps + 1
+    }
+    expect(not maintaining and file.info("BRD01.MSG").size < orphaned, "forced run compacts regardless of the stamp")
+}
+
+on App.startCLI(args: list of string) {
+    windowTests()
+    seed()
+    runTests()
+    if failures > 0 {
+        log("maint-test: FAILED")
+        quit 1
+    }
+    log("maint-test: all passed")
+    quit
+}
