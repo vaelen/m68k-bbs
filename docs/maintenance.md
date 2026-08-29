@@ -70,3 +70,15 @@ finishes whatever a crash interrupted:
 Both actions are idempotent: the offsets are a pure function of header
 order and lengths. `tests/heap-test.cla` stages each state;
 `tests/maint-test.cla` steps a whole run by hand on the host.
+
+## Measured
+
+Mac II (Snow), 2026-08-29, the seeded test image: board 1 (20 posts,
+6K heap, nothing to reclaim) 15 s; board 2 (10 live posts after 30
+expired and 5 deleted, heap 11K -> 2K) 9 s; the small fixed databases
+about 1 s each. The time is `dbCompact`'s index rebuilds (one
+`btInsert` per record per index) plus any journal replay left by an
+earlier interrupted run, not the heap copy. Heap use is flat across a
+run (1115K -> 1113K free). A 1,000-post board will take minutes;
+bulk-loading the rebuilt B-trees is the optimization if that ever
+matters.
