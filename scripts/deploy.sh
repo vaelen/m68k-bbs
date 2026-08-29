@@ -24,7 +24,7 @@ hcopy -m "$ROOT/build/68kBBS.bin" :
 humount
 
 cd "$ROOT/snow"
-nohup ./Snow --serial-bridge-a tcp:1234 "$PWD/MacII.snoww" > snow.log 2>&1 &
+nohup ./Snow --serial-bridge-a tcp:1235 "$PWD/MacII.snoww" > snow.log 2>&1 &
 sleep 3
 grep -i "SCSI ID #1\|bridge enabled" snow.log
 echo "Snow running; app deployed."

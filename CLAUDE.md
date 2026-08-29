@@ -75,8 +75,10 @@ For host-side serial testing, the host lane maps the modem port via env:
 
 `snow/` holds a Snow emulator setup: `snow/run-snow.sh` boots a Mac II
 (System 7) from `snow/hdd0.img` (SCSI 0) with the emulated **modem port
-bridged to TCP port 1234** (`--serial-bridge-a tcp:1234`). Connect a test
-client with `nc localhost 1234` while the emulator runs.
+bridged to TCP port 1235** (`--serial-bridge-a tcp:1235`). This is the
+**test instance**; the production BBS runs from `~/bbs/` on port 1234
+with its modem emulator on 2323, and both can run at once. Connect a
+test client with `nc localhost 1235` while the emulator runs.
 
 The workspace is `snow/MacII.snoww` (plain JSON; SCSI ID 1 is free for a
 build disk).
@@ -94,8 +96,9 @@ fails with "===== not found" — quote it).
 
 `simple-modem-emulator/` is a tiny C program that sits on the emulated
 serial port and behaves like a Hayes modem
-(`telnet → :2323 → modem → :1234 → Snow`). Andrew usually has it running
-on port 2323. It connects to Snow's serial bridge at start and reconnects
+(`telnet → :2324 → modem → :1235 → Snow` for the test instance; production
+is `:2323 → :1234`). Andrew usually has the production one running on
+port 2323. It connects to Snow's serial bridge at start and reconnects
 every 10 s (quietly) if Snow goes away. Inbound telnet callers are
 answered at once: `\r\nCONNECT 57600\r\n` to the serial side, then
 `\r\nNO CARRIER\r\n` when they leave — exactly what `scanner.cla` watches
@@ -104,7 +107,8 @@ for. From the Mac side it honors `+++`/`ATH` (hang up), `ATO`, and
 FidoNet poll dials an `exec:fnemsi … --answer` entry, `CONNECT` arrives
 on the child's first byte) or a bare `host[:port]`. One call at a time;
 callers during a call get `BUSY`. So: test the BBS with
-`telnet localhost 2323` rather than raw `nc` to port 1234. See
+`telnet localhost 2324` (after `cd simple-modem-emulator && ./modem 2324
+1235`) rather than raw `nc` to port 1235. See
 `simple-modem-emulator/README.md`.
 
 ## Getting a build into the emulator
