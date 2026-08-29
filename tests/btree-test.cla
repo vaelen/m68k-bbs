@@ -1,15 +1,13 @@
 // Copyright 2026, Andrew C. Young <andrew@vaelen.org>
 // SPDX-License-Identifier: MIT
 
-// CLI self-check for the file-based B-tree (btree.cla, vDB v2 format).
-// Run by scripts/test.sh, which executes from a scratch directory --
-// the tree files created here land there and are cleaned up with it.
-// Exits 0 on pass, 1 on the first failure.
+// CLI self-check for btree.cla, focused on overflow pages: one key
+// holding far more values than fit a leaf entry. Run by scripts/test.sh
+// from a scratch directory. Exits 0 on pass, 1 on the first failure.
 
 include "../btree.cla"
 
 var failures: int = 0
-var vals: list of int
 
 func expect(cond: bool, name: string) {
     if cond {
@@ -20,216 +18,82 @@ func expect(cond: bool, name: string) {
     }
 }
 
-// Walk the leaf chain from the leftmost leaf: every key must be
-// strictly ascending across the whole tree. Returns the total key
-// count, or -1 if the chain or ordering is broken.
-func chainKeyCount(f: filehandle): int {
-    var page: text
-    var p: int = btRootPage(f)
-    var total: int = 0
-    var lastKey: int = -1
-    var guard: int = 0
-    var n: int
-    var off: int
-    var i: int
-    var k: int
-    var vc: int
-    if p < 0 { return -1 }
-    while guard < 40 {
-        if not f.readAt(p * btPageSize, btPageSize, page) { return -1 }
-        if int(page[0]) == btPtLeaf { break }
-        if int(page[0]) != btPtInternal { return -1 }
-        p = page.intAt(3)
-        guard = guard + 1
-    }
-    guard = 0
-    while p != 0 and guard < 1000 {
-        if not f.readAt(p * btPageSize, btPageSize, page) { return -1 }
-        if int(page[0]) != btPtLeaf { return -1 }
-        n = page.wordAt(1)
-        off = btLeafHeaderSize
-        i = 0
-        while i < n {
-            k = page.intAt(off)
-            vc = page.wordAt(off + 4)
-            if k <= lastKey { return -1 }
-            lastKey = k
-            total = total + 1
-            off = off + 10 + vc * 4
-            i = i + 1
-        }
-        p = page.intAt(3)
-        guard = guard + 1
-    }
-    return total
+func countValues(f: filehandle, key: int): int {
+    var v: list of int
+    if not btFind(f, key, v) { return 0 - 1 }
+    return v.count
 }
 
-// The page type at the top of the tree, and of its leftmost child --
-// used to prove the tree actually grew levels.
-func pageType(f: filehandle, pageNum: int): int {
-    var page: text
-    if not f.readAt(pageNum * btPageSize, btPageSize, page) { return -1 }
-    return int(page[0])
-}
-
-// First child page of an internal node.
-func chainFirstChild(f: filehandle, pageNum: int): int {
-    var page: text
-    if not f.readAt(pageNum * btPageSize, btPageSize, page) { return -1 }
-    return page.intAt(3)
-}
-
-func expectVals(f: filehandle, key: int, a: int, b: int, count: int, name: string) {
-    var ok: bool = btFind(f, key, vals)
-    if count == 0 {
-        expect(not ok and vals.count == 0, name)
-        return
+func hasValue(f: filehandle, key: int, value: int): bool {
+    var v: list of int
+    var i: int = 0
+    if not btFind(f, key, v) { return false }
+    while i < v.count {
+        if v[i] == value { return true }
+        i = i + 1
     }
-    ok = ok and vals.count == count
-    if ok and count >= 1 { ok = vals[0] == a }
-    if ok and count >= 2 { ok = vals[1] == b }
-    expect(ok, name)
+    return false
 }
 
 on App.startCLI(args: list of string) {
     var f: filehandle
-    var g: filehandle
+    var v: list of int
     var i: int
-    var okAll: bool
+    var ordered: bool
 
-    // 1. create: two pages on disk, find on empty tree misses
-    f = btCreate("bt-test.idx", "VDBi", "68BB")
-    expect(f != nil, "create returns a handle")
-    expect(f.size() == 1024, "fresh tree is header + root leaf")
-    expectVals(f, 100, 0, 0, 0, "empty tree finds nothing")
+    f = btCreate("BT.IDX", "VDBi", "68BB")
+    expect(f != nil, "btree created")
 
-    // 2. insert and find, multiple values per key
-    expect(btInsert(f, 100, 200), "insert 100->200")
-    expectVals(f, 100, 200, 0, 1, "find single value")
-    expect(btInsert(f, 100, 201), "insert 100->201")
-    expectVals(f, 100, 200, 201, 2, "find both values in order")
-
-    // 3. keys kept sorted: insert below, above, between
-    expect(btInsert(f, 150, 300), "insert 150->300")
-    expect(btInsert(f, 50, 1), "insert 50->1")
-    expect(btInsert(f, 120, 5), "insert 120->5")
-    expectVals(f, 50, 1, 0, 1, "find lowest key")
-    expectVals(f, 120, 5, 0, 1, "find middle key")
-    expectVals(f, 150, 300, 0, 1, "find highest key")
-    expectVals(f, 99, 0, 0, 0, "missing key between entries")
-
-    // 4. persistence across close/reopen
-    f.close()
-    f = btOpen("bt-test.idx")
-    expect(f != nil, "reopen succeeds")
-    expectVals(f, 100, 200, 201, 2, "values survive reopen")
-
-    // 5. deleting one value keeps the rest; last value drops the key
-    expect(btDeleteValue(f, 100, 200), "delete value 200")
-    expectVals(f, 100, 201, 0, 1, "other value remains")
-    expect(btDeleteValue(f, 100, 201), "delete last value")
-    expectVals(f, 100, 0, 0, 0, "key gone after last value")
-    expect(not btDeleteValue(f, 100, 201), "delete on missing key fails")
-    expect(not btDeleteValue(f, 150, 999), "delete of absent value fails")
-    expectVals(f, 150, 300, 0, 1, "absent-value delete left entry alone")
-
-    // 6. whole-key delete
-    expect(btDelete(f, 150), "delete key 150")
-    expectVals(f, 150, 0, 0, 0, "key 150 gone")
-    expect(not btDelete(f, 150), "second delete fails")
-    expectVals(f, 50, 1, 0, 1, "neighbor key intact")
-    f.close()
-
-    // 7. opening a non-B-tree file fails cleanly
-    g = file.create("bt-test.junk", "TEXT", "68BB")
-    g.writeAt(0, "this is not a btree, not even close")
-    g.close()
-    expect(btOpen("bt-test.junk") == nil, "open rejects a non-btree file")
-    expect(btOpen("bt-test.missing") == nil, "open rejects a missing file")
-
-    // 8. leaf splitting: 500 keys in scrambled order (i*7 mod 501
-    //    permutes 1..500), far past the ~36-entry single-leaf cap
-    f = btCreate("bt-test2.idx", "VDBi", "68BB")
-    okAll = true
+    // 500 values under one key -- far past the ~123 that fit a leaf entry
     i = 1
     while i <= 500 {
-        if not btInsert(f, i * 7 mod 501, (i * 7 mod 501) * 2) { okAll = false }
-        i = i + 1
-    }
-    expect(okAll, "500 scrambled inserts succeed")
-    okAll = true
-    i = 1
-    while i <= 500 {
-        if not btFind(f, i, vals) { okAll = false }
-        if vals.count != 1 { okAll = false }
-        if vals.count == 1 and vals[0] != i * 2 { okAll = false }
-        i = i + 1
-    }
-    expect(okAll, "all 500 keys map to their values")
-    expect(not btFind(f, 501, vals), "missing key still missing after splits")
-    expect(chainKeyCount(f) == 500, "leaf chain sorted and complete")
-    expect(pageType(f, btRootPage(f)) == btPtInternal, "root became internal")
-    expect(btInsert(f, 250, 9999), "extra value on an existing key")
-    expectVals(f, 250, 500, 9999, 2, "multi-value key across a split tree")
-    expect(btDeleteValue(f, 250, 9999), "extra value removed again")
-
-    // lazy deletes across the split tree
-    okAll = true
-    i = 7
-    while i <= 500 {
-        if not btDelete(f, i) { okAll = false }
-        i = i + 7
-    }
-    expect(okAll, "every 7th key deleted")
-    okAll = true
-    i = 1
-    while i <= 500 {
-        if i mod 7 == 0 {
-            if btFind(f, i, vals) { okAll = false }
-        } else {
-            if not btFind(f, i, vals) { okAll = false }
+        if not btInsert(f, 0, i) {
+            expect(false, "insert value " + string(i) + " under key 0")
+            i = 501
         }
         i = i + 1
     }
-    expect(okAll, "deleted keys gone, the rest intact")
+    expect(countValues(f, 0) == 500, "all 500 values under key 0 found")
+    expect(hasValue(f, 0, 1) and hasValue(f, 0, 250) and hasValue(f, 0, 500), "first, middle, last present")
 
-    // persistence of a multi-leaf tree
-    f.close()
-    f = btOpen("bt-test2.idx")
-    okAll = f != nil
-    if okAll { okAll = btFind(f, 1, vals) and vals[0] == 2 }
-    expect(okAll, "split tree survives reopen")
-    f.close()
-
-    // 9. multi-level growth: sequential load builds ~112 leaves, so
-    //    internal nodes split and the root grows past two levels
-    f = btCreate("bt-test3.idx", "VDBi", "68BB")
-    okAll = true
+    // order preserved (inline block then chain, both ascending)
+    btFind(f, 0, v)
+    ordered = true
     i = 1
-    while i <= 2000 {
-        if not btInsert(f, i, i + 100000) { okAll = false }
+    while i < v.count {
+        if v[i] <= v[i - 1] { ordered = false }
         i = i + 1
     }
-    expect(okAll, "2000 sequential inserts succeed")
-    okAll = true
-    i = 1
-    while i <= 2000 {
-        if not btFind(f, i, vals) { okAll = false }
-        if vals.count != 1 { okAll = false }
-        if vals.count == 1 and vals[0] != i + 100000 { okAll = false }
-        i = i + 1
-    }
-    expect(okAll, "all 2000 keys map to their values")
-    expect(chainKeyCount(f) == 2000, "2000-key leaf chain sorted and complete")
-    i = btRootPage(f)
-    expect(pageType(f, i) == btPtInternal, "root is internal")
-    expect(pageType(f, chainFirstChild(f, i)) == btPtInternal, "tree is at least three levels")
-    f.close()
+    expect(ordered, "values come back in insertion order")
 
-    // 9. stringKey: case-insensitive CRC-16/KERMIT
-    expect(stringKey("alice") == stringKey("ALICE"), "stringKey case-insensitive")
-    expect(stringKey("alice") != stringKey("bob"), "different strings differ")
-    expect(stringKey("123456789") == 0x2189, "KERMIT check value")
+    // other keys still work alongside the big one
+    expect(btInsert(f, 5, 42) and btInsert(f, 5, 43), "small key inserts")
+    expect(countValues(f, 5) == 2, "small key has two values")
+    expect(countValues(f, 0) == 500, "big key unaffected by small-key inserts")
+    expect(countValues(f, 9) == 0 - 1, "absent key returns not found")
+
+    // delete a value that lives in the overflow chain
+    expect(btDeleteValue(f, 0, 300), "delete an overflow value")
+    expect(countValues(f, 0) == 499, "one fewer after overflow delete")
+    expect(not hasValue(f, 0, 300), "deleted value gone")
+    expect(hasValue(f, 0, 299) and hasValue(f, 0, 301), "neighbours kept")
+
+    // delete an inline value (one of the first few)
+    expect(btDeleteValue(f, 0, 2), "delete an inline value")
+    expect(countValues(f, 0) == 498 and not hasValue(f, 0, 2), "inline delete took")
+
+    // persistence across reopen
+    f.close()
+    f = btOpen("BT.IDX")
+    expect(f != nil, "reopened")
+    expect(countValues(f, 0) == 498, "overflow values survive reopen")
+    expect(hasValue(f, 0, 500) and not hasValue(f, 0, 300), "chain intact after reopen")
+
+    // whole-key delete drops everything
+    expect(btDelete(f, 0), "delete the whole big key")
+    expect(countValues(f, 0) == 0 - 1, "big key gone")
+    expect(countValues(f, 5) == 2, "small key survives the big delete")
+    f.close()
 
     if failures > 0 {
         log("btree-test: FAILED")

@@ -17,8 +17,10 @@
 // removed but nodes are never merged, and empty leaves stay in place
 // -- rebuild the tree (vDB does this on compaction/recovery) to
 // reclaim the space. Leaves form a sorted next_leaf chain for range
-// scans. Overflow pages (type 4) are still reserved, so one key's
-// value list must fit its leaf (~123 values).
+// scans. A key's first btMaxInline values live inline in its leaf
+// entry; the rest chain through type-4 overflow pages, so a key holds
+// unboundedly many values. Whole-key deletion leaks the chain until
+// the tree is rebuilt (the same lazy model as emptied leaves).
 
 const btPageSize: int = 512
 const btLeafHeaderSize: int = 7    // page_type(1) + key_count(2) + next_leaf(4)
@@ -29,6 +31,15 @@ const btMaxDepth: int = 32        // corruption guard on descent
 const btPtInternal: int = 2
 const btPtLeaf: int = 3
 const btPtOverflow: int = 4
+
+// A leaf entry keeps at most this many values inline; further values
+// spill into the overflow chain. Small enough that an entry stays well
+// under the leaf budget so leaves hold several keys; legacy entries
+// written before overflow existed may hold more inline and are read
+// fine -- only new values ever spill.
+const btMaxInline: int = 32
+const btOverflowCap: int = 126     // (btPageSize - 7) / 4 values per overflow page
+const btOverflowHeader: int = 7    // page_type(1) + value_count(2) + next(4)
 
 // --- Page construction helpers ---------------------------------------
 
@@ -277,6 +288,122 @@ func btInsertUp(f: filehandle, path: list of int, sep: int, newPage: int): bool 
     return btSetRoot(f, np)
 }
 
+// --- Overflow chain --------------------------------------------------
+// A type-4 page: page_type(1) + value_count(2, u16) + next(4, i32) +
+// packed i32 values. A key's spilled values live in a singly linked
+// chain of these, hung off the leaf entry's trailing overflow pointer.
+
+// Append `value` to the chain whose head is `head` (0 = none). Returns
+// the head to store in the entry -- a new page number only when `head`
+// was 0, otherwise `head` unchanged -- or -1 on error. ponytail: walks
+// to the tail each call, O(chain) per append; realistic chains are a
+// few pages, rebuild if a key ever holds tens of thousands of values.
+func btOverflowAppend(f: filehandle, head: int, value: int): int {
+    var page: text
+    var fresh: text
+    var pnum: int
+    var next: int
+    var vc: int
+    var newp: int
+    var guard: int = 0
+    if head == 0 {
+        newp = btAllocPage(f)
+        if newp < 0 { return 0 - 1 }
+        fresh.append(char(btPtOverflow))
+        btAppendWord(fresh, 1)
+        btAppendInt(fresh, 0)
+        btAppendInt(fresh, value)
+        btZeroFill(fresh)
+        if not f.writeAt(newp * btPageSize, fresh) { return 0 - 1 }
+        return newp
+    }
+    pnum = head
+    while guard < 1000000 {
+        if not f.readAt(pnum * btPageSize, btPageSize, page) { return 0 - 1 }
+        if page.length != btPageSize or int(page[0]) != btPtOverflow { return 0 - 1 }
+        next = page.intAt(3)
+        if next == 0 {
+            vc = page.wordAt(1)
+            if vc < btOverflowCap {
+                page.setWordAt(1, vc + 1)
+                page.setIntAt(btOverflowHeader + vc * 4, value)
+                if not f.writeAt(pnum * btPageSize, page) { return 0 - 1 }
+                return head
+            }
+            newp = btAllocPage(f)
+            if newp < 0 { return 0 - 1 }
+            page.setIntAt(3, newp)
+            if not f.writeAt(pnum * btPageSize, page) { return 0 - 1 }
+            fresh.append(char(btPtOverflow))
+            btAppendWord(fresh, 1)
+            btAppendInt(fresh, 0)
+            btAppendInt(fresh, value)
+            btZeroFill(fresh)
+            if not f.writeAt(newp * btPageSize, fresh) { return 0 - 1 }
+            return head
+        }
+        pnum = next
+        guard = guard + 1
+    }
+    return 0 - 1
+}
+
+// Append every value in the chain at `head` to `values`.
+func btOverflowValues(f: filehandle, head: int, values: list of int): bool {
+    var page: text
+    var pnum: int = head
+    var vc: int
+    var j: int
+    var guard: int = 0
+    while pnum != 0 and guard < 1000000 {
+        if not f.readAt(pnum * btPageSize, btPageSize, page) { return false }
+        if page.length != btPageSize or int(page[0]) != btPtOverflow { return false }
+        vc = page.wordAt(1)
+        j = 0
+        while j < vc {
+            values.add(page.intAt(btOverflowHeader + j * 4))
+            j = j + 1
+        }
+        pnum = page.intAt(3)
+        guard = guard + 1
+    }
+    return true
+}
+
+// Remove the first occurrence of `value` from the chain at `head`;
+// true if it was there. Leaves an emptied page linked (lazy).
+func btOverflowRemoveFirst(f: filehandle, head: int, value: int): bool {
+    var page: text
+    var pnum: int = head
+    var vc: int
+    var j: int
+    var hit: int
+    var guard: int = 0
+    while pnum != 0 and guard < 1000000 {
+        if not f.readAt(pnum * btPageSize, btPageSize, page) { return false }
+        if page.length != btPageSize or int(page[0]) != btPtOverflow { return false }
+        vc = page.wordAt(1)
+        hit = 0 - 1
+        j = 0
+        while j < vc {
+            if hit < 0 and page.intAt(btOverflowHeader + j * 4) == value { hit = j }
+            j = j + 1
+        }
+        if hit >= 0 {
+            j = hit
+            while j < vc - 1 {
+                page.setIntAt(btOverflowHeader + j * 4, page.intAt(btOverflowHeader + (j + 1) * 4))
+                j = j + 1
+            }
+            page.setWordAt(1, vc - 1)
+            return f.writeAt(pnum * btPageSize, page)
+        }
+        pnum = page.intAt(3)
+        guard = guard + 1
+    }
+    return false
+}
+
 // --- Operations -------------------------------------------------------
 
 // Insert a key/value pair. Duplicate keys collect multiple values on
@@ -300,6 +427,8 @@ func btInsert(f: filehandle, key: int, value: int): bool {
     var cut: int
     var leftCnt: int
     var newPage: int
+    var ovf: int
+    var newOvf: int
     var added: bool = false
     var merged: bool = false
     if not btDescend(f, key, path, page) { return false }
@@ -315,12 +444,22 @@ func btInsert(f: filehandle, key: int, value: int): bool {
             added = true
         }
         if k == key {
-            // copy the entry with the new value appended
-            epos = out.length
-            out.append(page.textAt(off, 6 + vc * 4))
-            out.setWordAt(epos + 4, vc + 1)
-            btAppendInt(out, value)
-            out.append(page.textAt(off + 6 + vc * 4, 4))
+            ovf = page.intAt(off + 6 + vc * 4)
+            if vc < btMaxInline and ovf == 0 {
+                // room inline: copy the entry with the value appended
+                epos = out.length
+                out.append(page.textAt(off, 6 + vc * 4))
+                out.setWordAt(epos + 4, vc + 1)
+                btAppendInt(out, value)
+                btAppendInt(out, ovf)
+            } else {
+                // inline full (or a chain already exists): spill to overflow
+                newOvf = btOverflowAppend(f, ovf, value)
+                if newOvf < 0 { return false }
+                epos = out.length
+                out.append(page.textAt(off, 10 + vc * 4))
+                out.setIntAt(epos + 6 + vc * 4, newOvf)
+            }
             merged = true
         } else {
             out.append(page.textAt(off, esz))
@@ -385,6 +524,9 @@ func btFind(f: filehandle, key: int, values: list of int): bool {
                 values.add(page.intAt(off + 6 + j * 4))
                 j = j + 1
             }
+            if page.intAt(off + 6 + vc * 4) != 0 {
+                if not btOverflowValues(f, page.intAt(off + 6 + vc * 4), values) { return false }
+            }
             return true
         }
         if k > key { return false }    // entries are sorted
@@ -411,6 +553,7 @@ func btRemove(f: filehandle, key: int, value: int, valueOnly: bool): bool {
     var esz: int
     var j: int
     var hit: int
+    var ovf: int
     var drops: int = 0
     var found: bool = false
     if not btDescend(f, key, path, page) { return false }
@@ -428,6 +571,7 @@ func btRemove(f: filehandle, key: int, value: int, valueOnly: bool): bool {
                 found = true
                 drops = drops + 1
             } else {
+                ovf = page.intAt(off + 6 + vc * 4)
                 hit = -1
                 j = 0
                 while j < vc {
@@ -435,21 +579,23 @@ func btRemove(f: filehandle, key: int, value: int, valueOnly: bool): bool {
                     j = j + 1
                 }
                 if hit < 0 {
+                    // not inline: try the overflow chain; the entry is unchanged
+                    if ovf != 0 and btOverflowRemoveFirst(f, ovf, value) { found = true }
                     out.append(page.textAt(off, esz))
-                } else {
+                } else if vc == 1 and ovf == 0 {
                     found = true
-                    if vc == 1 {
-                        drops = drops + 1
-                    } else {
-                        btAppendInt(out, k)
-                        btAppendWord(out, vc - 1)
-                        j = 0
-                        while j < vc {
-                            if j != hit { btAppendInt(out, page.intAt(off + 6 + j * 4)) }
-                            j = j + 1
-                        }
-                        out.append(page.textAt(off + 6 + vc * 4, 4))
+                    drops = drops + 1
+                } else {
+                    // drop the hit value; keep the rest inline and the chain ptr
+                    found = true
+                    btAppendInt(out, k)
+                    btAppendWord(out, vc - 1)
+                    j = 0
+                    while j < vc {
+                        if j != hit { btAppendInt(out, page.intAt(off + 6 + j * 4)) }
+                        j = j + 1
                     }
+                    btAppendInt(out, ovf)
                 }
             }
         }
