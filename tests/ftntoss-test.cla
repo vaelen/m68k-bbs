@@ -82,7 +82,7 @@ func tossTests() {
     expect(file.makeDir(ftnIn + ":junkdir"), "a folder in In is ignored")
 
     expect(tossInbound() == 2, "two packets tossed")
-    expect(tossEcho == 1 and tossNet == 1 and tossDupes == 0 and tossUnknown == 0, "counters")
+    expect(tossEcho == 1 and tossNet == 1 and tossDupes == 0 and tossExpired == 0 and tossUnknown == 0, "counters")
     expect(countIn() == 1, "packets deleted, folder left")
 
     expect(postsOpen(2) and postCount() == 1, "echomail landed in board 2")
@@ -101,6 +101,18 @@ func tossTests() {
     expect(addressStr(message.fromAddr) == "21:1/100" and addressStr(message.toAddr) == "21:1/141", "netmail addresses")
     expect(message.subject == "Areafix reply: link information", "netmail subject")
     expect(message.created == ftnDateParse("15 Aug 25  18:50:54"), "no TZUTC: taken as local")
+
+    // expiry: a board keeping 30 days refuses the 2025 fixture outright
+    expect(loadBoard(2), "load board 2 for expiry")
+    board.keepDays = 30
+    expect(saveBoard(), "set expiry")
+    expect(copyFile("echomail.pkt", ftnIn + ":expired.pkt"), "stage the echomail for expiry")
+    expect(tossInbound() == 1 and tossExpired == 1 and tossEcho == 0 and tossDupes == 0, "expired message dropped before the dupe check")
+    expect(postsOpen(2) and postCount() == 1, "nothing stored")
+    postsClose()
+    expect(loadBoard(2), "reload board 2")
+    board.keepDays = 0
+    expect(saveBoard(), "expiry back to never")
 
     // dupes: the same echomail again is dropped
     expect(copyFile("echomail.pkt", ftnIn + ":again.pkt"), "stage the echomail again")

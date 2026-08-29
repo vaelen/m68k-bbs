@@ -203,7 +203,9 @@ Runs after a poll, with the line idle. For every file in `:FTN:In:`:
      original name kept in `toName`. `fromUserId = 0`, `fromAddr`,
      `toAddr`, `msgidCrc` set. AreaFix replies arrive this way.
 4. `pktClose()`, then delete the file. Log `tossed n echomail,
-   m netmail, d dupes, u unknown areas`.
+   m netmail, d dupes, x expired, u unknown areas`. Before the dupe
+   check, a message older than the board's `keepDays` (0 = never) is
+   counted as *expired* and not stored (`docs/maintenance.md`).
 
 A crash mid-toss re-tosses the file next time; dupe checking makes that
 safe.

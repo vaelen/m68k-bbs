@@ -24,6 +24,7 @@ var tossEcho: int = 0
 var tossNet: int = 0
 var tossDupes: int = 0
 var tossUnknown: int = 0
+var tossExpired: int = 0   // inbound echomail already past the board's keepDays
 
 func ftnEnsureDir(p: string): bool {
     if file.exists(p) { return true }
@@ -47,6 +48,8 @@ func ftnOutPath(netId: int): string {
 var tagBoards: list of int
 var tagNets: list of int
 var tagNames: list of string
+var tagKeepDays: list of int
+var tagMatchKeepDays: int = 0    // keepDays of the board boardForTag last matched
 
 func loadTagCache() {
     var id: int = 1
@@ -54,11 +57,13 @@ func loadTagCache() {
     tagBoards.clear()
     tagNets.clear()
     tagNames.clear()
+    tagKeepDays.clear()
     while id < last {
         if loadBoard(id) and boardNetworked() {
             tagBoards.add(id)
             tagNets.add(board.networkId)
             tagNames.add(board.tag)
+            tagKeepDays.add(board.keepDays)
         }
         id = id + 1
     }
@@ -66,8 +71,12 @@ func loadTagCache() {
 
 func boardForTag(netId: int, tag: string): int {
     var i: int = 0
+    tagMatchKeepDays = 0
     while i < tagBoards.count {
-        if tagNets[i] == netId and dbStrEqCI(tagNames[i], tag) { return tagBoards[i] }
+        if tagNets[i] == netId and dbStrEqCI(tagNames[i], tag) {
+            tagMatchKeepDays = tagKeepDays[i]
+            return tagBoards[i]
+        }
         i = i + 1
     }
     return 0
@@ -107,6 +116,10 @@ func tossEchomail(netId: int) {
     var thread: int = 0
     if bid == 0 {
         tossUnknown = tossUnknown + 1
+        return
+    }
+    if tagMatchKeepDays > 0 and tossCreated() < now() - tagMatchKeepDays * 86400 {
+        tossExpired = tossExpired + 1     // past the board's expiry: never stored
         return
     }
     if not postsOpen(bid) {
@@ -184,6 +197,7 @@ func tossInbound(): int {
     tossNet = 0
     tossDupes = 0
     tossUnknown = 0
+    tossExpired = 0
     loadTagCache()
     if not file.list(ftnIn, names) {
         log("Toss: cannot list " + ftnIn + ": " + lastError.message)
@@ -201,7 +215,7 @@ func tossInbound(): int {
         i = i + 1
     }
     postsClose()
-    log("Tossed " + string(n) + " packet(s): " + string(tossEcho) + " echomail, " + string(tossNet) + " netmail, " + string(tossDupes) + " dupes, " + string(tossUnknown) + " unknown areas.")
+    log("Tossed " + string(n) + " packet(s): " + string(tossEcho) + " echomail, " + string(tossNet) + " netmail, " + string(tossDupes) + " dupes, " + string(tossExpired) + " expired, " + string(tossUnknown) + " unknown areas.")
     return n
 }
 
