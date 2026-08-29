@@ -493,7 +493,8 @@ inputChar (bbs.cla) → processInput`.
   last = the done marker via `dbLastCompacted`), the window rule
   (`maintDueNow`, `config.maintenanceHour`), and the `rejectCallers`/
   `maintaining` flags `connected()` and `ftnSchedule` honour; the Mac
-  `Maintenance` menu toggles/runs it. A `FileInfo` temp is too big for
+  `Maintenance` menu toggles/runs it (menu captions must not contain
+  `(` -- the Menu Manager dims such an item). A `FileInfo` temp is too big for
   the 68k backend — assign `file.info(p)` to a local, never
   `file.info(p).size`. `docs/maintenance.md`.
 - `motd.cla` — the Message of the Day, `MOTD.txt` (TEXT/ttxt):

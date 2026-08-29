@@ -63,8 +63,10 @@ menu FidoNet {
     item PollAll "Poll All Networks"
 }
 
+// Menu captions: a "(" anywhere in the item text is the Menu Manager's
+// "disabled item" metacharacter, so no parentheses here.
 menu Maintenance {
-    item ToggleClosed "Closed to Callers (Toggle)"
+    item ToggleClosed "Toggle Closed to Callers"
     item RunNow "Run Database Maintenance"
 }
 

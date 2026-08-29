@@ -41,10 +41,12 @@ before/after sizes; a failing unit is logged and the run continues.
 
 While a run is in progress the BBS is **closed**: `connected()` sends
 `THE BBS IS CLOSED FOR MAINTENANCE. PLEASE CALL BACK LATER.` and hangs
-up (no login-log record). `Maintenance > Closed to Callers (Toggle)`
+up (no login-log record). `Maintenance > Toggle Closed to Callers`
 sets the same flag by hand — it never disconnects a caller already
 online, and the log reports `Closed to callers.` / `Open to callers.`
-(Clarus menu items carry no checkmark). The manual setting survives a
+(Clarus menu items carry no checkmark, and a `(` in a caption would
+dim the item -- it is the Menu Manager's disabled-item metacharacter).
+The manual setting survives a
 run: the run saves it, closes, and restores it. FidoNet polls wait for
 the run (`ftnSchedule`/`ftnNext` check `maintaining`).
 
