@@ -23,11 +23,12 @@
 // Bodies are exact-fit and never journaled: addPost appends + flushes
 // the body BEFORE the journaled header add, so a crash can only leave
 // orphaned heap bytes, never a header pointing at missing text.
-// Deleted posts orphan their body bytes; a heap compactor can come
-// later if it ever matters.
+// Deleted posts orphan their body bytes until postsCompact (heap.cla)
+// reclaims them.
 
 include "vdb.cla"
 include "ftnaddr.cla"
+include "heap.cla"
 
 const postRecordSize: int = 160
 const pOffSender: int = 0
@@ -80,6 +81,10 @@ func postsOpen(boardId: int): bool {
             postsClose()
             return false
         }
+    }
+    if not heapRecover(postsDb, name + ".MSG", pOffBodyOff, pOffBodyLen) {
+        postsClose()
+        return false
     }
     postsBody = file.open(name + ".MSG")
     if postsBody == nil {
@@ -231,4 +236,19 @@ func expirePosts(boardId: int, cutoff: int): int {
         id = id + 1
     }
     return n
+}
+
+// Maintenance: compact the headers (dbCompact: slide, truncate, rebuild
+// indexes) and then the body heap. Leaves the board open.
+func postsCompact(boardId: int): bool {
+    var b: filehandle
+    var name: string = postsName(boardId)
+    if not postsOpen(boardId) { return false }
+    if not dbCompact(postsDb) { return false }
+    b = postsBody
+    b.close()
+    postsBody = nil
+    if not heapCompact(postsDb, name + ".MSG", pOffBodyOff, pOffBodyLen) { return false }
+    postsBody = file.open(name + ".MSG")
+    return postsBody != nil
 }

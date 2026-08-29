@@ -1,0 +1,138 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// Compactor for the append-only body heaps (BRD<nn>.MSG, Mail.MSG,
+// ARE<nn>.MSG): each record in the owning vDB database points at its
+// bytes with an (offset, length) pair at fixed field positions, bodies
+// are exact-fit with no framing, and deletes orphan their bytes.
+//
+// Fresh-file rewrite with deterministic offsets: walk records in ID
+// order appending each live body to <name>.NEW; a body's new offset is
+// the running total of the live bodies before it, so it can be
+// recomputed from the headers alone. Then .MSG -> .OLD, .NEW -> .MSG,
+// rewrite every header's offset (journaled dbUpdate), delete .OLD.
+// Every crash point is recoverable at the next open (heapRecover):
+//   .NEW only            crashed mid-rewrite       delete .NEW
+//   .OLD + .NEW, no .MSG crashed between renames   finish the swap, then
+//   .OLD + .MSG          crashed fixing offsets    fix offsets, delete .OLD
+// Both are idempotent. docs/maintenance.md.
+//
+// `path` is a plain file name next to the app (file.rename takes a
+// leaf name). The owner closes its own heap handle before calling
+// heapCompact and reopens it after.
+
+include "vdb.cla"
+
+func heapNewPath(path: string): string {
+    return path[0, path.length - 4] + ".NEW"
+}
+
+func heapOldPath(path: string): string {
+    return path[0, path.length - 4] + ".OLD"
+}
+
+// Sum of the live bodies' lengths, in ID order.
+func heapLiveBytes(db: Database, lenField: int): int {
+    var id: int = 1
+    var last: int = dbNextRecordId(db)
+    var rec: text
+    var total: int = 0
+    while id < last {
+        rec = dbFind(db, id)
+        if rec.length > lenField + 3 { total = total + rec.intAt(lenField) }
+        id = id + 1
+    }
+    return total
+}
+
+// Rewrite every live record's offset to its deterministic value: the
+// running total of the live bodies before it. Idempotent.
+func heapFixOffsets(db: Database, offField: int, lenField: int): bool {
+    var id: int = 1
+    var last: int = dbNextRecordId(db)
+    var rec: text
+    var running: int = 0
+    var len: int
+    while id < last {
+        rec = dbFind(db, id)
+        if rec.length > lenField + 3 {
+            len = rec.intAt(lenField)
+            if len > 0 {
+                if rec.intAt(offField) != running {
+                    rec.setIntAt(offField, running)
+                    if not dbUpdate(db, id, rec) { return false }
+                }
+                running = running + len
+            }
+        }
+        id = id + 1
+    }
+    return true
+}
+
+func heapCompact(db: Database, path: string, offField: int, lenField: int): bool {
+    var src: filehandle
+    var dst: filehandle
+    var id: int = 1
+    var last: int
+    var rec: text
+    var body: text
+    var len: int
+    var ok: bool = true
+    if not dbIsOpen(db) { return false }
+    src = file.open(path)
+    if src == nil { return false }
+    if heapLiveBytes(db, lenField) == src.size() {
+        src.close()
+        return true                         // nothing orphaned
+    }
+    if file.exists(heapNewPath(path)) { file.delete(heapNewPath(path)) }
+    dst = file.create(heapNewPath(path), "TEXT", "68BB")
+    if dst == nil {
+        src.close()
+        return false
+    }
+    last = dbNextRecordId(db)
+    while ok and id < last {
+        rec = dbFind(db, id)
+        if rec.length > lenField + 3 {
+            len = rec.intAt(lenField)
+            if len > 0 {
+                ok = src.readAt(rec.intAt(offField), len, body)
+                if ok { ok = body.length == len }
+                if ok { ok = dst.append(body) }
+            }
+        }
+        id = id + 1
+    }
+    if ok { ok = dst.flush() }
+    dst.close()
+    src.close()
+    if not ok {
+        file.delete(heapNewPath(path))      // the old heap is untouched
+        return false
+    }
+    if not file.rename(path, heapOldPath(path)) {
+        file.delete(heapNewPath(path))
+        return false
+    }
+    if not file.rename(heapNewPath(path), path) { return false }   // heapRecover finishes it
+    if not heapFixOffsets(db, offField, lenField) { return false } // heapRecover redoes it
+    return file.delete(heapOldPath(path))
+}
+
+// Called by the owner right after dbOpen (which has replayed the vDB
+// journal) and before it opens its heap handle.
+func heapRecover(db: Database, path: string, offField: int, lenField: int): bool {
+    var newP: string = heapNewPath(path)
+    var oldP: string = heapOldPath(path)
+    if file.exists(oldP) {
+        if not file.exists(path) {
+            if not file.rename(newP, path) { return false }
+        }
+        if not heapFixOffsets(db, offField, lenField) { return false }
+        return file.delete(oldP)
+    }
+    if file.exists(newP) { return file.delete(newP) }
+    return true
+}

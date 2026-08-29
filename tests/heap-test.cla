@@ -1,0 +1,132 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for heap.cla through its owners: compaction of the
+// posts heap (with dbCompact of the headers), the clean-heap
+// short-circuit, and recovery from every crash state; then one run
+// each over mail and file areas. Run by scripts/test.sh from a
+// scratch directory. Exits 0 on pass, 1 on the first failure.
+
+include "../postsdb.cla"
+include "../maildb.cla"
+include "../filesdb.cla"
+
+var failures: int = 0
+var ids: list of int
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+func fileSize(p: string): int {
+    return file.info(p).size
+}
+
+func writeFile(p: string, body: text): bool {
+    var f: filehandle
+    if file.exists(p) { file.delete(p) }
+    f = file.create(p, "TEXT", "68BB")
+    if f == nil { return false }
+    if not f.writeAt(0, body) { return false }
+    f.flush()
+    f.close()
+    return true
+}
+
+func readFile(p: string): text {
+    var f: filehandle = file.open(p)
+    var t: text
+    if f == nil { return t }
+    f.readAt(0, f.size(), t)
+    f.close()
+    return t
+}
+
+func postsTests() {
+    var b1: text = "one-1"
+    var b2: text = "two-22"
+    var b3: text = "three-333"
+    var b4: text = "four-4444"
+    var b5: text = "five-55555"
+    var a: FtnAddress
+    var before: int
+    var staged: text
+
+    a = parseAddress("21:1/242")
+    expect(postsOpen(1), "board 1 open")
+    expect(addPost("a", 0, "1", b1) == 1 and addPost("b", 1, "2", b2) == 2 and addPost("c", 0, "3", b3) == 3, "three posts")
+    expect(addPostFtn("d", 0, 1, "4", b4, 4444, a, postFlagInbound) == 4, "an FTN post with a MSGID")
+    expect(addPost("e", 3, "5", b5) == 5, "fifth post")
+    expect(fileSize("BRD01.MSG") == b1.length + b2.length + b3.length + b4.length + b5.length, "heap holds all five")
+    expect(dbDelete(postsDb, 2) and dbDelete(postsDb, 5), "delete two")
+    expect(fileSize("BRD01.MSG") == b1.length + b2.length + b3.length + b4.length + b5.length, "deletes orphan, don't shrink")
+
+    expect(postsCompact(1), "compact board 1")
+    expect(postCount() == 3 and postsNextId() == 6, "count recounted, IDs never reused")
+    expect(postBody(1) == b1 and postBody(3) == b3 and postBody(4) == b4, "surviving bodies intact")
+    expect(postBody(2).length == 0 and postBody(5).length == 0, "deleted posts gone")
+    expect(fileSize("BRD01.MSG") == b1.length + b3.length + b4.length, "heap is exactly the live bytes")
+    expect(not file.exists("BRD01.NEW") and not file.exists("BRD01.OLD"), "no scratch files left")
+    expect(findPostByMsgId(4444) == 4, "MsgId index rebuilt")
+    threadPosts(1, ids)
+    expect(ids.count == 2 and ids[1] == 4, "Thread index rebuilt")
+    expect(loadPost(4) and post.threadId == 1 and (post.flags & postFlagInbound) != 0, "header fields intact")
+
+    // clean heap: nothing to do
+    before = fileSize("BRD01.MSG")
+    expect(postsCompact(1), "compact again")
+    expect(fileSize("BRD01.MSG") == before and postBody(4) == b4, "clean heap untouched")
+
+    // persistence across reopen
+    postsClose()
+    expect(postsOpen(1) and postBody(3) == b3 and postBody(4) == b4, "offsets valid after reopen")
+
+    // recovery A: a stray .NEW from a crash mid-rewrite
+    postsClose()
+    expect(writeFile("BRD01.NEW", "junk"), "stage stray .NEW")
+    expect(postsOpen(1), "reopen recovers")
+    expect(not file.exists("BRD01.NEW") and postBody(1) == b1, "stray .NEW deleted, heap untouched")
+
+    // recovery B: crash between the two renames (.OLD + .NEW, no .MSG)
+    expect(dbDelete(postsDb, 3), "delete post 3")
+    staged = readFile("BRD01.MSG")
+    postsClose()
+    expect(file.rename("BRD01.MSG", "BRD01.OLD"), "stage .OLD")
+    expect(writeFile("BRD01.NEW", b1 + b4), "stage the complete .NEW")
+    expect(postsOpen(1), "reopen recovers")
+    expect(not file.exists("BRD01.OLD") and not file.exists("BRD01.NEW") and file.exists("BRD01.MSG"), "swap finished, scratch gone")
+    expect(postBody(1) == b1 and postBody(4) == b4, "bodies read at the fixed offsets")
+    expect(dbFind(postsDb, 4).intAt(pOffBodyOff) == b1.length, "offset rewritten")
+    expect(fileSize("BRD01.MSG") == b1.length + b4.length, "heap is the live bytes")
+
+    // recovery C: crash during fix-offsets (.OLD + new .MSG, offsets stale)
+    expect(dbDelete(postsDb, 1), "delete post 1")
+    postsClose()
+    expect(file.rename("BRD01.MSG", "BRD01.OLD"), "stage .OLD")
+    expect(writeFile("BRD01.MSG", b4), "stage the new .MSG")
+    expect(postsOpen(1), "reopen recovers")
+    expect(not file.exists("BRD01.OLD") and postBody(4) == b4, "offset fixed, .OLD gone")
+    expect(dbFind(postsDb, 4).intAt(pOffBodyOff) == 0, "post 4 now at offset 0")
+
+    // recovery D: .OLD left behind with offsets already correct
+    postsClose()
+    expect(writeFile("BRD01.OLD", "stale"), "stage a leftover .OLD")
+    expect(postsOpen(1) and not file.exists("BRD01.OLD") and postBody(4) == b4, "leftover .OLD deleted")
+    postsClose()
+}
+
+on App.startCLI(args: list of string) {
+    postsTests()
+    // mailTests() and filesTests() are enabled by the mail/files compaction task
+    if failures > 0 {
+        log("heap-test: FAILED")
+        quit 1
+    }
+    log("heap-test: all passed")
+    quit
+}
