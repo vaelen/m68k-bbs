@@ -502,7 +502,7 @@ func lineScreen(s: string): bool {
     case "banadd", "bandel" { return true }
     case "showuser", "showboard", "showarea" { return true }
     case "edituserid", "editboardid", "editareaid" { return true }
-    case "edituserval", "editboardval", "editareaval", "useraccess" { return true }
+    case "edituserval", "editboardval", "editareaval", "useraccess", "confighour" { return true }
     case "deluserid", "delboardid", "delareaid" { return true }
     case "boardnum", "areanum", "postnum", "filenum", "mailnum" { return true }
     case "mailto", "mailaddr", "editsubject", "editbody", "delpostnum", "delfilenum" { return true }
@@ -587,6 +587,7 @@ func displayPrompt() {
     case "sysopnets"   { sendData("Sysop:Networks> ") }
     case "sysopbanned" { sendData("Sysop:Banned> ") }
     case "sysopconfig" { sendData("Sysop:Config> ") }
+    case "confighour" { sendData("Maintenance hour (0-23) [" + intStr(config.maintenanceHour) + "]: ") }
     case "banadd"      { sendData("Name to ban (Enter = cancel): ") }
     case "bandel"      { sendData("Name to remove (Enter = cancel): ") }
     case "netlist"     { }
@@ -796,6 +797,7 @@ func processInput(input: string) {
     case "sysopnets"   { sysopNetsChoice(input) }
     case "sysopbanned" { sysopBannedChoice(input) }
     case "sysopconfig" { sysopConfigChoice(input) }
+    case "confighour" { configHourInput(input) }
     case "banadd"      { banAddInput(input) }
     case "bandel"      { banDelInput(input) }
     case "netlist"     { netListInput(input) }

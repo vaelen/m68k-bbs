@@ -41,6 +41,7 @@ func drawSysopConfigMenu() {
     sendTitleBox("Sysop - Configuration")
     sendLine("")
     sendLine("A) New User Access (" + accessSummary(config.newUserAccess) + ")")
+    sendLine("H) Maintenance hour (" + intStr(config.maintenanceHour) + ":00)")
     sendLine("Q) Return to Sysop Menu")
     sendLine("")
 }
@@ -70,9 +71,33 @@ func sysopConfigChoice(input: string) {
         drawAccessTable()
         displayPrompt()
     }
+    case "H" {
+        user.screen = "confighour"
+        displayPrompt()
+    }
     case "Q" { gotoScreen("sysop") }
     else     { displayPrompt() }
     }
+}
+
+// Empty input keeps the hour; otherwise 0-23, saved at once.
+func configHourInput(input: string) {
+    var n: int
+    if input != "" {
+        n = parseIntStr(input)
+        if input[0] < '0' or input[0] > '9' or n > 23 {
+            sendLine("Hours run 0 to 23.")
+            displayPrompt()
+            return
+        }
+        config.maintenanceHour = n
+        if configSave() {
+            sendLine("Saved.")
+        } else {
+            sendLine("Save failed: " + lastError.message)
+        }
+    }
+    gotoScreen("sysopconfig")
 }
 
 func drawSysopBoardsMenu() {
@@ -559,6 +584,11 @@ func showBoardInput(input: string) {
 }
 
 // Renders the globally loaded `board` (see loadBoard in boardsdb.cla).
+func keepDaysLabel(n: int): string {
+    if n == 0 { return "Never" }
+    return intStr(n) + " days"
+}
+
 func drawBoardDetails() {
     var w: list of int
     detailWidths(w)
@@ -568,6 +598,7 @@ func drawBoardDetails() {
     sendDetailRow("Description", board.description, w)
     sendDetailRow("Network",     networkLabel(board.networkId), w)
     sendDetailRow("Echo tag",    board.tag, w)
+    sendDetailRow("Expire after", keepDaysLabel(board.keepDays), w)
     sendDetailRow("Exported",    intStr(board.lastExported), w)
     sendRule(BottomLeft, BottomCenter, BottomRight, w)
 }
@@ -812,12 +843,13 @@ func drawEditBoardCard() {
     sendDetailRow("D) Description", board.description, w)
     sendDetailRow("W) Network",     networkLabel(board.networkId), w)
     sendDetailRow("T) Echo tag",    board.tag, w)
+    sendDetailRow("E) Expire after", keepDaysLabel(board.keepDays), w)
     sendRule(BottomLeft, BottomCenter, BottomRight, w)
 }
 
 func editBoardChoice(input: string) {
     switch upperStr(input) {
-    case "N", "D", "W", "T" {
+    case "N", "D", "W", "T", "E" {
         editField = upperStr(input)[0]
         user.screen = "editboardval"
         displayPrompt()
@@ -845,6 +877,7 @@ func editBoardValuePrompt() {
     case 'D' { sendData("Description [" + board.description + "]: ") }
     case 'W' { sendData("Network (ID or name, - = local) [" + networkLabel(board.networkId) + "]: ") }
     case 'T' { sendData("Echo tag (- = none) [" + board.tag + "]: ") }
+    case 'E' { sendData("Expire after (days, 0 = never) [" + intStr(board.keepDays) + "]: ") }
     }
 }
 
@@ -886,6 +919,15 @@ func editBoardValue(input: string) {
                 board.tag = ""
             } else {
                 board.tag = upperStr(input)
+            }
+        }
+        case 'E' {
+            id = parseIntStr(input)
+            if id > 3650 {
+                sendLine("Expiry is limited to 3650 days.")
+                ok = false
+            } else {
+                board.keepDays = id
             }
         }
         }
