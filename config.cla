@@ -14,6 +14,7 @@ const configFileName: string = "Config.txt"
 
 record Config {
     newUserAccess: int = accessDefault     // Access flags for a new signup (docs/access.md)
+    maintenanceHour: int = 4               // Hour (0-23, Mac local time) the daily maintenance window opens
 }
 
 var config: Config
@@ -25,6 +26,7 @@ func configSave(): bool {
     if f == nil { return false }
     data.append("# 68kBBS settings. key=value, # comments.\n")
     data.append("newUserAccess=" + string(config.newUserAccess) + "\n")
+    data.append("maintenanceHour=" + string(config.maintenanceHour) + "\n")
     ok = f.writeAt(0, data)
     if ok { ok = f.flush() }
     f.close()
@@ -65,6 +67,10 @@ func configApply(line: string) {
     case "newUserAccess" {
         n = configInt(val)
         if n >= 0 { config.newUserAccess = n }
+    }
+    case "maintenanceHour" {
+        n = configInt(val)
+        if n >= 0 and n <= 23 { config.maintenanceHour = n }
     }
     }
 }

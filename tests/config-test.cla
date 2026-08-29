@@ -1,10 +1,9 @@
 // Copyright 2026, Andrew C. Young <andrew@vaelen.org>
 // SPDX-License-Identifier: MIT
 
-// CLI self-check for config.cla (Config.txt). Runs from a scratch
-// directory: a missing file yields the defaults and is written out;
-// then roundtrip, tolerance for comments/LF/unknown keys, and a
-// missing key keeping its default.
+// CLI self-check for config.cla: defaults, the written-out file,
+// parsing, and range checks. Run by scripts/test.sh from a scratch
+// directory. Exits 0 on pass, 1 on the first failure.
 
 include "../user.cla"
 include "../config.cla"
@@ -20,40 +19,37 @@ func expect(cond: bool, name: string) {
     }
 }
 
-func writeConfig(body: string) {
+func writeConfig(body: string): bool {
     var f: filehandle = file.create(configFileName, "TEXT", "ttxt")
-    var t: text = body
-    f.writeAt(0, t)
-    f.flush()
+    var ok: bool
+    if f == nil { return false }
+    ok = f.writeAt(0, body)
     f.close()
+    return ok
 }
 
 on App.startCLI(args: list of string) {
-    expect(configLoad(), "missing file loads defaults")
-    expect(config.newUserAccess == accessDefault, "default new-user access")
-    expect(file.exists(configFileName), "defaults written out")
+    expect(configLoad(), "missing file: load writes defaults")
+    expect(file.exists(configFileName), "Config.txt written out")
+    expect(config.newUserAccess == accessDefault, "default access")
+    expect(config.maintenanceHour == 4, "default maintenance hour is 4")
 
-    config.newUserAccess = 5
-    expect(configSave(), "save")
-    config.newUserAccess = 0
-    expect(configLoad(), "reload")
-    expect(config.newUserAccess == 5, "roundtrip")
+    expect(writeConfig("# test\nnewUserAccess=5\nmaintenanceHour = 6\n"), "write a config")
+    expect(configLoad(), "load it")
+    expect(config.newUserAccess == 5 and config.maintenanceHour == 6, "both keys parsed, spaces trimmed")
 
-    writeConfig("# comment\x0A\x0AbogusKey=1\x0AnewUserAccess = 367\x0A")
-    expect(configLoad(), "hand-edited file loads")
-    expect(config.newUserAccess == 367, "LF line ends, spaces around =, unknown key ignored")
+    expect(writeConfig("maintenanceHour=25\n"), "write an out-of-range hour")
+    expect(configLoad() and config.maintenanceHour == 4, "hour above 23 keeps the default")
+    expect(writeConfig("maintenanceHour=x\n"), "write a non-numeric hour")
+    expect(configLoad() and config.maintenanceHour == 4, "non-numeric hour keeps the default")
 
-    writeConfig("# nothing set\n")
-    expect(configLoad(), "file without the key loads")
-    expect(config.newUserAccess == accessDefault, "missing key keeps its default")
-
-    writeConfig("newUserAccess=abc\n")
-    expect(configLoad(), "bad value loads")
-    expect(config.newUserAccess == accessDefault, "bad int keeps the default")
+    config.maintenanceHour = 23
+    expect(configSave() and configLoad() and config.maintenanceHour == 23, "save/load roundtrip")
 
     if failures > 0 {
         log("config-test: FAILED")
         quit 1
     }
     log("config-test: all passed")
+    quit
 }

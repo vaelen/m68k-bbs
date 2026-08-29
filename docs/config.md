@@ -11,13 +11,15 @@ written out at launch so the keys are there to edit.
 | key | default | meaning |
 |---|---|---|
 | `newUserAccess` | 367 (`accessDefault`) | Access flag bits given to a new signup (`docs/access.md`); the first account always gets every flag |
+| `maintenanceHour` | 4 | Hour (0–23, Mac local time) at which the daily maintenance window opens (`docs/maintenance.md`) |
 
 `configLoad()` runs at launch (before the databases open); `configSave()`
 rewrites the whole file. The live values are `config.<field>`.
 
 Sysop menu `C) Configuration` lists the settings; `A) New User Access`
 opens the flag toggle table (the same one the user edit card uses) and
-Enter saves at once.
+Enter saves at once; `H) Maintenance hour` prompts for 0–23 and saves at
+once.
 
 To add a setting: a field on `Config` with its default, a `case` in
 `configApply`, a line in `configSave`, a row in the menu if the sysop
