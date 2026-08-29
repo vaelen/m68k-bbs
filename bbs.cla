@@ -33,6 +33,8 @@ include "zmodem.cla"
 include "ftntoss.cla"
 include "emsi.cla"
 include "toolbox/osutils.cla"   // DateTimeRec / SecondsToDate (via --rtdir)
+include "toolbox/memory.cla"    // FreeMem, for the heap figures on log lines
+external func MaxBlock(): int = trap 0xA061 reg   // largest free block, no compaction
 
 app BBS {
     name: "68kBBS"
@@ -1142,6 +1144,7 @@ every 30 ticks {
     if ftnSchedMinutes >= 120 {      // once a minute: interval polls
         ftnSchedMinutes = 0
         ftnSchedule()
+        if ftnPolling { log("FTN: session in progress.") }
     }
     if user.screen == "xfer" { xferTick() }
     if telnetProbe > 0 {
@@ -1233,8 +1236,14 @@ func appendLog(chunk: text) {
 
 // Every log(...) call lands here (after reaching the diagnostic stream)
 // and is appended to the log window.
+// Heap figures on every line: an out-of-memory panic during a poll took the
+// Mac down once (2026-08-29); the trend across a session is the diagnostic.
+func memStr(): string {
+    return " [free " + intStr(FreeMem() / 1024) + "K, max " + intStr(MaxBlock() / 1024) + "K]"
+}
+
 on App.log(line: string) {
-    appendLog(timestamp() + line + "\n")
+    appendLog(timestamp() + line + memStr() + "\n")
 }
 
 on App.launch {

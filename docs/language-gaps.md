@@ -219,6 +219,36 @@ poly `0x1021` forward (non-reflected), init 0, no final XOR, check value
 - **Former workaround:** `crcXmodem` in `xmodem.cla` (bitwise, 128×8
   iterations per block) — replaced by `t.crc16x(0, 0, n)`.
 
+### 9. Textview scroll control — keep a log window on its newest line
+
+A `textview`'s only runtime property is `text`; there is no way to
+scroll it. A programmatic set (`LogView.text = t`) keeps the previous
+scroll offset (clamped to the new range — `rtUiTeScrollSync`), so a
+log window appended to from `on App.log` sits at whatever line the user
+last dragged to, and once the emulator halts it can't be scrolled at
+all: the lines that matter most (the last ones before a crash) are the
+ones off-screen (2026-08-29, the FidoNet out-of-memory crash).
+
+- **Unlocks:** a usable log window — new lines visible as they land,
+  and the tail readable after a halt. Also lets the app cap the
+  window's contents (drop the oldest lines when nearing the 32,000-byte
+  TextEdit limit) without the view jumping.
+- **Shape (either):** a `scrollToEnd` call on the widget; or, with no
+  language change at all, *follow-if-at-end* semantics in the runtime's
+  programmatic setter — if the view showed the last line of a non-empty
+  text before the set, scroll to the last line after it (an empty view,
+  i.e. a document being opened, stays at the top). The latter is a
+  ~40-line change in `uitext.cla`/`uiwidgets.cla` and was drafted then
+  shelved: `rtUiTeAtEnd(te)` (offset ≥ max and `teLength > 0`, from the
+  same `viewRect`/`destRect`/`nLines`/`lineHeight` fields the sync
+  reads) tested in `rtUiWidgetSetText` before `TESetText`, and
+  `rtUiTeScrollToEnd` — `TEScroll(0, offset - max)` plus
+  `SetControlValue(sb, max)` — after `rtUiTeMutated`'s sync.
+- **Toolbox:** `TEScroll` / `TEPinScroll`, `SetControlValue` on the
+  view's scrollbar (all already declared in `uitext.cla`).
+- The app-side half (trim to the newest ~16 KB when the window passes
+  ~24 KB, via `text.textAt`) needs nothing new and goes in with this.
+
 ## Summary
 
 | # | Feature | Blocks which file-area feature | Toolbox |
@@ -231,12 +261,15 @@ poly `0x1021` forward (non-reflected), init 0, no final XOR, check value
 | 6 | Create a directory — shipped | Wizard-created area folders | PBDirCreate |
 | 7 | Rename / move — shipped (two calls) | Pending→approved holding-area workflow | PBRename |
 | 8 | `text.crc16x` / `text.crc32` — shipped | Fast XMODEM CRC; ZMODEM | — (pure runtime) |
+| 9 | Textview scroll-to-end / follow | Readable log window (not file areas) | TEScroll |
 
 Data-fork transfers (1‑to‑1 with the modem) need **none** of these.
 Items 1, 2, 3, 5, 6, 7 shipped in the Clarus filesystem-api phase
 (2026-08-26, `runtime/clarus/prelude.cla`'s `FileInfo` record + the
 `file.*` directory/catalog family, both lanes); item 8 (the CRCs)
 shipped 2026-08-25; the HFS full-path spike (above) is answered. Item 4
-(resource-fork bytes / MacBinary) is the only feature on this list
-still unshipped — it is what makes file areas able to carry genuine
-Macintosh software rather than flat files.
+(resource-fork bytes / MacBinary) is the only file-area feature on this
+list still unshipped — it is what makes file areas able to carry genuine
+Macintosh software rather than flat files. Item 9 (textview scrolling)
+is a UI gap rather than a file-area one, filed here as the one place
+the project keeps its Clarus asks.
