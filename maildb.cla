@@ -27,6 +27,7 @@
 // Deleted messages orphan their body bytes (no heap compactor).
 
 include "vdb.cla"
+include "heap.cla"
 include "ftnaddr.cla"
 
 const mailRecordSize: int = 256
@@ -75,6 +76,10 @@ func mailOpen(): bool {
             mailClose()
             return false
         }
+    }
+    if not heapRecover(mailDb, "Mail.MSG", mOffBodyOff, mOffBodyLen) {
+        mailClose()
+        return false
     }
     mailBody = file.open("Mail.MSG")
     if mailBody == nil {
@@ -252,4 +257,17 @@ func unreadCount(userId: int): int {
         i = i + 1
     }
     return n
+}
+
+// Maintenance: compact headers, then the body heap. Leaves mail open.
+func mailCompact(): bool {
+    var b: filehandle
+    if not dbIsOpen(mailDb) { return false }
+    if not dbCompact(mailDb) { return false }
+    b = mailBody
+    if b != nil { b.close() }
+    mailBody = nil
+    if not heapCompact(mailDb, "Mail.MSG", mOffBodyOff, mOffBodyLen) { return false }
+    mailBody = file.open("Mail.MSG")
+    return mailBody != nil
 }

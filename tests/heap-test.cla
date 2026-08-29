@@ -120,9 +120,40 @@ func postsTests() {
     postsClose()
 }
 
+func mailTests() {
+    var b1: text = "mail one"
+    var b2: text = "mail two"
+    var b3: text = "mail three"
+    expect(mailOpen(), "mail open")
+    expect(sendMail("a", 1, "b", 2, "1", b1) == 1 and sendMail("a", 1, "b", 2, "2", b2) == 2 and sendMail("a", 1, "b", 2, "3", b3) == 3, "three messages")
+    expect(deleteMessage(2), "delete one")
+    expect(mailCompact(), "compact mail")
+    expect(messageBody(1) == b1 and messageBody(3) == b3, "bodies intact")
+    expect(fileSize("Mail.MSG") == b1.length + b3.length, "mail heap is the live bytes")
+    expect(mailCount() == 2, "mail count recounted")
+    mailClose()
+    expect(mailOpen() and messageBody(3) == b3, "mail survives reopen")
+    mailClose()
+}
+
+func filesTests() {
+    var d1: text = "long one"
+    var d2: text = "long two"
+    var none: text
+    expect(filesOpen(1), "area 1 open")
+    expect(addFile("a.txt", "u", "s", 10, 0, d1) == 1 and addFile("b.txt", "u", "s", 10, 0, d2) == 2 and addFile("c.txt", "u", "s", 10, 0, none) == 3, "three entries, one without a long description")
+    expect(dbDelete(filesDb, 2), "delete one")
+    expect(filesCompact(1), "compact area 1")
+    expect(fileLongDesc(1) == d1 and fileLongDesc(3).length == 0, "descriptions intact")
+    expect(fileSize("ARE01.MSG") == d1.length, "area heap is the live bytes")
+    expect(findFile("c.txt") == 3, "Name index rebuilt")
+    filesClose()
+}
+
 on App.startCLI(args: list of string) {
     postsTests()
-    // mailTests() and filesTests() are enabled by the mail/files compaction task
+    mailTests()
+    filesTests()
     if failures > 0 {
         log("heap-test: FAILED")
         quit 1

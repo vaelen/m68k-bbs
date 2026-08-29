@@ -28,6 +28,7 @@
 // names it.
 
 include "vdb.cla"
+include "heap.cla"
 include "areasdb.cla"
 
 const fileRecordSize: int = 256
@@ -77,6 +78,10 @@ func filesOpen(areaId: int): bool {
             filesClose()
             return false
         }
+    }
+    if not heapRecover(filesDb, name + ".MSG", fOffDescOff, fOffDescLen) {
+        filesClose()
+        return false
     }
     filesDesc = file.open(name + ".MSG")
     if filesDesc == nil {
@@ -272,4 +277,19 @@ func filePath(id: int): string {
     var rec: text = dbFind(filesDb, id)
     if rec.length != fileRecordSize { return "" }
     return fileFolderPath(dbExtractString(rec, fOffName))
+}
+
+// Maintenance: compact headers, then the description heap. Leaves the
+// area open.
+func filesCompact(areaId: int): bool {
+    var b: filehandle
+    var name: string = filesName(areaId)
+    if not filesOpen(areaId) { return false }
+    if not dbCompact(filesDb) { return false }
+    b = filesDesc
+    b.close()
+    filesDesc = nil
+    if not heapCompact(filesDb, name + ".MSG", fOffDescOff, fOffDescLen) { return false }
+    filesDesc = file.open(name + ".MSG")
+    return filesDesc != nil
 }
