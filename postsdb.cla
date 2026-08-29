@@ -210,3 +210,25 @@ func threadPosts(root: int, ids: list of int) {
         i = i + 1
     }
 }
+
+// Delete every post created before `cutoff` (Mac-epoch seconds; the
+// caller computes now() - keepDays * 86400). Walks the dense ID range
+// with one header read per post; each delete is journaled. Bodies stay
+// in the heap until heapCompact (heap.cla) reclaims them. Returns the
+// count, or -1 if the board can't be opened; leaves the board open.
+func expirePosts(boardId: int, cutoff: int): int {
+    var id: int = 1
+    var last: int
+    var n: int = 0
+    var rec: text
+    if not postsOpen(boardId) { return -1 }
+    last = postsNextId()
+    while id < last {
+        rec = dbFind(postsDb, id)
+        if rec.length == postRecordSize and rec.intAt(pOffCreated) < cutoff {
+            if dbDelete(postsDb, id) { n = n + 1 }
+        }
+        id = id + 1
+    }
+    return n
+}

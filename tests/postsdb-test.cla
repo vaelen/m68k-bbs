@@ -97,6 +97,18 @@ on App.startCLI(args: list of string) {
     expect(findPostByMsgId(0) < 0, "crc 0 is never looked up")
     expect(addPostFtn("x", 0 - 1000000, 0, "dated", body1, 0, a, 0) == 5, "explicit created accepted")
     expect(loadPost(5) and post.created == 0 - 1000000, "created stored as given")
+
+    // expiry: cutoff boundaries, and a reply outliving its starter
+    // (timestamps are Mac-epoch ints, ~ -440M in 2026, so cutoffs are relative to now())
+    expect(addPostFtn("old", now() - 3000000, 0, "starter", body1, 0, a, 0) == 6, "old starter, 35 days ago")
+    expect(addPostFtn("old", now() - 2000000, 6, "reply", body2, 0, a, 0) == 7, "newer reply to it, 23 days ago")
+    expect(expirePosts(1, now() - 2500000) == 1, "only post 6 is older than the 29-day cutoff")
+    expect(loadPost(5) and not loadPost(6), "post 5 kept, post 6 gone")
+    expect(loadPost(7) and post.threadId == 6, "reply survives its starter")
+    expect(postBody(7) == body2, "surviving body still reads")
+    expect(loadPost(id1) and loadPost(4), "recent posts untouched")
+    expect(expirePosts(1, now() - 2500000) == 0, "second pass finds nothing")
+    expect(expirePosts(0, 0) == -1, "bad board")
     postsClose()
 
     if failures > 0 {
