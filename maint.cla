@@ -189,14 +189,21 @@ func maintAreaStep() {
     maintRest = 0
 }
 
-func maintCompactNamed(db: Database, label: string) {
+// Compacts a fixed-name database and returns the handle to keep
+// (dbCompact closes and reopens the primary index); on failure the
+// handle comes back closed and the caller reopens through the owner's
+// open function, which replays the journal.
+func maintCompactNamed(db: Database, label: string): Database {
     var before: int = maintFileSize(label + ".DAT")
-    if maintDone(dbLastCompacted(db)) { return }
-    if dbCompact(db) {
+    var after: Database
+    if maintDone(dbLastCompacted(db)) { return db }
+    after = dbCompact(db)
+    if dbIsOpen(after) {
         log("Maintenance: " + label + ": " + maintKb(before) + " -> " + maintKb(maintFileSize(label + ".DAT")) + ".")
     } else {
         log("Maintenance: " + label + ": compaction failed: " + lastError.message)
     }
+    return after
 }
 
 // Phase 4: the fixed list, Users last.
@@ -213,11 +220,26 @@ func maintRestStep() {
             }
         }
     }
-    case 1 { maintCompactNamed(wallDb, "Wall") }
-    case 2 { maintCompactNamed(areasDb, "Areas") }
-    case 3 { maintCompactNamed(networksDb, "Networks") }
-    case 4 { maintCompactNamed(boardsDb, "Boards") }
-    case 5 { maintCompactNamed(usersDb, "Users") }
+    case 1 {
+        wallDb = maintCompactNamed(wallDb, "Wall")
+        if not dbIsOpen(wallDb) { wallOpen() }
+    }
+    case 2 {
+        areasDb = maintCompactNamed(areasDb, "Areas")
+        if not dbIsOpen(areasDb) { areasOpen() }
+    }
+    case 3 {
+        networksDb = maintCompactNamed(networksDb, "Networks")
+        if not dbIsOpen(networksDb) { networksOpen() }
+    }
+    case 4 {
+        boardsDb = maintCompactNamed(boardsDb, "Boards")
+        if not dbIsOpen(boardsDb) { boardsOpen() }
+    }
+    case 5 {
+        usersDb = maintCompactNamed(usersDb, "Users")
+        if not dbIsOpen(usersDb) { usersOpen() }
+    }
     else {
         maintEnd()
         return

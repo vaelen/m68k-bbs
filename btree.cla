@@ -123,6 +123,7 @@ func btCreate(path: string, ftype: string, fcreator: string): filehandle {
     var leaf: text
     f = file.create(path, ftype, fcreator)
     if f == nil { return nil }
+    f.setSize(0)              // a re-create of an existing file keeps its bytes on the Macintosh
     hdr.append("BTRE")
     btAppendWord(hdr, 2)      // version
     btAppendWord(hdr, 61)     // order (informational)

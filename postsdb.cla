@@ -244,7 +244,11 @@ func postsCompact(boardId: int): bool {
     var b: filehandle
     var name: string = postsName(boardId)
     if not postsOpen(boardId) { return false }
-    if not dbCompact(postsDb) { return false }
+    postsDb = dbCompact(postsDb)
+    if not dbIsOpen(postsDb) {
+        postsClose()
+        return false
+    }
     b = postsBody
     b.close()
     postsBody = nil

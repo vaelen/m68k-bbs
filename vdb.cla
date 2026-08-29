@@ -832,14 +832,31 @@ func dbLastCompacted(db: Database): int {
 // all indexes tightly (reclaiming the B-trees' lazily deleted space),
 // reset the free list, recount records, and stamp last_compacted.
 //
+// Returns the handle to use from now on: the primary index is
+// recreated from scratch, which the Macintosh refuses while the old
+// .IDX is open, so it is closed first and reopened after -- and a
+// Database is a value record, so the caller must take the result
+// (`db = dbCompact(db)`). On failure everything is closed and an empty
+// handle comes back (test with dbIsOpen); the pending flag is still
+// set, so the caller's next dbOpen recovers through dbReplayJournal.
+//
 // The pending flag is set for the duration, so a crash mid-compaction
 // recovers through dbReplayJournal on the next open; the one artifact
 // a mid-move crash can leave -- the same record active at both its
 // old and new pages -- is healed by dbRebuildPrimary's duplicate
 // check. Records are fully read before being rewritten, so a move is
 // safe even if the old and new page runs overlap.
-func dbCompact(db: Database): bool {
+func dbCompactFail(db: Database): Database {
+    var none: Database
+    dbClose(db)
+    return none
+}
+
+func dbCompact(db: Database): Database {
+    var none: Database
+    var out: Database
     var f: filehandle = db.data
+    var idx: filehandle = db.index
     var hdr: text
     var st: text
     var rec: text
@@ -853,25 +870,26 @@ func dbCompact(db: Database): bool {
     var id: int
     var i: int
     var base: int
-    if not dbIsOpen(db) { return false }
-    if not dbReadHeader(db, hdr) { return false }
+    if not dbIsOpen(db) { return none }
+    out = db
+    if not dbReadHeader(db, hdr) { return dbCompactFail(db) }
     size = hdr.wordAt(8)
     pages = dbPagesNeeded(size)
-    if not dbSetPending(db, hdr, true) { return false }
+    if not dbSetPending(db, hdr, true) { return dbCompactFail(db) }
     pageCount = f.size() / dbPageSize
     while p < pageCount {
-        if not f.readAt(p * dbPageSize, 6, st) { return false }
+        if not f.readAt(p * dbPageSize, 6, st) { return dbCompactFail(db) }
         if st.length >= 6 and int(st[4]) == psActive {
             id = st.intAt(0)
             if p != w {
                 rec = dbReadRecordAt(db, p, id, size)
-                if rec.length != size { return false }
-                if not dbWriteRecordPages(db, w, id, rec, pages) { return false }
+                if rec.length != size { return dbCompactFail(db) }
+                if not dbWriteRecordPages(db, w, id, rec, pages) { return dbCompactFail(db) }
                 // clear the old run (skipping any overlap with the new)
                 i = 0
                 while i < pages {
                     if p + i >= w + pages {
-                        if not f.writeAt((p + i) * dbPageSize + 4, "\x00") { return false }
+                        if not f.writeAt((p + i) * dbPageSize + 4, "\x00") { return dbCompactFail(db) }
                     }
                     i = i + 1
                 }
@@ -883,22 +901,27 @@ func dbCompact(db: Database): bool {
             p = p + 1
         }
     }
-    if not f.setSize(w * dbPageSize) { return false }
-    if not dbRebuildPrimary(db, pages) { return false }
+    if not f.setSize(w * dbPageSize) { return dbCompactFail(db) }
+    idx.close()                   // rebuilt from scratch below
+    out.index = nil
+    if not dbRebuildPrimary(out, pages) { return dbCompactFail(out) }
     i = 0
     while i < int(hdr[23]) {
         base = 32 + i * 32
-        if not dbBuildIndex(db, int(hdr[base + 31]), int(hdr[base + 30]), hdr.wordAt(base + 28), size) {
-            return false
+        if not dbBuildIndex(out, int(hdr[base + 31]), int(hdr[base + 30]), hdr.wordAt(base + 28), size) {
+            return dbCompactFail(out)
         }
         i = i + 1
     }
+    out.index = btOpen(out.name + ".IDX")
+    if out.index == nil { return dbCompactFail(out) }
     btZeroFill(fl)
-    if not dbWriteFreeList(db, fl) { return false }
+    if not dbWriteFreeList(out, fl) { return dbCompactFail(out) }
     hdr.setIntAt(10, count)       // record_count, recounted
     hdr.setIntAt(18, now())       // last_compacted
-    if not dbCommit(db, hdr) { return false }
-    return f.flush()
+    if not dbCommit(out, hdr) { return dbCompactFail(out) }
+    if not f.flush() { return dbCompactFail(out) }
+    return out
 }
 
 // --- Secondary index API ----------------------------------------------

@@ -285,7 +285,11 @@ func filesCompact(areaId: int): bool {
     var b: filehandle
     var name: string = filesName(areaId)
     if not filesOpen(areaId) { return false }
-    if not dbCompact(filesDb) { return false }
+    filesDb = dbCompact(filesDb)
+    if not dbIsOpen(filesDb) {
+        filesClose()
+        return false
+    }
     b = filesDesc
     b.close()
     filesDesc = nil

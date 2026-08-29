@@ -263,7 +263,11 @@ func unreadCount(userId: int): int {
 func mailCompact(): bool {
     var b: filehandle
     if not dbIsOpen(mailDb) { return false }
-    if not dbCompact(mailDb) { return false }
+    mailDb = dbCompact(mailDb)
+    if not dbIsOpen(mailDb) {
+        mailClose()
+        return false
+    }
     b = mailBody
     if b != nil { b.close() }
     mailBody = nil
