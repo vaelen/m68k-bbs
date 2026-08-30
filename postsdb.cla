@@ -29,6 +29,7 @@
 include "vdb.cla"
 include "ftnaddr.cla"
 include "heap.cla"
+include "boardsdb.cla"
 
 const postRecordSize: int = 160
 const pOffSender: int = 0
@@ -156,6 +157,7 @@ func addPostFtn(sender: string, created: int, threadId: int, subject: string, bo
     var b: filehandle = postsBody
     var off: int
     var when: int = created
+    var id: int
     if not dbIsOpen(postsDb) or b == nil { return -1 }
     if when == 0 { when = now() }
     off = b.size()
@@ -165,7 +167,9 @@ func addPostFtn(sender: string, created: int, threadId: int, subject: string, bo
         if not b.append(body) { return -1 }
         if not b.flush() { return -1 }
     }
-    return dbAdd(postsDb, packPost(sender, when, threadId, subject, off, body.length, msgidCrc, origin, flags))
+    id = dbAdd(postsDb, packPost(sender, when, threadId, subject, off, body.length, msgidCrc, origin, flags))
+    if id > 0 { boardTouch(postsBoardId, when) }   // no-op when Boards isn't open
+    return id
 }
 
 // Load post `id`'s header into the global `post`.

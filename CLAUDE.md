@@ -192,8 +192,11 @@ inputChar (bbs.cla) → processInput`.
   case-insensitively).
   `boardsdb.cla` — the "Boards" database (256-byte records:
   name/description/echo tag/networkId — 0 = local — /lastExported —
-  the scan high-water mark — /flags, record ID = board ID;
-  `boardNetworked()`). `postsdb.cla` — one board's posts at a time
+  the scan high-water mark — /flags/keepDays/lastPost — the created
+  time of the last post added, stamped by `boardTouch` from
+  `addPostFtn` (postsdb includes boardsdb; a no-op when Boards isn't
+  open) and backfilled at launch by `boardsBackfillLastPost` for
+  boards that predate it — record ID = board ID; `boardNetworked()`). `postsdb.cla` — one board's posts at a time
   (`postsOpen(boardId)`): header records in `BRD<nn>.*` (sender/
   created/threadId/subject, thread ID indexed; 0 = thread starter,
   else the starter's post ID; plus the FTN fields msgidCrc — indexed,
@@ -259,7 +262,9 @@ inputChar (bbs.cla) → processInput`.
   CP437 box/blocks → C= graphics, ESC = next byte verbatim; ANSI/VT100
   untouched; transfers bypass it) and `petsciiIn` (the inverse, in
   `inputChar`), plus the box-drawing/table builders (`boxChar`,
-  `ruleLine`, `rowLine`, `pad`, `center` — see `docs/tables.md`).
+  `ruleLine`, `rowLine`, `clip` — over-long cells and titles end in
+  `...`; `pad` alone still hard-cuts for record fields — `pad`,
+  `center` — see `docs/tables.md`).
   `termio.cla` — connection-facing send wrappers over those (take a
   `connection` parameter, gated on `terminal.color`).
 - `bbs.cla` — app/UI declarations, session flow. `inputChar` assembles
@@ -358,7 +363,10 @@ inputChar (bbs.cla) → processInput`.
   `parseIntStr` (all-digits or 0) lets ID-or-name prompts
   disambiguate naturally.
 - `boards.cla` — the caller-facing reader: main-menu `B` → board
-  picker (unpaged table; `V`/digit → `Board ID:` prompt) → paged post
+  picker (unpaged table — wide: ID · Name · Description · Last (the
+  board record's `lastPost` date) · Network (the
+  network's name, `local` for none); its own `boardPickerWidths`, the
+  sysop list keeps `boardListWidths`; `V`/digit → `Board ID:` prompt) → paged post
   list (newest first, numbered from 1 per page, post IDs hidden,
   `Page X of Y` footer; `V`/digit → `Post number:` prompt) → framed
   post view (subject title bar, From/Date meta, body wrapped by

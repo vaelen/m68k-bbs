@@ -14,7 +14,8 @@
 //   196  lastExported (i32; highest post ID already scanned out)
 //   200  flags (u16; bit 0 = subscribed via AreaFix)
 //   202  keepDays (i32; days to keep posts, 0 = never -- docs/maintenance.md)
-//   206+ reserved
+//   206  lastPost (i32; created time of the last post added, 0 = none)
+//   210+ reserved
 
 include "vdb.cla"
 
@@ -26,6 +27,7 @@ const bOffNetwork: int = 192
 const bOffLastExported: int = 196
 const bOffFlags: int = 200
 const bOffKeepDays: int = 202
+const bOffLastPost: int = 206
 const boardFlagSubscribed: int = 1
 
 record Board {
@@ -37,6 +39,7 @@ record Board {
     lastExported: int
     flags: int
     keepDays: int
+    lastPost: int
 }
 
 var boardsDb: Database
@@ -66,7 +69,7 @@ func boardsNextId(): int {
 
 // Serialize board fields into a record image (dbAdd/dbUpdate zero-pad
 // it to record_size).
-func packBoard(name: string, description: string, tag: string, networkId: int, lastExported: int, flags: int, keepDays: int): text {
+func packBoard(name: string, description: string, tag: string, networkId: int, lastExported: int, flags: int, keepDays: int, lastPost: int): text {
     var t: text
     var n: string = name
     var d: string = description
@@ -93,18 +96,31 @@ func packBoard(name: string, description: string, tag: string, networkId: int, l
     btAppendInt(t, lastExported)
     btAppendWord(t, flags)
     btAppendInt(t, keepDays)
+    btAppendInt(t, lastPost)
     return t
 }
 
 // Create a board; returns the new board ID, or -1.
 func createBoard(name: string, description: string, tag: string, networkId: int): int {
-    return dbAdd(boardsDb, packBoard(name, description, tag, networkId, 0, 0, 0))
+    return dbAdd(boardsDb, packBoard(name, description, tag, networkId, 0, 0, 0, 0))
 }
 
 // Write the global `board` back to its record.
 func saveBoard(): bool {
     if board.id < 1 { return false }
-    return dbUpdate(boardsDb, board.id, packBoard(board.name, board.description, board.tag, board.networkId, board.lastExported, board.flags, board.keepDays))
+    return dbUpdate(boardsDb, board.id, packBoard(board.name, board.description, board.tag, board.networkId, board.lastExported, board.flags, board.keepDays, board.lastPost))
+}
+
+// Record `when` as board `id`'s most recent post: called by addPostFtn
+// for every post added, so the picker never has to open a board.
+// ponytail: it is "the last post added" -- deleting the newest post
+// leaves its date until the next add; expiry never removes the newest.
+func boardTouch(id: int, when: int) {
+    var rec: text = dbFind(boardsDb, id)
+    if rec.length != boardRecordSize { return }
+    rec.setIntAt(bOffLastPost, when)
+    if not dbUpdate(boardsDb, id, rec) { return }
+    if board.id == id { board.lastPost = when }
 }
 
 // Load board `id` into the global `board`.
@@ -119,6 +135,7 @@ func loadBoard(id: int): bool {
     board.lastExported = rec.intAt(bOffLastExported)
     board.flags = rec.wordAt(bOffFlags)
     board.keepDays = rec.intAt(bOffKeepDays)
+    board.lastPost = rec.intAt(bOffLastPost)
     return true
 }
 

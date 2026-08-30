@@ -94,7 +94,9 @@ Addresses are entered and shown as `21:1/100` or `21:1/100.5`.
 | 192 | 4 | networkId (i32; 0 = local) |
 | 196 | 4 | lastExported (i32; highest post ID already scanned out) |
 | 200 | 2 | flags (u16; bit 0 = subscribed via AreaFix) |
-| 202+ | | reserved |
+| 202 | 4 | keepDays (i32; 0 = never — `docs/maintenance.md`) |
+| 206 | 4 | lastPost (i32; created time of the last post added, 0 = none; `boardTouch` from `addPostFtn`, backfilled at launch) |
+| 210+ | | reserved |
 
 A board is *networked* when `networkId ≠ 0` and the tag is non-empty.
 One board ↔ one echo. Tag lookup at toss time uses a list of all tags

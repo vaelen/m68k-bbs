@@ -12,7 +12,8 @@ var postIds: list of int
 var postPage: int = 1
 var postPages: int = 1
 
-// Row cells for one board record, shared with sysop.cla's board list.
+// Row cells for one board record, for sysop.cla's board list (the
+// caller picker below lays out its own).
 func boardRowCells(id: int, rec: text, cells: list of string) {
     cells.clear()
     cells.add(intStr(id))
@@ -27,6 +28,72 @@ func boardRowCells(id: int, rec: text, cells: list of string) {
     }
 }
 
+// Content widths for the caller picker: narrow is ID/Name (total 39),
+// wide adds Description, Last (post date) and Network (total 79).
+func boardPickerWidths(w: list of int) {
+    w.clear()
+    if terminal.columns < minimumWideTerminalWidth {
+        w.add(4)
+        w.add(28)
+        return
+    }
+    w.add(3)
+    w.add(11)
+    w.add(31)
+    w.add(8)
+    w.add(10)
+}
+
+// Fill in lastPost for boards that predate the field (0): the newest
+// surviving post's date. Run once at launch; a board that really has
+// no posts is rescanned each launch, cheaply.
+func boardsBackfillLastPost() {
+    var id: int = 1
+    var last: int = boardsNextId()
+    var pid: int
+    while id < last {
+        if loadBoard(id) and board.lastPost == 0 and postsOpen(id) {
+            pid = postsNextId() - 1
+            while pid > 0 {
+                if loadPost(pid) {
+                    boardTouch(id, post.created)
+                    pid = 0
+                } else {
+                    pid = pid - 1
+                }
+            }
+        }
+        id = id + 1
+    }
+    postsClose()
+}
+
+// The caller's cells: the network's name (not the echo tag) in the
+// last column, "local" for a board with no network.
+func boardPickerCells(id: int, rec: text, cells: list of string) {
+    var netId: int
+    var when: int
+    cells.clear()
+    cells.add(intStr(id))
+    cells.add(dbExtractString(rec, bOffName))
+    if terminal.columns < minimumWideTerminalWidth { return }
+    cells.add(dbExtractString(rec, bOffDescription))
+    when = rec.intAt(bOffLastPost)
+    if when == 0 {
+        cells.add("")
+    } else {
+        cells.add(dateTimeStr(when)[0, 8])
+    }
+    netId = rec.intAt(bOffNetwork)
+    if netId == 0 {
+        cells.add("local")
+    } else if loadNetwork(netId) {
+        cells.add(network.name)
+    } else {
+        cells.add(intStr(netId))
+    }
+}
+
 // ponytail: the picker shows every board unpaged; page it if a system
 // ever has more boards than screen rows.
 func drawBoardPicker() {
@@ -36,18 +103,19 @@ func drawBoardPicker() {
     var id: int = 1
     var rec: text
 
-    boardListWidths(w)
+    boardPickerWidths(w)
     cells.add("ID")
     cells.add("Name")
     if terminal.columns >= minimumWideTerminalWidth {
         cells.add("Description")
+        cells.add("Last")
         cells.add("Network")
     }
     sendTableHeader("Bulletin Boards", cells, w)
     while id < nextId {
         rec = dbFind(boardsDb, id)
         if rec.length == boardRecordSize {
-            boardRowCells(id, rec, cells)
+            boardPickerCells(id, rec, cells)
             sendLine(rowLine(cells, w))
         }
         id = id + 1

@@ -38,12 +38,14 @@ on App.startCLI(args: list of string) {
     body2 = "This is a longer reply body, packed right after the first."
 
     expect(not postsOpen(0), "board ID 0 rejected")
+    expect(boardsOpen() and createBoard("General", "", "", 0) == 1, "a board to stamp")
     expect(postsOpen(1), "board 1 posts db created")
     expect(postCount() == 0, "no posts yet")
     expect(heapSize() == 0, "body heap starts empty")
 
     // a thread starter and a reply
     id1 = addPost("andrew", 0, "First post!", body1)
+    expect(loadPost(id1) and loadBoard(1) and board.lastPost == post.created and post.created != 0, "adding a post stamps the board's lastPost")
     expect(id1 == 1, "thread starter added")
     id2 = addPost("alice", id1, "Re: First post!", body2)
     expect(id2 == 2, "reply added")

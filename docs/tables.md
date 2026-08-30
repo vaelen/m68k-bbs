@@ -88,10 +88,14 @@ translation below.
 
 ## Building blocks (terminal.cla)
 
-- `pad(s, width)` — left-align in `width` spaces, truncate if longer.
+- `clip(s, width)` — display truncation: an over-long value is cut
+  to `width - 3` plus `...` (three ASCII dots — the MacRoman ellipsis
+  has no ASCII/CP437/PETSCII form); under 4 columns it is a hard cut.
+- `pad(s, width)` — left-align in `width` spaces, hard-truncate if
+  longer (record fields like the login log rely on the silent cut).
 - `padLeft(s, width)` — right-align (footer text like `Page X of Y`).
 - `center(s, width)` — center (odd leftover space goes right),
-  truncate if longer.
+  `clip` if longer.
 - `wrapText(body, width, lines)` — word-wrap a `text` into a
   `list of string`: breaks on spaces, hard-breaks over-long words,
   keeps CR line breaks (blank lines included), drops LFs. Used by the
@@ -104,8 +108,10 @@ translation below.
   on VT100), for use between runs of normal text.
 - `ruleLine(l, m, r, widths)` — a full horizontal rule: piece `l`,
   a joint `m` between columns, piece `r`. Bare.
-- `rowLine(cells, widths)` — a data row: `vbar() + " " + pad(cell, w)
-  + " "` per column, closing `vbar()`. Self-contained.
+- `rowLine(cells, widths)` — a data row: `vbar() + " " +
+  pad(clip(cell, w), w) + " "` per column, closing `vbar()`.
+  Self-contained; every table cell in the BBS goes through it, so an
+  over-long cell shows `...`.
 
 `widths` is a `list of int` of **content** widths; both `ruleLine` and
 `rowLine` add the two padding spaces per column themselves, so one
