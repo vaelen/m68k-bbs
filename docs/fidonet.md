@@ -292,7 +292,10 @@ Output goes through `xferOut`.
    `xferReceived` moves each completed file into `:FTN:In:`. ZCRC
    resume covers a file cut off last time.
 7. **Hang up** via `hangupPhase` (`+++`, `ATH`); `NO CARRIER` resets
-   the line.
+   the line. If it hasn't arrived in 20 s the sequence runs again, twice
+   (`emHangWait`); after that the poll is closed out as if the line had
+   dropped (toss, record) and the late `NO CARRIER`, when it comes, is
+   an ordinary disconnect.
 8. **After**: toss; delete the outbound packet and advance the marks if
    step 5 was acknowledged; write `lastPoll` and `lastResult`; log
    `<net>: sent n, received m files, tossed …`.

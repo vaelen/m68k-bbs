@@ -216,6 +216,25 @@ func failureCases() {
     isConnected = false
     emsiDisconnected()
 
+    // hang-up watchdog: NO CARRIER never follows the +++/ATH -> the
+    // sequence runs again twice, then the line is abandoned
+    ftnPollRequest(1)
+    isConnected = true
+    emsiConnected()
+    ticks(121)                                   // not a mailer: hanging up
+    expect(emState == emHangup and hangupPhase == 1, "hanging up")
+    hangupPhase = 0                              // bbs.cla's timer ran +++/ATH
+    ticks(emHangTicks)
+    expect(emState == emHangup and hangupPhase == 1, "no carrier drop: hang up again")
+    hangupPhase = 0
+    ticks(emHangTicks)
+    expect(emState == emHangup and hangupPhase == 1, "second retry")
+    hangupPhase = 0
+    ticks(emHangTicks)
+    expect(not ftnPolling and emState == emIdle and hangupPhase == 0, "gave up on the line")
+    expect(loadNetwork(1) and network.lastResult == pollNotMailer, "original result kept")
+    isConnected = false
+
     // queue: a request for the network being polled is not queued twice
     ftnPollRequest(1)
     ftnPollRequest(1)

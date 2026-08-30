@@ -29,6 +29,8 @@ const emInqTick: int = 40           // 20 s: send EMSI_INQ twice
 const emAckTicks: int = 40          // resend EMSI_DAT every 20 s
 const emDatTicks: int = 120         // 60 s for their DAT
 const emSessionTicks: int = 1800    // 15 min cap
+const emHangTicks: int = 40         // 20 s for NO CARRIER after +++/ATH
+const emHangRetries: int = 2        // hang-up sequences to repeat before giving up
 const emMaxTries: int = 6
 
 var emState: EmsiState = emIdle
@@ -41,6 +43,8 @@ var emHadFile: bool = false
 var emSendOk: bool = false
 var emFiles: int = 0
 var emResult: int = pollNever
+var emHangTimer: int = 0
+var emHangTries: int = 0
 var emWireName: string(31)
 
 var ftnPolling: bool = false
@@ -301,7 +305,11 @@ func emsiChar(c: char) {
 }
 
 func emsiTick() {
-    if emState == emIdle or emState == emHangup { return }
+    if emState == emIdle { return }
+    if emState == emHangup {
+        emHangWait()
+        return
+    }
     emTotal = emTotal + 1
     emTimer = emTimer + 1
     if emTotal > emSessionTicks {
@@ -386,12 +394,32 @@ func emFinish(r: int) {
 func emDropLine() {
     if emState == emSend or emState == emRecv { zmodemAbort() }
     emState = emHangup
+    emHangTimer = 0
+    emHangTries = 0
     if isConnected {
         hangupPhase = 1
     } else {
         ftnModemSend("ATH\x0D")
         emsiDisconnected()
     }
+}
+
+// NO CARRIER hasn't followed the +++/ATH. A modem can miss the escape
+// while the peer is still streaming (the emulator did, until it stopped
+// blocking on the serial side), so repeat the sequence, then abandon the
+// line rather than sit "in progress" until the peer hangs up.
+func emHangWait() {
+    emHangTimer = emHangTimer + 1
+    if emHangTimer < emHangTicks { return }
+    emHangTimer = 0
+    if emHangTries < emHangRetries {
+        emHangTries = emHangTries + 1
+        log("FTN: no carrier drop; hanging up again.")
+        hangupPhase = 1
+        return
+    }
+    log("FTN: hang-up failed; abandoning the line.")
+    emsiDisconnected()
 }
 
 // Carrier lost or hang-up finished (bbs.cla's disconnected() while
