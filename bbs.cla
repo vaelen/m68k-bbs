@@ -68,7 +68,11 @@ menu FidoNet {
 menu Maintenance {
     item ToggleClosed "Toggle Closed to Callers"
     item RunNow "Run Database Maintenance"
+    item ToggleScroll "Toggle Log Auto-Scroll"
 }
+
+// Log window follows its newest line; off to scroll back and read.
+var logAutoScroll: bool = true
 
 var modem: connection
 var isConnected: bool = false
@@ -1252,7 +1256,7 @@ func appendLog(chunk: text) {
     }
     t = m.LogView.text + filtered
     m.LogView.text = t
-    m.LogView.scrollToEnd()
+    if logAutoScroll { m.LogView.scrollToEnd() }
 }
 
 // Every log(...) call lands here (after reaching the diagnostic stream)
@@ -1373,6 +1377,14 @@ extend Maintenance {
             log("Maintenance: not started, line busy.")
         } else {
             maintStart(true)
+        }
+    }
+    on ToggleScroll.select {
+        logAutoScroll = not logAutoScroll
+        if logAutoScroll {
+            log("Log auto-scroll on.")
+        } else {
+            log("Log auto-scroll off.")
         }
     }
 }

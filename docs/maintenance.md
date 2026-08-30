@@ -46,7 +46,9 @@ sets the same flag by hand — it never disconnects a caller already
 online, and the log reports `Closed to callers.` / `Open to callers.`
 (Clarus menu items carry no checkmark, and a `(` in a caption would
 dim the item -- it is the Menu Manager's disabled-item metacharacter).
-The manual setting survives a
+`Maintenance > Toggle Log Auto-Scroll` (on by default) is the log
+window's follow-newest-line behaviour; turn it off to scroll back
+through the log while lines keep arriving. The manual setting survives a
 run: the run saves it, closes, and restores it. FidoNet polls wait for
 the run (`ftnSchedule`/`ftnNext` check `maintaining`).
 
