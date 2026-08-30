@@ -1251,8 +1251,13 @@ func disconnected() {
 
 // Append text to the log window, dropping LF (0x0A) -- the Mac newline
 // is CR, so CRLF/LF input would otherwise litter the view with boxes.
-// ponytail: rebuilds the whole textview text per append; fine until the
-// 32,000-byte TextEdit cap nears -- trim oldest lines then.
+// ponytail: rebuilds the whole textview text per append. Past logTrimAt
+// bytes the oldest whole lines go, back to logTrimTo, so the window stays
+// under the 32,000-byte TextEdit cap (a long toss run logs one line per
+// packet) and the trim runs once per few thousand bytes, not per line.
+const logTrimAt: int = 24000
+const logTrimTo: int = 16000
+
 func appendLog(chunk: text) {
     var m: Main = Main.front
     var filtered: text
@@ -1264,6 +1269,12 @@ func appendLog(chunk: text) {
         i = i + 1
     }
     t = m.LogView.text + filtered
+    if t.length > logTrimAt {
+        i = t.length - logTrimTo
+        while i < t.length and t[i] != '\n' { i = i + 1 }
+        if i < t.length { i = i + 1 }        // past the CR; none found = empty
+        t = t.textAt(i, t.length - i)
+    }
     m.LogView.text = t
     if logAutoScroll { m.LogView.scrollToEnd() }
 }
