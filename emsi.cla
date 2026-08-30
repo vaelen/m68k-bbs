@@ -100,7 +100,7 @@ func ftnPollAll() {
 // Start the next queued poll when nothing is on the line.
 func ftnNext() {
     var id: int
-    if not ftnEnabled or ftnPolling or isConnected or maintaining or ftnQueue.count == 0 { return }
+    if not ftnEnabled or ftnPolling or isConnected or maintaining or tossing or ftnQueue.count == 0 { return }
     id = ftnQueue.shift()
     ftnPollStart(id)
 }
@@ -435,7 +435,6 @@ func emHangWait() {
 // Carrier lost or hang-up finished (bbs.cla's disconnected() while
 // ftnPolling): toss, commit, record, then the next queued poll.
 func emsiDisconnected() {
-    var n: int = 0
     if emState == emIdle { return }
     if emState == emSend or emState == emRecv { zmodemAbort() }
     if emResult == pollNever {
@@ -447,15 +446,15 @@ func emsiDisconnected() {
     }
     emState = emIdle
     if emSendOk { scanCommit(ftnNetId) }
-    n = tossInbound()
     if loadNetwork(ftnNetId) {
         network.lastPoll = now()
         network.lastResult = emResult
         if not saveNetwork() { log("FTN: poll record save failed: " + lastError.message) }
-        log(network.name + ": " + pollResultName(emResult) + "; received " + string(emFiles) + " file(s), tossed " + string(n) + ".")
+        log(network.name + ": " + pollResultName(emResult) + "; received " + string(emFiles) + " file(s).")
     }
     ftnPolling = false
     ftnNetId = 0
+    tossStart()                 // ticks from bbs.cla's timer; ftnNext once it ends
     ftnNext()
 }
 

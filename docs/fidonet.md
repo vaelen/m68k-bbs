@@ -186,7 +186,15 @@ Files:
 
 ## Toss (`ftntoss.cla`)
 
-Runs after a poll, with the line idle. For every file in `:FTN:In:`:
+Starts when a poll's line drops (`tossStart`, from `emsiDisconnected`)
+and runs **one unit per firing of the 30-tick timer** (`tossTick`,
+bbs.cla) while the line is idle: open the next file, toss one message,
+or close-and-delete a finished packet. A caller connecting mid-packet
+pauses it — the packet stays open, ticks resume after the call, and the
+board/network are re-fetched per message since the caller may have
+switched them. Polls (`ftnNext`) and the maintenance run wait while
+`tossing`; `tossInbound()` is the same run to completion, for tests and
+the host harnesses. For every file in `:FTN:In:`:
 
 1. Skip folders (`file.info(path).isDir`); `file.list` returns both.
 2. Header sanity: type 2, dest address equals our address on some
@@ -202,13 +210,16 @@ Runs after a poll, with the line idle. For every file in `:FTN:In:`:
      unknown recipient → delivered to the sysop (user 1) with the
      original name kept in `toName`. `fromUserId = 0`, `fromAddr`,
      `toAddr`, `msgidCrc` set. AreaFix replies arrive this way.
-4. `pktClose()`, then delete the file. Log `tossed n echomail,
-   m netmail, d dupes, x expired, u unknown areas`. Before the dupe
+4. `pktClose()`, then delete the file. At the end of the run log
+   `Tossed p packet(s): n echomail, m netmail, d dupes, x expired,
+   u unknown areas`. Before the dupe
    check, a message older than the board's `keepDays` (0 = never) is
    counted as *expired* and not stored (`docs/maintenance.md`).
 
-A crash mid-toss re-tosses the file next time; dupe checking makes that
-safe.
+A crash mid-toss re-tosses the file next run; dupe checking makes that
+safe — echomail by MSGID CRC on the board (`findPostByMsgId`), netmail
+by MSGID CRC over Mail (`findMailByMsgId`). A message without a MSGID
+is never a dupe.
 
 ## Scan (`ftntoss.cla`)
 

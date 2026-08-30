@@ -122,7 +122,7 @@ func tossEchomail(netId: int) {
         tossExpired = tossExpired + 1     // past the board's expiry: never stored
         return
     }
-    if not postsOpen(bid) {
+    if postsBoardId != bid and not postsOpen(bid) {
         log("Toss: cannot open board " + string(bid) + ": " + lastError.message)
         return
     }
@@ -149,6 +149,10 @@ func tossEchomail(netId: int) {
 func tossNetmail(netId: int) {
     var uid: int = findUserId(pktMsg.toName)
     if uid < 1 { uid = 1 }
+    if findMailByMsgId(msgIdCrc(pktMsg.msgid)) > 0 {
+        tossDupes = tossDupes + 1
+        return
+    }
     if sendMailFtn(pktMsg.fromName, 0, pktMsg.orig, pktMsg.toName, uid, pktMsg.dest, tossSubject(), pktBody, msgIdCrc(pktMsg.msgid), tossCreated()) < 1 {
         log("Toss: mail add failed: " + lastError.message)
         return
@@ -156,67 +160,106 @@ func tossNetmail(netId: int) {
     tossNet = tossNet + 1
 }
 
-// One packet: header checks, then every message. False leaves the
-// file in place (logged) -- a packet we can't read or that isn't ours.
-func tossFile(path: string): bool {
+// Open one packet for tossing: header checks, then its network ID; 0
+// leaves the file in place (logged) -- not a packet, or not ours.
+func tossOpen(path: string): int {
     var netId: int
     if not pktOpenRead(path) {
         log("Toss: not a packet: " + path)
-        return false
+        return 0
     }
     netId = networkForPacket()
     if netId == 0 {
         log("Toss: " + path + " is for " + addressStr(pktDest) + ", not us; left in place.")
         pktClose()
-        return false
+        return 0
     }
     if network.packetPw != "" and not dbStrEqCI(pktPassword, network.packetPw) {
         log("Toss: " + path + ": wrong packet password; left in place.")
         pktClose()
-        return false
+        return 0
     }
-    while pktNextMsg() {
-        if pktMsg.area != "" {
-            tossEchomail(netId)
-        } else {
-            tossNetmail(netId)
-        }
-    }
-    pktClose()
-    return true
+    return netId
 }
 
-// Every packet in :FTN:In, deleted once tossed. Returns the count.
-func tossInbound(): int {
-    var names: list of string
-    var fi: FileInfo
-    var i: int = 0
-    var n: int = 0
-    var p: string
+// --- The incremental run ------------------------------------------------------
+// Tossing is one unit per tick (bbs.cla's 30-tick timer, only while the
+// line is idle), so a caller can connect mid-packet: the packet stays
+// open, the ticks pause, and the run resumes after the call. The board
+// and network are re-fetched per message since the caller may have
+// switched them. A crash mid-packet re-tosses it next run; the dupe
+// checks make that safe.
+
+var tossing: bool = false
+var tossNames: list of string    // :FTN:In as listed at tossStart
+var tossNext: int = 0            // next entry of tossNames
+var tossCount: int = 0           // packets tossed this run
+var tossNetId: int = 0           // network of the open packet, 0 = none open
+var tossPath: string
+
+// Begin a run over everything in :FTN:In; nothing if one is under way.
+func tossStart() {
+    if tossing { return }
     tossEcho = 0
     tossNet = 0
     tossDupes = 0
     tossUnknown = 0
     tossExpired = 0
+    tossCount = 0
+    tossNext = 0
+    tossNetId = 0
     loadTagCache()
-    if not file.list(ftnIn, names) {
+    tossNames.clear()
+    if not file.list(ftnIn, tossNames) {
         log("Toss: cannot list " + ftnIn + ": " + lastError.message)
-        return 0
+        return
     }
-    while i < names.count {
-        p = ftnIn + ":" + names[i]
-        fi = file.info(p)
-        if not fi.isDir {
-            if tossFile(p) {
-                n = n + 1
-                if not file.delete(p) { log("Toss: cannot delete " + p + ": " + lastError.message) }
-            }
-        }
-        i = i + 1
-    }
+    tossing = true
+}
+
+func tossEnd() {
     postsClose()
-    log("Tossed " + string(n) + " packet(s): " + string(tossEcho) + " echomail, " + string(tossNet) + " netmail, " + string(tossDupes) + " dupes, " + string(tossExpired) + " expired, " + string(tossUnknown) + " unknown areas.")
-    return n
+    tossing = false
+    log("Tossed " + string(tossCount) + " packet(s): " + string(tossEcho) + " echomail, " + string(tossNet) + " netmail, " + string(tossDupes) + " dupes, " + string(tossExpired) + " expired, " + string(tossUnknown) + " unknown areas.")
+}
+
+// One unit: open the next packet, toss one message, or close a finished
+// packet and delete it.
+func tossTick() {
+    var fi: FileInfo
+    if not tossing { return }
+    if tossNetId == 0 {
+        if tossNext >= tossNames.count {
+            tossEnd()
+            return
+        }
+        tossPath = ftnIn + ":" + tossNames[tossNext]
+        tossNext = tossNext + 1
+        fi = file.info(tossPath)
+        if fi.isDir { return }
+        tossNetId = tossOpen(tossPath)
+        return
+    }
+    if pktNextMsg() {
+        loadNetwork(tossNetId)       // tossCreated reads network.utcOffset
+        if pktMsg.area != "" {
+            tossEchomail(tossNetId)
+        } else {
+            tossNetmail(tossNetId)
+        }
+        return
+    }
+    pktClose()
+    tossCount = tossCount + 1
+    if not file.delete(tossPath) { log("Toss: cannot delete " + tossPath + ": " + lastError.message) }
+    tossNetId = 0
+}
+
+// The whole run at once (tests, the host harnesses). Returns the count.
+func tossInbound(): int {
+    tossStart()
+    while tossing { tossTick() }
+    return tossCount
 }
 
 // --- Scan --------------------------------------------------------------------

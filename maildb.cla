@@ -217,6 +217,23 @@ func deleteMessage(id: int): bool {
     return dbDelete(mailDb, id)
 }
 
+// The message carrying MSGID CRC `crc`; -1 if none (or crc is 0, "no
+// MSGID"). The toss's netmail dupe check.
+// ponytail: a scan over every header -- Mail is small; index mOffMsgId
+// when an inbox holds thousands.
+func findMailByMsgId(crc: int): int {
+    var id: int = 1
+    var last: int = mailNextId()
+    var rec: text
+    if crc == 0 { return -1 }
+    while id < last {
+        rec = dbFind(mailDb, id)
+        if rec.length == mailRecordSize and rec.intAt(mOffMsgId) == crc { return id }
+        id = id + 1
+    }
+    return -1
+}
+
 // Set the sent flag on outbound netmail the uplink has accepted.
 func markSent(id: int): bool {
     var rec: text = dbFind(mailDb, id)

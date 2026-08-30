@@ -443,9 +443,14 @@ inputChar (bbs.cla) → processInput`.
   `pktNextMsg` into the globals `pktMsg`/`pktBody`, `pktCreate`/
   `pktAddMsg`/`pktClose`; `ftnNormalize` keeps kludges, drops
   `AREA:`/`SEEN-BY:`/`^APATH:`, ASCII-fies). `ftntoss.cla` — toss
-  (`tossInbound`: every packet in `:FTN:In`, echomail to the board
-  with that tag on that network with MSGID dupe check and REPLY
-  threading, netmail to the named user or the sysop, then deleted) and
+  (`tossStart` lists `:FTN:In`, then `tossTick` — one unit per 30-tick
+  firing while the line is idle, so a caller pauses it mid-packet —
+  opens each packet, tosses echomail to the board with that tag on that
+  network with MSGID dupe check and REPLY threading, netmail to the
+  named user or the sysop with `findMailByMsgId` dupe check, deletes
+  it; `tossing` blocks `ftnNext` and maintenance; `tossInbound` runs
+  it to completion for tests; `postsBoardId` lets it skip reopening the
+  same board) and
   scan (`scanNetwork(netId)` rebuilds `:FTN:Out:<id>.pkt` from posts
   past `lastExported` and unsent netmail; `scanCommit` moves the marks
   only after an acknowledged send). `emsi.cla` — the poll: `ftnPollRequest`/

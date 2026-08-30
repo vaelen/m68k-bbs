@@ -1159,10 +1159,14 @@ every 2 ticks {
 every 30 ticks {
     if maintaining { maintTick() }
     if ftnPolling { emsiTick() }
+    if tossing and not isConnected and not ftnPolling and not maintaining {
+        tossTick()               // one packet open / one message / one delete
+        if not tossing { ftnNext() }
+    }
     ftnSchedMinutes = ftnSchedMinutes + 1
     if ftnSchedMinutes >= 120 {      // once a minute: the maintenance window, then interval polls
         ftnSchedMinutes = 0
-        if not maintaining and not isConnected and not ftnPolling and maintDueNow() { maintStart(false) }
+        if not maintaining and not isConnected and not ftnPolling and not tossing and maintDueNow() { maintStart(false) }
         ftnSchedule()
         if ftnPolling { log("FTN: session in progress.") }
     }
@@ -1378,7 +1382,7 @@ extend Maintenance {
         }
     }
     on RunNow.select {
-        if isConnected or ftnPolling {
+        if isConnected or ftnPolling or tossing {
             log("Maintenance: not started, line busy.")
         } else {
             maintStart(true)

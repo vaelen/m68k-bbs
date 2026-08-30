@@ -57,6 +57,7 @@ func disconnected() {
     isConnected = false
     log("NO CARRIER")
     emsiDisconnected()
+    while tossing { tossTick() }      // bbs.cla's timer does this on the Mac
     report()
     quit
 }

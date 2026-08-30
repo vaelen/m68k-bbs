@@ -132,10 +132,32 @@ func tossTests() {
     board.tag = "FSX_ADS"
     expect(saveBoard(), "restore tag")
     expect(deleteUserForTest(2), "remove vaelen")
+    expect(deleteMessage(ids[0]), "remove vaelen's copy (same MSGID)")
     expect(copyFile("netmail.pkt", ftnIn + ":nobody.pkt"), "stage netmail for a missing user")
     expect(tossInbound() == 1 and tossNet == 1, "netmail tossed")
     inboxIds(1, ids)
     expect(ids.count == 1 and loadMessage(ids[0]) and message.toName == "vaelen", "sysop got it, original name kept")
+
+    // netmail dupes: the same MSGID again is dropped
+    expect(findMailByMsgId(msgIdCrc("21:1/100 689ed8ce")) == ids[0] and findMailByMsgId(0) < 0 and findMailByMsgId(12345) < 0, "findMailByMsgId")
+    expect(copyFile("netmail.pkt", ftnIn + ":netagain.pkt"), "stage netmail again")
+    expect(tossInbound() == 1 and tossDupes == 1 and tossNet == 0, "netmail dupe dropped")
+    inboxIds(1, ids)
+    expect(ids.count == 1, "still one netmail")
+
+    // incremental tossing: a tick opens the next packet, then one
+    // message per tick, then closes and deletes it
+    expect(copyFile("echomail.pkt", ftnIn + ":tick.pkt"), "stage for ticks")
+    tossStart()
+    expect(tossing and tossNetId == 0, "started: nothing open yet")
+    while tossing and tossNetId == 0 { tossTick() }      // list order varies: skip junkdir
+    expect(tossing and tossNetId == 1 and countIn() == 2, "packet open, not yet deleted")
+    tossTick()
+    expect(tossing and tossNetId == 1 and tossDupes == 1, "one message per tick")
+    tossTick()
+    expect(tossNetId == 0 and countIn() == 1, "packet closed and deleted at its end")
+    while tossing { tossTick() }
+    expect(tossCount == 1, "run complete")
 
     // a packet not addressed to us stays put
     expect(loadNetwork(1), "load network")

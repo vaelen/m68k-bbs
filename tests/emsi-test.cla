@@ -155,6 +155,7 @@ func happyPath() {
 
     isConnected = false
     emsiDisconnected()
+    while tossing { tossTick() }      // bbs.cla's timer does this on the Mac
     expect(not ftnPolling and emState == emIdle, "idle after NO CARRIER")
     expect(loadNetwork(1) and network.lastResult == pollOk and network.lastPoll != 0, "poll recorded")
 }
@@ -173,6 +174,7 @@ func failureCases() {
     expect(emState == emHangup and emResult == pollBadPassword, "bad password hangs up")
     isConnected = false
     emsiDisconnected()
+    while tossing { tossTick() }      // bbs.cla's timer does this on the Mac
     expect(loadNetwork(1) and network.lastResult == pollBadPassword, "bad password recorded")
 
     // address mismatch
@@ -185,6 +187,7 @@ func failureCases() {
     expect(emResult == pollAddressMismatch, "address mismatch")
     isConnected = false
     emsiDisconnected()
+    while tossing { tossTick() }      // bbs.cla's timer does this on the Mac
 
     // bad CRC on their DAT -> NAK, still waiting
     ftnPollRequest(1)
@@ -198,6 +201,7 @@ func failureCases() {
     isConnected = false
     emsiAbort()
     emsiDisconnected()
+    while tossing { tossTick() }      // bbs.cla's timer does this on the Mac
 
     // no CONNECT: dial timeout
     ftnPollRequest(1)
@@ -215,6 +219,7 @@ func failureCases() {
     expect(emResult == pollNotMailer and hangupPhase == 1, "not a mailer")
     isConnected = false
     emsiDisconnected()
+    while tossing { tossTick() }      // bbs.cla's timer does this on the Mac
 
     // hang-up watchdog: NO CARRIER never follows the +++/ATH -> the
     // sequence runs again twice, then the line is abandoned
@@ -232,6 +237,7 @@ func failureCases() {
     hangupPhase = 0
     ticks(emHangTicks)
     expect(not ftnPolling and emState == emIdle and hangupPhase == 0, "gave up on the line")
+    while tossing { tossTick() }
     expect(loadNetwork(1) and network.lastResult == pollNotMailer, "original result kept")
     isConnected = false
 
@@ -244,6 +250,7 @@ func failureCases() {
     isConnected = false
     emsiAbort()
     emsiDisconnected()
+    while tossing { tossTick() }      // bbs.cla's timer does this on the Mac
 
     // queue: a request for the network being polled is not queued twice
     ftnPollRequest(1)
@@ -252,6 +259,7 @@ func failureCases() {
     isConnected = false
     emsiAbort()
     emsiDisconnected()
+    while tossing { tossTick() }      // bbs.cla's timer does this on the Mac
     expect(not ftnPolling, "idle")
 }
 

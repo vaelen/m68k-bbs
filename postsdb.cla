@@ -57,6 +57,7 @@ record Post {
 var postsDb: Database
 var postsBody: filehandle
 var post: Post      // last loaded post header
+var postsBoardId: int = 0   // the open board, 0 = none (a caller or a toss may switch it)
 
 func postsName(boardId: int): string {
     return "BRD" + char(int('0') + boardId / 10) + char(int('0') + boardId mod 10)
@@ -94,6 +95,7 @@ func postsOpen(boardId: int): bool {
         postsClose()
         return false
     }
+    postsBoardId = boardId
     return true
 }
 
@@ -103,6 +105,7 @@ func postsClose() {
     postsDb = new Database
     if b != nil { b.close() }
     postsBody = nil
+    postsBoardId = 0
 }
 
 func postCount(): int {
