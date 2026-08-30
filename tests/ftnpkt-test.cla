@@ -145,6 +145,7 @@ func writeTests() {
     expect(addressStr(pktMsg.dest) == "21:1/100", "INTL zone on read")
     expect(not pktNextMsg(), "trailer written")
     pktClose()
+    expect(pktBody.length == 0, "pktClose drops the last body")
 }
 
 on App.startCLI(args: list of string) {

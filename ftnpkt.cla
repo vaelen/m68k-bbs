@@ -446,6 +446,11 @@ func ftnNormalize(raw: text): text {
 
 func pktClose() {
     var z: text
+    var none: text
+    // The last body read stays resident otherwise: FSX_BOT carries 227 KB
+    // messages, and text capacity doubles, so one of those held a 256 KB
+    // handle from one toss to the next (the 2026-08-30 "300K gone" log).
+    pktBody = none
     if not pktHave { return }
     if pktWriting {
         z.append('\x00')
