@@ -172,7 +172,9 @@ Reading a plain name looks in the caller's folder, then the shared
 one, then the files installed with the game; writing always goes to
 the caller's own folder (or the shared one with `_`). At the `Ok`
 prompt the only folder is your own. A `LOAD`/`SAVE` name without a
-`.` gets `.BAS`.
+`.` gets `.BAS`. Since `_` is an ordinary filename character, the same
+program runs unchanged under any other BASIC: `_scores.dat` is then
+just a file in the current directory.
 
 - `OPEN "name" FOR INPUT|OUTPUT|APPEND AS #n`, or the older `OPEN
   "I"|"O"|"A", #n, "name"`.
