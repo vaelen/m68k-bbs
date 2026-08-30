@@ -39,7 +39,7 @@ external func MaxBlock(): int = trap 0xA061 reg   // largest free block, no comp
 
 app BBS {
     name: "68kBBS"
-    version: "0.3"
+    version: "0.4"
     author: "Andrew C. Young"
     about: "A simple BBS for classic Macs."
     id: "68BB"
