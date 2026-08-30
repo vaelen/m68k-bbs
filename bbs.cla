@@ -69,6 +69,7 @@ menu Maintenance {
     item ToggleClosed "Toggle Closed to Callers"
     item RunNow "Run Database Maintenance"
     item ToggleScroll "Toggle Log Auto-Scroll"
+    item TogglePolling "Toggle FTN Polling"
 }
 
 // Log window follows its newest line; off to scroll back and read.
@@ -596,7 +597,10 @@ func displayPrompt() {
     case "newareadesc"   { sendData("Description: ") }
     case "newareafolder" { sendData("Folder (Enter = app directory): ") }
     case "newareaaccess" { sendData("Access (A=all, S=sysop) [A]: ") }
-    case "sysopnets"   { sendData("Sysop:Networks> ") }
+    case "sysopnets"   {
+        if ftnEnabled { sendLine("FTN polling is ON.") } else { sendLine("FTN polling is OFF.") }
+        sendData("Sysop:Networks> ")
+    }
     case "sysopbanned" { sendData("Sysop:Banned> ") }
     case "sysopconfig" { sendData("Sysop:Config> ") }
     case "confighour" { sendData("Maintenance hour (0-23) [" + intStr(config.maintenanceHour) + "]: ") }
@@ -1379,6 +1383,7 @@ extend Maintenance {
             maintStart(true)
         }
     }
+    on TogglePolling.select { ftnSetEnabled(not ftnEnabled) }
     on ToggleScroll.select {
         logAutoScroll = not logAutoScroll
         if logAutoScroll {

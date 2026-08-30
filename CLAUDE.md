@@ -461,7 +461,10 @@ inputChar (bbs.cla) → processInput`.
   `"ftn"` (`inputChar` → `emsiChar`), the 30-tick timer calls
   `emsiTick` and `ftnSchedule` once a minute, `connected()`/
   `disconnected()` branch on `ftnPolling`, and the `FidoNet > Poll
-  All Networks` menu polls from the Mac; the remote sysop's `P` on the
+  All Networks` menu polls from the Mac; `ftnEnabled` (`ftnSetEnabled`;
+  `Maintenance > Toggle FTN Polling`, Sysop > Networks `P`, status line
+  before that prompt) gates `ftnNext` so nothing dials while off and
+  queued requests run when it returns; the remote sysop's `P` on the
   network card queues one for after logoff. Local posts on a
   networked board and outbound netmail get their MSGID/REPLY kludges
   at creation (`editKludges` in `editor.cla`). `scripts/ftn-e2e.sh`

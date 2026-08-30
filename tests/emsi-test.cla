@@ -235,6 +235,16 @@ func failureCases() {
     expect(loadNetwork(1) and network.lastResult == pollNotMailer, "original result kept")
     isConnected = false
 
+    // polling switch: off keeps a request queued; on runs it
+    ftnSetEnabled(false)
+    ftnPollRequest(1)
+    expect(not ftnPolling and ftnQueue.count == 1, "disabled: request queued, not started")
+    ftnSetEnabled(true)
+    expect(ftnPolling and ftnQueue.count == 0, "enabled: queued poll starts")
+    isConnected = false
+    emsiAbort()
+    emsiDisconnected()
+
     // queue: a request for the network being polled is not queued twice
     ftnPollRequest(1)
     ftnPollRequest(1)

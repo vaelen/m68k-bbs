@@ -1506,6 +1506,7 @@ func drawSysopNetsMenu() {
     sendLine("E) Edit Network")
     sendLine("N) New Network")
     sendLine("D) Delete Network")
+    sendLine("P) Toggle FTN Polling")
     sendLine("Q) Return to Sysop Menu")
     sendLine("")
 }
@@ -1524,6 +1525,10 @@ func sysopNetsChoice(input: string) {
         displayPrompt()
     }
     case "D" { startDeleteNet() }
+    case "P" {
+        ftnSetEnabled(not ftnEnabled)
+        displayPrompt()
+    }
     case "Q" { gotoScreen("sysop") }
     else     { displayPrompt() }
     }

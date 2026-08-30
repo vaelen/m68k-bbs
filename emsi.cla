@@ -48,6 +48,7 @@ var emHangTries: int = 0
 var emWireName: string(31)
 
 var ftnPolling: bool = false
+var ftnEnabled: bool = true      // the sysop's switch: off keeps requests queued
 var ftnNetId: int = 0
 var ftnQueue: list of int
 var ftnSchedMinutes: int = 0
@@ -70,11 +71,20 @@ func ftnQueuePoll(netId: int) {
 
 // Poll now if the line is idle, else after the current call/poll.
 func ftnPollRequest(netId: int) {
-    if ftnPolling or isConnected {
-        ftnQueuePoll(netId)
-        return
+    ftnQueuePoll(netId)
+    ftnNext()
+}
+
+// The sysop's polling switch (Maintenance menu, Sysop > Networks > P);
+// switching it on starts whatever queued meanwhile.
+func ftnSetEnabled(enabled: bool) {
+    ftnEnabled = enabled
+    if enabled {
+        log("FTN polling enabled.")
+        ftnNext()
+    } else {
+        log("FTN polling disabled.")
     }
-    ftnPollStart(netId)
 }
 
 func ftnPollAll() {
@@ -90,7 +100,7 @@ func ftnPollAll() {
 // Start the next queued poll when nothing is on the line.
 func ftnNext() {
     var id: int
-    if ftnPolling or isConnected or maintaining or ftnQueue.count == 0 { return }
+    if not ftnEnabled or ftnPolling or isConnected or maintaining or ftnQueue.count == 0 { return }
     id = ftnQueue.shift()
     ftnPollStart(id)
 }
