@@ -29,6 +29,7 @@ func drawSysopMenu() {
     sendLine("B) Message Boards")
     sendLine("C) Configuration")
     sendLine("F) File Areas")
+    sendLine("G) Games")
     sendLine("M) Message of the Day")
     sendLine("N) Networks")
     sendLine("U) Users")
@@ -153,6 +154,7 @@ func sysopChoice(input: string) {
     case "B" { gotoScreen("sysopboards") }
     case "C" { gotoScreen("sysopconfig") }
     case "F" { gotoScreen("sysopareas") }
+    case "G" { gotoScreen("sysopgames") }
     case "M" { startMotdEditor() }
     case "N" { gotoScreen("sysopnets") }
     case "U" { gotoScreen("sysopusers") }
@@ -1489,6 +1491,399 @@ func newAreaAccess(input: string) {
     sendLine("Area " + intStr(id) + " created.")
     drawAreaDetails()
     user.screen = "sysopareas"
+    displayPrompt()
+}
+
+// --- Games -----------------------------------------------------------
+// The area screens over the Games database (gamesdb.cla). Only BASIC
+// games run today, so the type prompts take B alone; more letters as
+// games/basic.cla's dispatch grows (docs/games.md).
+
+func drawSysopGamesMenu() {
+    sendTitleBox("Sysop - Games")
+    sendLine("")
+    sendLine("L) List Games")
+    sendLine("S) Show Game Details")
+    sendLine("E) Edit Game")
+    sendLine("N) New Game")
+    sendLine("D) Delete Game")
+    sendLine("Q) Return to Sysop Menu")
+    sendLine("")
+}
+
+func sysopGamesChoice(input: string) {
+    switch upperStr(input) {
+    case "?" {
+        displayMenu()
+        displayPrompt()
+    }
+    case "L" { startGameList() }
+    case "S" { startShowGame() }
+    case "E" { startEditGame() }
+    case "N" { startNewGame() }
+    case "D" { startDeleteGame() }
+    case "Q" { gotoScreen("sysop") }
+    else     { displayPrompt() }
+    }
+}
+
+func enabledName(flag: bool): string {
+    if flag { return "Yes" }
+    return "No"
+}
+
+// A type prompt letter into a GameType value, or -1.
+func parseGameType(input: string): int {
+    switch upperStr(input) {
+    case "B" { return gameTypeBasicValue }
+    }
+    return -1
+}
+
+// Content widths: narrow is ID/Name (total 39), wide is
+// ID/Name/Type/File/On (total 79).
+func gameListWidths(w: list of int) {
+    w.clear()
+    w.add(4)
+    if terminal.columns < minimumWideTerminalWidth {
+        w.add(28)
+        return
+    }
+    w.add(24)
+    w.add(11)
+    w.add(22)
+    w.add(4)
+}
+
+func startGameList() {
+    user.screen = "gamelist"
+    listFromId = 1
+    drawGameListPage()
+}
+
+func gameListInput(input: string) {
+    if upperStr(input) == "Q" {
+        gotoScreen("sysopgames")
+    } else {
+        drawGameListPage()
+    }
+}
+
+func drawGameListPage() {
+    var w: list of int
+    var cells: list of string
+    var nextId: int = dbNextRecordId(gamesDb)
+    var pageRows: int = terminal.rows - 8
+    var shown: int = 0
+    var id: int = 0
+
+    gameListWidths(w)
+    cells.add("ID")
+    cells.add("Name")
+    if terminal.columns >= minimumWideTerminalWidth {
+        cells.add("Type")
+        cells.add("File")
+        cells.add("On")
+    }
+    sendTableHeader("Games", cells, w)
+
+    id = listFromId
+    while id < nextId and shown < pageRows {
+        if loadGame(id) {
+            cells.clear()
+            cells.add(intStr(id))
+            cells.add(game.name)
+            if terminal.columns >= minimumWideTerminalWidth {
+                cells.add(gameTypeName(game.type))
+                cells.add(game.filename)
+                cells.add(enabledName(game.enabled))
+            }
+            sendLine(rowLine(cells, w))
+            shown = shown + 1
+        }
+        id = id + 1
+    }
+    listFromId = id
+    finishListPage(gamesDb, nextId, gameRecordSize, "sysopgames", w)
+}
+
+func startShowGame() {
+    user.screen = "showgame"
+    displayPrompt()
+}
+
+// Empty input cancels; otherwise a game id.
+func showGameInput(input: string) {
+    if input == "" {
+        gotoScreen("sysopgames")
+        return
+    }
+    if not loadGame(parseIntStr(input)) {
+        sendLine("No such game.")
+        displayPrompt()
+        return
+    }
+    drawGameDetails()
+    user.screen = "sysopgames"
+    displayPrompt()
+}
+
+// Renders the globally loaded `game` (see loadGame in gamesdb.cla).
+func drawGameDetails() {
+    var w: list of int
+    detailWidths(w)
+    sendTableTitle("Game Details", w)
+    sendDetailRow("ID",          intStr(game.id), w)
+    sendDetailRow("Name",        game.name, w)
+    sendDetailRow("Description", game.description, w)
+    sendDetailRow("Type",        gameTypeName(game.type), w)
+    sendDetailRow("File",        game.filename, w)
+    sendDetailRow("Enabled",     enabledName(game.enabled), w)
+    sendRule(BottomLeft, BottomCenter, BottomRight, w)
+}
+
+func startEditGame() {
+    user.screen = "editgameid"
+    displayPrompt()
+}
+
+// Edits buffer in the global `game`; Q discards (the next loadGame
+// overwrites it), S writes it back.
+func editGameIdInput(input: string) {
+    if input == "" {
+        gotoScreen("sysopgames")
+        return
+    }
+    if not loadGame(parseIntStr(input)) {
+        sendLine("No such game.")
+        displayPrompt()
+        return
+    }
+    user.screen = "editgame"
+    drawEditGameCard()
+    displayPrompt()
+}
+
+func drawEditGameCard() {
+    var w: list of int
+    editWidths(w)
+    sendTableTitle("Edit Game", w)
+    sendDetailRow("ID",             intStr(game.id), w)
+    sendDetailRow("N) Name",        game.name, w)
+    sendDetailRow("D) Description", game.description, w)
+    sendDetailRow("T) Type",        gameTypeName(game.type), w)
+    sendDetailRow("F) File",        game.filename, w)
+    sendDetailRow("E) Enabled",     enabledName(game.enabled), w)
+    sendRule(BottomLeft, BottomCenter, BottomRight, w)
+}
+
+func editGameChoice(input: string) {
+    switch upperStr(input) {
+    case "N", "D", "T", "F" {
+        editField = upperStr(input)[0]
+        user.screen = "editgameval"
+        displayPrompt()
+    }
+    case "E" {
+        game.enabled = not game.enabled
+        drawEditGameCard()
+        displayPrompt()
+    }
+    case "S" {
+        if saveGame() {
+            sendLine("Saved.")
+        } else {
+            sendLine("Save failed: " + lastError.message)
+        }
+        gotoScreen("sysopgames")
+    }
+    case "Q" { gotoScreen("sysopgames") }
+    case "?" {
+        drawEditGameCard()
+        displayPrompt()
+    }
+    else { displayPrompt() }
+    }
+}
+
+func editGameValuePrompt() {
+    switch editField {
+    case 'N' { sendData("Name [" + game.name + "]: ") }
+    case 'D' { sendData("Description [" + game.description + "]: ") }
+    case 'T' { sendData("Type (B=BASIC) [" + gameTypeName(game.type) + "]: ") }
+    case 'F' { sendData("File name [" + game.filename + "]: ") }
+    }
+}
+
+// A bare file name inside the type's folder: no colons, at most 63.
+func gameFileOk(name: string): bool {
+    if name.indexOf(':') >= 0 {
+        sendLine("Enter a file name, not a path.")
+        return false
+    }
+    if name.length > 63 {
+        sendLine("File names are limited to 63 characters.")
+        return false
+    }
+    return true
+}
+
+// Enter keeps the current value.
+func editGameValue(input: string) {
+    var ok: bool = true
+    var t: int
+    if input != "" {
+        switch editField {
+        case 'N' {
+            if input.length > 63 {
+                sendLine("Names are limited to 63 characters.")
+                ok = false
+            } else {
+                game.name = input
+            }
+        }
+        case 'D' {
+            if input.length > 63 {
+                sendLine("Descriptions are limited to 63 characters.")
+                ok = false
+            } else {
+                game.description = input
+            }
+        }
+        case 'T' {
+            t = parseGameType(input)
+            if t < 0 {
+                sendLine("B for BASIC.")
+                ok = false
+            } else {
+                game.type = GameType(t)
+            }
+        }
+        case 'F' {
+            if gameFileOk(input) { game.filename = input } else { ok = false }
+        }
+        }
+    }
+    if not ok {
+        displayPrompt()
+        return
+    }
+    user.screen = "editgame"
+    drawEditGameCard()
+    displayPrompt()
+}
+
+func startDeleteGame() {
+    user.screen = "delgameid"
+    displayPrompt()
+}
+
+// Deleting the row leaves the game's file alone: it is the sysop's,
+// not the database's.
+func delGameIdInput(input: string) {
+    if input == "" {
+        gotoScreen("sysopgames")
+        return
+    }
+    if not loadGame(parseIntStr(input)) {
+        sendLine("No such game.")
+        displayPrompt()
+        return
+    }
+    drawGameDetails()
+    user.screen = "delgameconfirm"
+    displayPrompt()
+}
+
+func delGameConfirm(input: string) {
+    if upperStr(input) == "Y" {
+        if dbDelete(gamesDb, game.id) {
+            sendLine("Game deleted.")
+        } else {
+            sendLine("Delete failed: " + lastError.message)
+        }
+    } else {
+        sendLine("Cancelled.")
+    }
+    gotoScreen("sysopgames")
+}
+
+// New game: name -> description -> type (default BASIC) -> file name,
+// then create it enabled and show the details. Empty name cancels.
+
+func startNewGame() {
+    game.name = ""
+    game.description = ""
+    game.filename = ""
+    game.type = Basic
+    game.enabled = true
+    user.screen = "newgamename"
+    displayPrompt()
+}
+
+func newGameName(input: string) {
+    if input == "" {
+        sendLine("Cancelled.")
+        gotoScreen("sysopgames")
+        return
+    }
+    if input.length > 63 {
+        sendLine("Names are limited to 63 characters.")
+        displayPrompt()
+        return
+    }
+    game.name = input
+    user.screen = "newgamedesc"
+    displayPrompt()
+}
+
+func newGameDesc(input: string) {
+    if input.length > 63 {
+        sendLine("Descriptions are limited to 63 characters.")
+        displayPrompt()
+        return
+    }
+    game.description = input
+    user.screen = "newgametype"
+    displayPrompt()
+}
+
+func newGameType(input: string) {
+    var t: int = gameTypeBasicValue
+    if input != "" { t = parseGameType(input) }
+    if t < 0 {
+        sendLine("B for BASIC.")
+        displayPrompt()
+        return
+    }
+    game.type = GameType(t)
+    user.screen = "newgamefile"
+    sendLine("The file lives in the " + basicGamesFolder + " folder next to the application.")
+    displayPrompt()
+}
+
+func newGameFile(input: string) {
+    var id: int = 0
+    if input == "" {
+        sendLine("Cancelled.")
+        gotoScreen("sysopgames")
+        return
+    }
+    if not gameFileOk(input) {
+        displayPrompt()
+        return
+    }
+    game.filename = input
+    id = createGame(game.name, game.description, game.filename, game.type, true)
+    if id < 1 {
+        sendLine("Create failed: " + lastError.message)
+        gotoScreen("sysopgames")
+        return
+    }
+    game.id = id
+    sendLine("Game " + intStr(id) + " created.")
+    drawGameDetails()
+    user.screen = "sysopgames"
     displayPrompt()
 }
 

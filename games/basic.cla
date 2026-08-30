@@ -1,8 +1,9 @@
 // Copyright 2026, Andrew C. Young <andrew@vaelen.org>
 // SPDX-License-Identifier: MIT
 
-// The BASIC interpreter on the BBS: the Games menu lists the .BAS
-// files in the BASIC folder and runs the caller's pick; sysops also get
+// The BASIC interpreter on the BBS: the Games menu lists the enabled
+// entries of the Games database (gamesdb.cla) and runs the caller's
+// pick -- a BASIC game is a .BAS file in the BASIC folder; sysops also get
 // the Ok prompt (immediate mode) with files in a folder of their own.
 // This file defines the interpreter's four hooks over the BBS's output
 // and terminal state, and the "basic" (character mode) / "basicline"
@@ -14,8 +15,9 @@ include "../basic/basic.cla"
 const basicGamesFolder: string = ":BASIC"
 
 var basicActive: bool = false      // a program or the prompt owns the session
-var basicGameMode: bool = false    // running from the Games folder (read-only)
-var gameNames: list of string
+var basicGameMode: bool = false    // running a Games-menu entry
+var basicGameId: int = 0           // ... this one (its GameData folder)
+var gameIds: list of int
 
 // --- Hooks -------------------------------------------------------------
 
@@ -86,20 +88,19 @@ func basicScreen(op: char, a: int, b: int) {
     }
 }
 
-// A bare BASIC file name into the sandbox: the shared Games folder
-// (read-only below sysop) while a game runs, the caller's own folder
-// under it at the prompt. Never an HFS path.
+// A bare BASIC file name into the sandbox: the game's GameData
+// folders while a game runs (gamedata.cla -- per-caller, `*` shared,
+// reads fall back to the program folder), the caller's own folder
+// under the Games folder at the prompt. Never an HFS path.
 func basicPath(name: string, write: bool): string {
     var folder: string
-    if name.indexOf(':') >= 0 { return "" }
     if basicGameMode {
-        folder = basicGamesFolder
-        if write and not hasPermission(Sysop) { return "" }
-    } else {
-        folder = basicGamesFolder + ":" + user.name
-        if write and not file.exists(folder) {
-            if not file.makeDir(folder) { return "" }
-        }
+        return gameDataPath(basicGameId, user.id, name, write, basicGamesFolder)
+    }
+    if name.indexOf(':') >= 0 { return "" }
+    folder = basicGamesFolder + ":" + user.name
+    if write and not file.exists(folder) {
+        if not file.makeDir(folder) { return "" }
     }
     if name == "" { return folder }
     return folder + ":" + name
@@ -117,44 +118,36 @@ func basicEnv(name: string): string {
 
 // --- Games menu --------------------------------------------------------
 
-func hasBasExtension(name: string): bool {
-    var n: int = name.length
-    if n < 5 { return false }
-    return upperStr(name[n - 4, 4]) == ".BAS"
-}
-
-// The .BAS files in the Games folder, alphabetically, into gameNames.
-func loadGameNames() {
-    var found: list of string
-    var name: string
-    var i: int
-    var j: int
-    gameNames.clear()
-    if not file.list(basicGamesFolder, found) { return }
-    for name in found {
-        if not hasBasExtension(name) { continue }
-        gameNames.add(name)
-        j = gameNames.count - 1
-        while j > 0 and upperStr(gameNames[j - 1]) > upperStr(name) {
-            gameNames[j] = gameNames[j - 1]
-            j = j - 1
-        }
-        gameNames[j] = name
+// The enabled games from the Games database, in ID order, into
+// gameIds; the menu numbers them from 1.
+func loadGameIds() {
+    var id: int = 1
+    var nextId: int = gamesNextId()
+    gameIds.clear()
+    while id < nextId {
+        if loadGame(id) and game.enabled { gameIds.add(id) }
+        id = id + 1
     }
 }
 
 func drawGamesMenu() {
     var i: int = 0
-    loadGameNames()
+    var line: string
+    loadGameIds()
     sendTitleBox("Games")
     sendLine("")
-    if gameNames.count == 0 { sendLine("No games are available yet.") }
-    while i < gameNames.count {
-        sendLine(intStr(i + 1) + ") " + gameNames[i])
+    if gameIds.count == 0 { sendLine("No games are available yet.") }
+    while i < gameIds.count {
+        loadGame(gameIds[i])
+        line = intStr(i + 1) + ") " + game.name
+        if game.description != "" and terminal.columns >= minimumWideTerminalWidth {
+            line = line + " - " + game.description
+        }
+        sendLine(line)
         i = i + 1
     }
     sendLine("")
-    if gameNames.count > 0 { sendLine("V) Play a game by number") }
+    if gameIds.count > 0 { sendLine("V) Play a game by number") }
     if hasPermission(BasicRepl) { sendLine("B) BASIC prompt") }
     sendLine("Q) Return to Main Menu")
     sendLine("")
@@ -185,12 +178,21 @@ func gameNumberInput(input: string) {
         gotoScreen("games")
         return
     }
-    if n < 1 or n > gameNames.count {
+    if n < 1 or n > gameIds.count or not loadGame(gameIds[n - 1]) {
         sendLine("No such game.")
         gotoScreen("games")
         return
     }
-    startBasicFile(gameNames[n - 1])
+    switch game.type {
+    case Basic {
+        basicGameId = game.id
+        startBasicFile(game.filename)
+    }
+    else {
+        sendLine(gameTypeName(game.type) + " games are not available yet.")
+        gotoScreen("games")
+    }
+    }
 }
 
 // --- Running -----------------------------------------------------------

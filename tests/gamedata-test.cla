@@ -1,0 +1,65 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for the game data sandbox (gamedata.cla).
+// Run by scripts/test.sh from a scratch directory.
+// Exits 0 on pass, 1 on the first failure.
+
+include "../gamedata.cla"
+
+var failures: int = 0
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+on App.startCLI(args: list of string) {
+    var t: text
+    var p: string
+
+    expect(gameDataDir(7, 0) == ":GameData:7", "shared folder path")
+    expect(gameDataDir(7, 3) == ":GameData:7:3", "per-user folder path")
+
+    // a plain write goes to the user's folder, which is created on demand
+    p = gameDataPath(7, 3, "save.dat", true, ":BASIC")
+    expect(p == ":GameData:7:3:save.dat", "plain write resolves per-user")
+    expect(file.exists(":GameData:7:3"), "per-user folder created on write")
+
+    // *name is the shared folder, both ways
+    p = gameDataPath(7, 3, "*scores.dat", true, ":BASIC")
+    expect(p == ":GameData:7:scores.dat", "star write resolves shared")
+    t.append("hi")
+    expect(file.writeText(p, t, "TEXT", "ttxt"), "write a shared file")
+    expect(gameDataPath(7, 3, "*scores.dat", false, ":BASIC") == ":GameData:7:scores.dat", "star read resolves shared")
+
+    // reads fall back: per-user, shared, then the program folder
+    expect(gameDataPath(7, 3, "scores.dat", false, ":BASIC") == ":GameData:7:scores.dat", "read finds the shared copy")
+    expect(file.makeDir(":BASIC"), "program folder")
+    expect(file.writeText(":BASIC:data.txt", t, "TEXT", "ttxt"), "a file shipped with the game")
+    expect(gameDataPath(7, 3, "data.txt", false, ":BASIC") == ":BASIC:data.txt", "read finds the program copy")
+    expect(file.writeText(":GameData:7:3:data.txt", t, "TEXT", "ttxt"), "the user's own copy")
+    expect(gameDataPath(7, 3, "data.txt", false, ":BASIC") == ":GameData:7:3:data.txt", "user copy shadows the program copy")
+    expect(gameDataPath(7, 3, "missing.dat", false, ":BASIC") == ":GameData:7:3:missing.dat", "missing read names the per-user path")
+
+    // the folder itself (FILES), and what is refused
+    expect(gameDataPath(7, 3, "", false, ":BASIC") == ":GameData:7:3", "empty name is the user folder")
+    expect(gameDataPath(7, 3, "*", false, ":BASIC") == ":GameData:7", "star alone is the shared folder")
+    expect(gameDataPath(7, 3, "a:b", true, ":BASIC") == "", "colon refused")
+    expect(gameDataPath(7, 3, "*a:b", false, ":BASIC") == "", "colon refused after star")
+
+    // a second game and user get their own folders
+    p = gameDataPath(8, 4, "x", true, ":BASIC")
+    expect(p == ":GameData:8:4:x" and file.exists(":GameData:8:4"), "other game and user")
+
+    if failures > 0 {
+        log("gamedata-test: FAILED")
+        quit 1
+    }
+    log("gamedata-test: all passed")
+    quit
+}

@@ -1,0 +1,71 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// Where a running game may read and write: the sandbox every
+// interpreter (BASIC today, the Z-machine later) resolves bare file
+// names through. Layout, next to the application:
+//
+//   :GameData:<gameId>:            shared by every caller of that game
+//   :GameData:<gameId>:<userId>:   one caller's own files
+//
+// A game names files with no path. A plain name is the caller's own
+// file; a leading `*` means the shared one (high-score tables). Writes
+// go there, creating the folders on first use. Reads look in the
+// caller's folder, then the shared one, then the folder the program
+// itself was installed in (data shipped with the game, read-only), and
+// name the caller's path when nothing exists so the interpreter's own
+// "file not found" fires. Colons are refused: nothing can name a path
+// outside the sandbox. docs/games.md.
+
+
+const gameDataFolder: string = ":GameData"
+
+// The shared folder (userId 0) or one caller's folder of a game.
+func gameDataDir(gameId: int, userId: int): string {
+    var d: string = gameDataFolder + ":" + string(gameId)
+    if userId == 0 { return d }
+    return d + ":" + string(userId)
+}
+
+func gameDataEnsureDir(p: string): bool {
+    if file.exists(p) { return true }
+    return file.makeDir(p)
+}
+
+// Create the folder chain down to gameDataDir(gameId, userId); makeDir
+// is one level at a time.
+func gameDataEnsure(gameId: int, userId: int): bool {
+    if not gameDataEnsureDir(gameDataFolder) { return false }
+    if not gameDataEnsureDir(gameDataDir(gameId, 0)) { return false }
+    if userId == 0 { return true }
+    return gameDataEnsureDir(gameDataDir(gameId, userId))
+}
+
+// Resolve `name` for a game run by user `userId`; `programFolder` is
+// where the game's own file lives (the read-only last resort). "" when
+// the name is refused or the folders cannot be made.
+func gameDataPath(gameId: int, userId: int, name: string, write: bool, programFolder: string): string {
+    var n: string = name
+    var shared: bool = false
+    var own: string
+    var p: string
+    if n.length > 0 and n[0] == '*' {
+        shared = true
+        n = n[1, n.length - 1]
+    }
+    if n.indexOf(':') >= 0 { return "" }
+    if shared { own = gameDataDir(gameId, 0) } else { own = gameDataDir(gameId, userId) }
+    if write {
+        if shared {
+            if not gameDataEnsure(gameId, 0) { return "" }
+        } else {
+            if not gameDataEnsure(gameId, userId) { return "" }
+        }
+    }
+    if n == "" { return own }
+    p = own + ":" + n
+    if write or shared or file.exists(p) { return p }
+    if file.exists(gameDataDir(gameId, 0) + ":" + n) { return gameDataDir(gameId, 0) + ":" + n }
+    if file.exists(programFolder + ":" + n) { return programFolder + ":" + n }
+    return p
+}

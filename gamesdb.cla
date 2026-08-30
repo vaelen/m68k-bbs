@@ -1,0 +1,149 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// The Games database: one record per entry on the Games menu. The
+// type says how the game runs and which folder its file lives in;
+// only Basic runs today (games/basic.cla). Layout and rationale:
+// docs/games.md.
+//
+// On-disk record ("Games" database, 256 bytes, vDB record ID =
+// game ID = menu order):
+//   0    name, 64-byte Pascal field
+//   64   description, 64-byte Pascal field
+//   128  filename, 64-byte Pascal field: a bare file name inside the
+//        type's folder (:BASIC for Basic, :Externals otherwise), never
+//        an HFS path
+//   192  type (1 byte: the GameType member value)
+//   193  flags (u8; bit 0 = enabled -- shown on the Games menu)
+//   194+ reserved (zero)
+
+include "vdb.cla"
+
+// The member value is the on-disk type byte: append, never renumber.
+enum GameType {
+    Basic    "BASIC"
+    ZCode3   "Z-code v3"
+    ZCode5   "Z-code v5"
+    Native   "Native"
+    Hermes22 "Hermes 2.2"
+    Hermes31 "Hermes 3.1"
+    Hermes35 "Hermes 3.5"
+}
+
+const gameRecordSize: int = 256
+const gOffName: int = 0
+const gOffDescription: int = 64
+const gOffFilename: int = 128
+const gOffType: int = 192
+const gOffFlags: int = 193
+const gameFlagEnabled: int = 1
+const gameTypeBasicValue: int = 0   // int(Basic): a bare member needs an expected type
+const gameTypeMax: int = 6          // int(Hermes35)
+
+record Game {
+    id: int
+    name: string(63)
+    description: string(63)
+    filename: string(63)
+    type: GameType
+    enabled: bool
+}
+
+var gamesDb: Database
+var game: Game      // last loaded game
+
+// Open the Games database, creating it on first run.
+func gamesOpen(): bool {
+    gamesDb = dbOpen("Games", "68BB")
+    if dbIsOpen(gamesDb) { return true }
+    gamesDb = dbCreate("Games", gameRecordSize, "68BB")
+    return dbIsOpen(gamesDb)
+}
+
+func gamesClose() {
+    if dbIsOpen(gamesDb) { dbClose(gamesDb) }
+    gamesDb = new Database
+}
+
+func gameCount(): int {
+    return dbRecordCount(gamesDb)
+}
+
+// For enumerating games: loop loadGame over 1 .. gamesNextId()-1.
+func gamesNextId(): int {
+    return dbNextRecordId(gamesDb)
+}
+
+func gameTypeName(t: GameType): string {
+    switch t {
+    case Basic    { return "BASIC" }
+    case ZCode3   { return "Z-code v3" }
+    case ZCode5   { return "Z-code v5" }
+    case Native   { return "Native" }
+    case Hermes22 { return "Hermes 2.2" }
+    case Hermes31 { return "Hermes 3.1" }
+    case Hermes35 { return "Hermes 3.5" }
+    }
+    return "?"
+}
+
+// Serialize game fields into a record image (dbAdd/dbUpdate zero-pad
+// it to record_size).
+func packGame(name: string, description: string, filename: string, t: GameType, enabled: bool): text {
+    var r: text
+    var n: string = name
+    var d: string = description
+    var f: string = filename
+    if n.length > 63 { n = n[0, 63] }
+    if d.length > 63 { d = d[0, 63] }
+    if f.length > 63 { f = f[0, 63] }
+    r.append(char(n.length))
+    r.append(n)
+    while r.length < gOffDescription {
+        r.append(char(0))
+    }
+    r.append(char(d.length))
+    r.append(d)
+    while r.length < gOffFilename {
+        r.append(char(0))
+    }
+    r.append(char(f.length))
+    r.append(f)
+    while r.length < gOffType {
+        r.append(char(0))
+    }
+    r.append(char(int(t)))
+    if enabled { r.append(char(gameFlagEnabled)) } else { r.append(char(0)) }
+    return r
+}
+
+// Create a game; returns the new game ID, or -1.
+func createGame(name: string, description: string, filename: string, t: GameType, enabled: bool): int {
+    return dbAdd(gamesDb, packGame(name, description, filename, t, enabled))
+}
+
+// Write the global `game` back to its record.
+func saveGame(): bool {
+    if game.id < 1 { return false }
+    return dbUpdate(gamesDb, game.id, packGame(game.name, game.description, game.filename, game.type, game.enabled))
+}
+
+// The type byte as a member; a value no member owns (a newer app wrote
+// it) reads as Basic instead of raising GameType()'s runtime error.
+func gameTypeFromByte(b: int): GameType {
+    if b < 0 or b > gameTypeMax { return Basic }
+    return GameType(b)
+}
+
+// Load game `id` into the global `game`.
+func loadGame(id: int): bool {
+    var rec: text = dbFind(gamesDb, id)
+    if rec.length != gameRecordSize { return false }
+    game.id = id
+    game.name = dbExtractString(rec, gOffName)
+    game.description = dbExtractString(rec, gOffDescription)
+    game.filename = dbExtractString(rec, gOffFilename)
+    game.type = gameTypeFromByte(int(rec[gOffType]))
+    game.enabled = (int(rec[gOffFlags]) & gameFlagEnabled) != 0
+    return true
+}

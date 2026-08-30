@@ -131,7 +131,8 @@ Full background: `docs/snow-hdd-howto.md`.
 Before an e2e test run against the emulator, delete all database files
 from the image (while Snow is stopped) so every run starts from the
 same baseline: `hdel` the vDB files — `Users.*`, `Boards.*`, `BRD*`,
-`Mail.*`, `Areas.*`, `ARE*`, `Networks.*`, `Wall.*` — plus
+`Mail.*`, `Areas.*`, `ARE*`, `Networks.*`, `Wall.*`, `Games.*` — plus
+the `GameData` folder,
 `Logins.txt`, `MOTD.txt` and the `FTN` folder (empty `FTN:In`, `FTN:Out`, `FTN:Tmp`, then `hrmdir`),
 then reseed. The vDB format is identical on both lanes (big-endian),
 so seed data can be built with a host-lane CLI program and `hcopy -r`'d
@@ -314,8 +315,8 @@ inputChar (bbs.cla) → processInput`.
   approval." via `pendingFileCount`. `showPause(next)` parks on the
   input-swallowing `"pause"` screen and `pauseChoice` runs
   `pauseNext`. Main-menu `W` runs the wall (`wallFromMenu`, back to
-  main after), `D` shows the MOTD then a pause, `G` opens the (still
-  empty) `games` menu (`docs/games.md`).
+  main after), `D` shows the MOTD then a pause, `G` opens the `games`
+  menu (`docs/games.md`).
   Main-menu `T` returns to the terminal-type menu; `applyTerminal`
   re-sends the VT100 init and comes back to the main menu. Main-menu
   `L` draws the last 20 sessions from the login log
@@ -511,6 +512,15 @@ inputChar (bbs.cla) → processInput`.
   `(` -- the Menu Manager dims such an item). A `FileInfo` temp is too big for
   the 68k backend — assign `file.info(p)` to a local, never
   `file.info(p).size`. `docs/maintenance.md`.
+- `gamesdb.cla` — the "Games" vDB (256-byte records: name/
+  description/filename — bare, inside the type's folder — /type byte
+  = `enum GameType` (Basic, ZCode3, ZCode5, Native, Hermes22,
+  Hermes31, Hermes35;
+  member value = the byte, append-only; unknown loads as Basic)/flags
+  bit 0 = enabled; record ID = game ID = menu order; `areasdb.cla`'s
+  API shape). Sysop menu `G` is the L/S/E/N/D tree + New Game wizard
+  (name → description → type, `B` only today → file name);
+  `docs/games.md`.
 - `motd.cla` — the Message of the Day, `MOTD.txt` (TEXT/ttxt):
   `motdText` loaded at launch (`motdLoad`, missing → empty), `motdSave`
   writes and updates it; shown wrapped by `showMotd` (bbs.cla). Sysop
@@ -530,8 +540,15 @@ inputChar (bbs.cla) → processInput`.
   write)`, `basicEnv(name)` and drives `basicNew`/`basicLoad`/
   `basicRun`/`basicPrompt`/`basicStep(budget)`/`basicLine`/`basicKey`/
   `basicStop` off `basicState`. `games/basic.cla` is the BBS wrapper:
-  the Games menu lists `:BASIC:*.BAS` (`gamenum` prompt), sysops get
-  `B` = the `Ok` prompt in `:BASIC:<user>:`, screens `basic`
+  the Games menu lists the enabled rows of the Games database
+  (`gamenum` prompt; a `Basic` pick runs `:BASIC:<filename>` with
+  `basicGameId` set, other types say "not available yet"), sysops get
+  `B` = the `Ok` prompt in `:BASIC:<user>:`; `basicPath` is
+  `gameDataPath` while a game runs (`gamedata.cla`:
+  `:GameData:<gameId>:<userId>:name`, `*name` = the shared
+  `:GameData:<gameId>:name`, reads fall back per-user → shared →
+  `:BASIC:`, folders made on first write, colons refused — the
+  sandbox every interpreter shares; `docs/games.md`), screens `basic`
   (character mode, no echo) / `basicline` (line mode), `basicPump()`
   from input and the `every 2 ticks` block in bbs.cla,
   `disconnected()` → `basicStop()`. `basic/basic-host.cla` +
@@ -618,6 +635,8 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
 - `banned.cla` — banned-username list (`Banned.txt`), sysop-editable
 - `config.cla` — `Config.txt` settings with compiled defaults
 - `walldb.cla`, `wall.cla` — wall database and screens
+- `gamesdb.cla` — Games database (menu entries: type/name/file);
+  `gamedata.cla` — the `:GameData:<game>:<user>` sandbox games save into
 - `motd.cla` — Message of the Day file
 - `heap.cla`, `maint.cla` — body-heap compactor and the daily maintenance run
 - `scanner.cla`, `telnet.cla`, `user.cla`, `usersdb.cla`, `boardsdb.cla`,

@@ -164,9 +164,15 @@ Square brackets mark optional parts.
 - `ERROR n` — raise error `n` (a program's own errors use numbers
   above 76).
 
-**Files** — three sequential files, numbered 1–3, in the folder the
-BBS gives you (no paths; `:` is refused). A name without a `.` gets
-`.BAS`.
+**Files** — three sequential files, numbered 1–3, by bare name (no
+paths; `:` is refused). A game has two folders: its own for each
+caller, and one shared by everyone. `OPEN "save.dat"` is the caller's
+own file; `OPEN "*scores.dat"` — a leading `*` — is the shared one.
+Reading a plain name looks in the caller's folder, then the shared
+one, then the files installed with the game; writing always goes to
+the caller's own folder (or the shared one with `*`). At the `Ok`
+prompt the only folder is your own. A `LOAD`/`SAVE` name without a
+`.` gets `.BAS`.
 
 - `OPEN "name" FOR INPUT|OUTPUT|APPEND AS #n`, or the older `OPEN
   "I"|"O"|"A", #n, "name"`.

@@ -1,0 +1,93 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for the Games database module (gamesdb.cla).
+// Run by scripts/test.sh from a scratch directory.
+// Exits 0 on pass, 1 on the first failure.
+
+include "../gamesdb.cla"
+
+var failures: int = 0
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+on App.startCLI(args: list of string) {
+    var id1: int
+    var id2: int
+    var rec: text
+
+    expect(gamesOpen(), "games db created on first open")
+    expect(gameCount() == 0, "no games yet")
+    expect(not loadGame(1), "missing game fails to load")
+
+    id1 = createGame("Star Trek", "The 1978 classic", "QBasic-SST0.BAS", Basic, true)
+    id2 = createGame("Zork", "Hermes door", "Zork.ext", Hermes22, false)
+    expect(id1 == 1 and id2 == 2, "game IDs assigned in order")
+    expect(gameCount() == 2, "count tracks creation")
+    expect(gamesNextId() == 3, "next ID exposed for enumeration")
+
+    expect(loadGame(id1), "load first game")
+    expect(game.id == id1, "game id set")
+    expect(game.name == "Star Trek", "name roundtrip")
+    expect(game.description == "The 1978 classic", "description roundtrip")
+    expect(game.filename == "QBasic-SST0.BAS", "filename roundtrip")
+    expect(game.type == Basic, "type roundtrip")
+    expect(game.enabled, "enabled roundtrip")
+
+    expect(loadGame(id2), "load second game")
+    expect(game.type == Hermes22, "hermes type roundtrip")
+    expect(not game.enabled, "disabled roundtrip")
+
+    // the on-disk byte is the enum's value
+    rec = dbFind(gamesDb, id2)
+    expect(int(rec[gOffType]) == 4, "type byte is the enum value")
+
+    // edit through the global and save
+    game.description = "Interactive fiction"
+    game.type = Native
+    game.enabled = true
+    expect(saveGame(), "save edited game")
+    expect(loadGame(id1), "load other game in between")
+    expect(loadGame(id2), "reload edited game")
+    expect(game.description == "Interactive fiction", "description edit persisted")
+    expect(game.type == Native, "type edit persisted")
+    expect(game.enabled, "enabled edit persisted")
+
+    // a type byte no enum member owns loads as Basic rather than crashing
+    rec = dbFind(gamesDb, id2)
+    rec[gOffType] = char(200)
+    expect(dbUpdate(gamesDb, id2, rec), "write an unknown type byte")
+    expect(loadGame(id2), "unknown type still loads")
+    expect(game.type == Basic, "unknown type reads as Basic")
+
+    // long fields are truncated to 63 chars
+    id1 = createGame("0123456789012345678901234567890123456789012345678901234567890123456789", "d", "f", Basic, true)
+    expect(loadGame(id1), "load game with long name")
+    expect(game.name.length == 63, "name truncated to 63 chars")
+
+    expect(gameTypeName(Basic) == "BASIC", "type name for the menu")
+    expect(gameTypeName(Hermes31) == "Hermes 3.1", "hermes type name")
+    expect(gameTypeName(ZCode5) == "Z-code v5", "zcode type name")
+
+    // persistence across close/open
+    gamesClose()
+    expect(gamesOpen(), "games db reopens")
+    expect(gameCount() == 3, "count survives reopen")
+    expect(loadGame(1), "records survive reopen")
+    expect(game.name == "Star Trek", "name intact after reopen")
+    gamesClose()
+
+    if failures > 0 {
+        log("gamesdb-test: FAILED")
+        quit 1
+    }
+    log("gamesdb-test: all passed")
+    quit
+}

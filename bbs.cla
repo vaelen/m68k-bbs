@@ -19,6 +19,8 @@ include "boards.cla"
 include "maildb.cla"
 include "areasdb.cla"
 include "filesdb.cla"
+include "gamesdb.cla"
+include "gamedata.cla"
 include "mail.cla"
 include "files.cla"
 include "editor.cla"
@@ -469,6 +471,7 @@ func displayMenu() {
     case "sysop"       { drawSysopMenu() }
     case "sysopboards" { drawSysopBoardsMenu() }
     case "sysopareas"  { drawSysopAreasMenu() }
+    case "sysopgames"  { drawSysopGamesMenu() }
     case "sysopusers"  { drawSysopUsersMenu() }
     case "sysopnets"   { drawSysopNetsMenu() }
     case "sysopbanned" { drawSysopBannedMenu() }
@@ -514,14 +517,15 @@ func lineScreen(s: string): bool {
     switch s {
     case "login", "password", "newname", "newpass", "newpass2", "newemail" { return true }
     case "banadd", "bandel" { return true }
-    case "showuser", "showboard", "showarea" { return true }
-    case "edituserid", "editboardid", "editareaid" { return true }
-    case "edituserval", "editboardval", "editareaval", "useraccess", "confighour" { return true }
-    case "deluserid", "delboardid", "delareaid" { return true }
+    case "showuser", "showboard", "showarea", "showgame" { return true }
+    case "edituserid", "editboardid", "editareaid", "editgameid" { return true }
+    case "edituserval", "editboardval", "editareaval", "editgameval", "useraccess", "confighour" { return true }
+    case "deluserid", "delboardid", "delareaid", "delgameid" { return true }
     case "boardnum", "areanum", "postnum", "filenum", "mailnum" { return true }
     case "mailto", "mailaddr", "editsubject", "editbody", "delpostnum", "delfilenum" { return true }
     case "newboardname", "newboarddesc", "newboardnet", "newboardtag" { return true }
     case "newareaname", "newareadesc", "newareafolder" { return true }
+    case "newgamename", "newgamedesc", "newgametype", "newgamefile" { return true }
     case "upname", "updesc", "editfiledesc" { return true }
     case "shownet", "editnetid", "editnetval", "delnetid", "newnetname", "areafixreq" { return true }
     case "wallentry" { return true }
@@ -549,24 +553,30 @@ func displayPrompt() {
     case "sysop"       { sendData("Sysop Menu> ") }
     case "sysopboards" { sendData("Sysop:Boards> ") }
     case "sysopareas"  { sendData("Sysop:Areas> ") }
+    case "sysopgames"  { sendData("Sysop:Games> ") }
     case "sysopusers"  { sendData("Sysop:Users> ") }
     case "showuser"    { sendData("User ID or name: ") }
     case "showboard"   { sendData("Board ID: ") }
     case "showarea"    { sendData("Area ID: ") }
+    case "showgame"    { sendData("Game ID: ") }
     case "edituserid"  { sendData("User ID or name: ") }
     case "editboardid" { sendData("Board ID: ") }
     case "editareaid"  { sendData("Area ID: ") }
-    case "edituser", "editboard", "editarea" { sendData("Field letter, S)ave, Q)uit: ") }
+    case "editgameid"  { sendData("Game ID: ") }
+    case "edituser", "editboard", "editarea", "editgame" { sendData("Field letter, S)ave, Q)uit: ") }
     case "edituserval"  { editUserValuePrompt() }
     case "useraccess"   { sendData("Flag to toggle, ?)Redraw, Enter = done: ") }
     case "editboardval" { editBoardValuePrompt() }
     case "editareaval"  { editAreaValuePrompt() }
+    case "editgameval"  { editGameValuePrompt() }
     case "deluserid"    { sendData("User ID or name: ") }
     case "delboardid"   { sendData("Board ID: ") }
     case "delareaid"    { sendData("Area ID: ") }
+    case "delgameid"    { sendData("Game ID: ") }
     case "deluserconfirm"  { sendData("Delete this user? (Y/N): ") }
     case "delboardconfirm" { sendData("Delete this board? (Y/N): ") }
     case "delareaconfirm"  { sendData("Delete this area? (Y/N): ") }
+    case "delgameconfirm"  { sendData("Delete this game? (Y/N): ") }
     case "boards" { sendData("Board ID> ") }
     case "areas" { sendData("Area ID> ") }
     case "boardnum" { sendData("Board ID: ") }
@@ -598,6 +608,10 @@ func displayPrompt() {
     case "newareadesc"   { sendData("Description: ") }
     case "newareafolder" { sendData("Folder (Enter = app directory): ") }
     case "newareaaccess" { sendData("Access (A=all, S=sysop) [A]: ") }
+    case "newgamename" { sendData("Game name: ") }
+    case "newgamedesc" { sendData("Description: ") }
+    case "newgametype" { sendData("Type (B=BASIC) [B]: ") }
+    case "newgamefile" { sendData("File name: ") }
     case "sysopnets"   {
         if ftnEnabled { sendLine("FTN polling is ON.") } else { sendLine("FTN polling is OFF.") }
         sendData("Sysop:Networks> ")
@@ -753,13 +767,16 @@ func processInput(input: string) {
     case "sysop"       { sysopChoice(input) }
     case "sysopboards" { sysopBoardsChoice(input) }
     case "sysopareas"  { sysopAreasChoice(input) }
+    case "sysopgames"  { sysopGamesChoice(input) }
     case "sysopusers"  { sysopUsersChoice(input) }
     case "userlist"    { userListInput(input) }
     case "boardlist"   { boardListInput(input) }
     case "arealist"    { areaListInput(input) }
+    case "gamelist"    { gameListInput(input) }
     case "showuser"    { showUserInput(input) }
     case "showboard"   { showBoardInput(input) }
     case "showarea"    { showAreaInput(input) }
+    case "showgame"    { showGameInput(input) }
     case "edituserid"   { editUserIdInput(input) }
     case "edituser"     { editUserChoice(input) }
     case "edituserval"  { editUserValue(input) }
@@ -770,12 +787,17 @@ func processInput(input: string) {
     case "editareaid"   { editAreaIdInput(input) }
     case "editarea"     { editAreaChoice(input) }
     case "editareaval"  { editAreaValue(input) }
+    case "editgameid"   { editGameIdInput(input) }
+    case "editgame"     { editGameChoice(input) }
+    case "editgameval"  { editGameValue(input) }
     case "deluserid"       { delUserIdInput(input) }
     case "deluserconfirm"  { delUserConfirm(input) }
     case "delboardid"      { delBoardIdInput(input) }
     case "delboardconfirm" { delBoardConfirm(input) }
     case "delareaid"       { delAreaIdInput(input) }
     case "delareaconfirm"  { delAreaConfirm(input) }
+    case "delgameid"       { delGameIdInput(input) }
+    case "delgameconfirm"  { delGameConfirm(input) }
     case "boards" { boardPickerInput(input) }
     case "areas" { areaPickerInput(input) }
     case "boardnum" { boardNumInput(input) }
@@ -811,6 +833,10 @@ func processInput(input: string) {
     case "newareadesc"   { newAreaDesc(input) }
     case "newareafolder" { newAreaFolder(input) }
     case "newareaaccess" { newAreaAccess(input) }
+    case "newgamename" { newGameName(input) }
+    case "newgamedesc" { newGameDesc(input) }
+    case "newgametype" { newGameType(input) }
+    case "newgamefile" { newGameFile(input) }
     case "sysopnets"   { sysopNetsChoice(input) }
     case "sysopbanned" { sysopBannedChoice(input) }
     case "sysopconfig" { sysopConfigChoice(input) }
@@ -1334,6 +1360,11 @@ on App.launch {
     } else {
         log("Areas database unavailable: " + lastError.message)
     }
+    if gamesOpen() {
+        log("Games database open (" + intStr(gameCount()) + " games).")
+    } else {
+        log("Games database unavailable: " + lastError.message)
+    }
     if wallOpen() {
         log("Wall database open (" + intStr(wallCount()) + " messages).")
     } else {
@@ -1369,6 +1400,7 @@ extend File {
         mailClose()
         areasClose()
         filesClose()
+        gamesClose()
         wallClose()
         quit
     }
@@ -1428,6 +1460,7 @@ extend Main {
         mailClose()
         areasClose()
         filesClose()
+        gamesClose()
         wallClose()
         quit
     }

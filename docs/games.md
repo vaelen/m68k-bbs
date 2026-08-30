@@ -1,9 +1,74 @@
-# Games — plan and research notes
+# Games — the Games database, plan and research notes
 
-How 68kBBS will offer games to callers, and how a sysop adds their own.
-Main-menu `G` opens the (still empty) `games` menu in `bbs.cla`. This
-page records the options weighed on 2026-08-27, the plan, and what the
-Hermes externals research established so far.
+How 68kBBS offers games to callers, and how a sysop adds their own.
+Main-menu `G` opens the `games` menu (`games/basic.cla`), drawn from
+the Games database below. The rest of this page records the options
+weighed on 2026-08-27, the plan, and what the Hermes externals
+research established so far.
+
+## The Games database
+
+`gamesdb.cla` — the "Games" vDB, one record per menu entry; the vDB
+record ID is the game ID and the menu order. 256-byte records:
+
+| offset | field |
+|---|---|
+| 0 | name, 64-byte Pascal field |
+| 64 | description, 64-byte Pascal field (shown after the name on wide terminals) |
+| 128 | filename, 64-byte Pascal field — a bare file name inside the type's folder, never an HFS path (the BASIC sandbox refuses colons) |
+| 192 | type, 1 byte: the `GameType` member value |
+| 193 | flags, 1 byte: bit 0 = enabled (listed on the Games menu) |
+| 194+ | reserved, zero |
+
+`enum GameType { Basic, ZCode3, ZCode5, Native, Hermes22, Hermes31, Hermes35 }` — the
+member value is the on-disk byte, so members are appended, never
+renumbered; a byte no member owns loads as `Basic` (`gameTypeFromByte`)
+rather than raising `GameType()`'s runtime error. The type says how
+the game runs and where its file lives: `Basic` = `:BASIC:<filename>`
+run by the interpreter (stage 2 below); `ZCode3`/`ZCode5` = a story
+file for the Z-machine interpreter to come; `Native` and the `Hermes*`
+versions = a code resource in `:Externals:` (stages 1 and 3, not yet
+implemented — picking one says so and returns to the menu). Folding the
+Hermes API version into the type saves a column.
+
+API, the `areasdb.cla` shape: `gamesOpen`/`gamesClose`, `createGame`,
+`loadGame(id)` into the global `game`, `saveGame`, `gameCount`,
+`gamesNextId`, `gameTypeName`. `tests/gamesdb-test.cla`.
+
+## Game data — where a game may read and write
+
+`gamedata.cla`. Every interpreter resolves a game's bare file names
+through `gameDataPath(gameId, userId, name, write, programFolder)`
+(BASIC's `basicPath` while a game runs; the Z-machine's save/restore
+later). The folders live next to the application:
+
+| path | holds |
+|---|---|
+| `:GameData:<gameId>:` | data shared by every caller of that game — high-score tables, a persistent world |
+| `:GameData:<gameId>:<userId>:` | one caller's own files — saves |
+
+The game names files with no path. A plain name is the caller's own
+file; a leading `*` means the shared one. **Writes** go to that folder,
+creating `:GameData`, the game's and the caller's folders on first
+use (`gameDataEnsure`; `file.makeDir` is one level at a time).
+**Reads** of a plain name look in the caller's folder, then the shared
+one, then `programFolder` (`:BASIC:` — data installed with the game,
+read-only), and name the caller's path when nothing exists so the
+interpreter's own "file not found" fires; `*name` reads the shared
+folder only. `""` is the folder itself (BASIC's `FILES`). A colon
+anywhere is refused, so no name reaches outside the sandbox. The keys
+are record IDs, not names: a renamed game or user keeps its data, a
+deleted one orphans it (deleting never touches files). Hermes
+externals do their own Mac file I/O and cannot be sandboxed this way.
+`tests/gamedata-test.cla`.
+
+**Sysop menu `G`** (`sysop.cla`) is the usual L/S/E/N/D tree: paged
+list (ID/Name narrow; + Type/File/On wide), detail card, lettered edit
+card (`N`ame, `D`escription, `T`ype, `F`ile, `E`nabled toggles; `S`
+saves), Y/N delete over the card, and the New Game wizard: name →
+description → type (`B`, the default) → file name, created enabled.
+Deleting a row never touches the game's file. Adding a BASIC game is
+therefore: put the `.BAS` file in `:BASIC:`, then register it here.
 
 ## Plan
 
@@ -17,7 +82,8 @@ Three stages, in development order:
    a screen-state machine driven by `processInput`, like every other
    screen).
 2. **BASIC games via a native Clarus BASIC.** *Shipped 2026-08-28:
-   `basic/basic.cla` and `games/basic.cla`, see `docs/basic.md`.* A tokenizer plus
+   `basic/basic.cla` and `games/basic.cla`, see `docs/basic.md`; the
+   Games database replaced the folder listing on 2026-08-30.* A tokenizer plus
    tree-walking interpreter written in Clarus (native 68k, so fast
    enough), with a BBS-flavored I/O layer: `PRINT` → `sendData`,
    `INPUT` → a line-mode prompt (the interpreter parks like any other

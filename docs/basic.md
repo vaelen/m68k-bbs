@@ -158,9 +158,10 @@ the BBS at all (a per-program `ECHO` setting if someone wants it).
 
 `games/basic.cla`, included by `bbs.cla` after `motd.cla`:
 
-- The Games menu lists `*.BAS` in the `BASIC` folder next to the app
-  (`file.list`, sorted), numbered; `V` or a digit opens the `Game
-  number:` prompt (`gamenum`) and the pick runs. Callers with the
+- The Games menu lists the enabled entries of the Games database
+  (`gamesdb.cla`, `docs/games.md`) in ID order, numbered; `V` or a
+  digit opens the `Game number:` prompt (`gamenum`) and a `Basic`
+  pick reads `:BASIC:<filename>` and runs it. Callers with the
   BasicRepl access flag also see `B) BASIC prompt`.
 - Screens: `basic` (character mode — keys go to `basicKey`, and
   `echoActive()` is off so `INKEY$` games control what shows) and
@@ -180,9 +181,11 @@ the BBS at all (a per-program `ECHO` setting if someone wants it).
   ANSI only when `terminal.ansi` (CLS = clear + home, LOCATE = CUP,
   COLOR = the QBasic 0–15 palette mapped to `Color` via `setColor`/
   `setBackground`), else CLS is `terminal.rows` blank lines and the
-  rest is ignored; BEEP is a BEL always. `basicPath` refuses any `:`,
-  maps to `:BASIC:name` while a game runs (writes below sysop refused)
-  and `:BASIC:<username>:name` at the prompt (folder created on first
+  rest is ignored; BEEP is a BEL always. `basicPath` refuses any `:`;
+  while a game runs it is `gameDataPath` (`gamedata.cla`,
+  `docs/games.md`: `:GameData:<gameId>:<userId>:name`, `*name` the
+  shared `:GameData:<gameId>:name`, reads falling back to `:BASIC:`),
+  at the prompt `:BASIC:<username>:name` (folder created on first
   write). `basicEnv` answers `USER`, `ACCESS` (the flag bits as a decimal
   int — `docs/access.md`), `COLUMNS`, `ROWS`.
 - `basicWidth = terminal.columns` (the physical width minus one, as
@@ -191,7 +194,9 @@ the BBS at all (a per-program `ECHO` setting if someone wants it).
   `SYSTEM`, an error in run-only mode) returns to the Games menu.
 
 To stock the Games folder on the Snow image (Snow stopped):
-`hmkdir :BASIC && hcopy -t basic/QBasic-SST0.BAS :BASIC:QBasic-SST0.BAS`.
+`hmkdir :BASIC && hcopy -t basic/QBasic-SST0.BAS :BASIC:QBasic-SST0.BAS`,
+then register it from Sysop > Games > New Game (type B, file name
+`QBasic-SST0.BAS`).
 
 ## The host wrapper
 
