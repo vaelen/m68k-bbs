@@ -48,13 +48,13 @@ later). The folders live next to the application:
 | `:GameData:<gameId>:<userId>:` | one caller's own files — saves |
 
 The game names files with no path. A plain name is the caller's own
-file; a leading `*` means the shared one. **Writes** go to that folder,
+file; a leading `_` means the shared one. **Writes** go to that folder,
 creating `:GameData`, the game's and the caller's folders on first
 use (`gameDataEnsure`; `file.makeDir` is one level at a time).
 **Reads** of a plain name look in the caller's folder, then the shared
 one, then `programFolder` (`:BASIC:` — data installed with the game,
 read-only), and name the caller's path when nothing exists so the
-interpreter's own "file not found" fires; `*name` reads the shared
+interpreter's own "file not found" fires; `_name` reads the shared
 folder only. `""` is the folder itself (BASIC's `FILES`). A colon
 anywhere is refused, so no name reaches outside the sandbox. The keys
 are record IDs, not names: a renamed game or user keeps its data, a

@@ -183,7 +183,7 @@ the BBS at all (a per-program `ECHO` setting if someone wants it).
   `setBackground`), else CLS is `terminal.rows` blank lines and the
   rest is ignored; BEEP is a BEL always. `basicPath` refuses any `:`;
   while a game runs it is `gameDataPath` (`gamedata.cla`,
-  `docs/games.md`: `:GameData:<gameId>:<userId>:name`, `*name` the
+  `docs/games.md`: `:GameData:<gameId>:<userId>:name`, `_name` the
   shared `:GameData:<gameId>:name`, reads falling back to `:BASIC:`),
   at the prompt `:BASIC:<username>:name` (folder created on first
   write). `basicEnv` answers `USER`, `ACCESS` (the flag bits as a decimal

@@ -30,12 +30,12 @@ on App.startCLI(args: list of string) {
     expect(p == ":GameData:7:3:save.dat", "plain write resolves per-user")
     expect(file.exists(":GameData:7:3"), "per-user folder created on write")
 
-    // *name is the shared folder, both ways
-    p = gameDataPath(7, 3, "*scores.dat", true, ":BASIC")
-    expect(p == ":GameData:7:scores.dat", "star write resolves shared")
+    // _name is the shared folder, both ways
+    p = gameDataPath(7, 3, "_scores.dat", true, ":BASIC")
+    expect(p == ":GameData:7:scores.dat", "underscore write resolves shared")
     t.append("hi")
     expect(file.writeText(p, t, "TEXT", "ttxt"), "write a shared file")
-    expect(gameDataPath(7, 3, "*scores.dat", false, ":BASIC") == ":GameData:7:scores.dat", "star read resolves shared")
+    expect(gameDataPath(7, 3, "_scores.dat", false, ":BASIC") == ":GameData:7:scores.dat", "underscore read resolves shared")
 
     // reads fall back: per-user, shared, then the program folder
     expect(gameDataPath(7, 3, "scores.dat", false, ":BASIC") == ":GameData:7:scores.dat", "read finds the shared copy")
@@ -48,9 +48,9 @@ on App.startCLI(args: list of string) {
 
     // the folder itself (FILES), and what is refused
     expect(gameDataPath(7, 3, "", false, ":BASIC") == ":GameData:7:3", "empty name is the user folder")
-    expect(gameDataPath(7, 3, "*", false, ":BASIC") == ":GameData:7", "star alone is the shared folder")
+    expect(gameDataPath(7, 3, "_", false, ":BASIC") == ":GameData:7", "underscore alone is the shared folder")
     expect(gameDataPath(7, 3, "a:b", true, ":BASIC") == "", "colon refused")
-    expect(gameDataPath(7, 3, "*a:b", false, ":BASIC") == "", "colon refused after star")
+    expect(gameDataPath(7, 3, "_a:b", false, ":BASIC") == "", "colon refused after underscore")
 
     // a second game and user get their own folders
     p = gameDataPath(8, 4, "x", true, ":BASIC")

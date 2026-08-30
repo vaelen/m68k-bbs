@@ -9,7 +9,7 @@
 //   :GameData:<gameId>:<userId>:   one caller's own files
 //
 // A game names files with no path. A plain name is the caller's own
-// file; a leading `*` means the shared one (high-score tables). Writes
+// file; a leading `_` means the shared one (high-score tables). Writes
 // go there, creating the folders on first use. Reads look in the
 // caller's folder, then the shared one, then the folder the program
 // itself was installed in (data shipped with the game, read-only), and
@@ -49,7 +49,7 @@ func gameDataPath(gameId: int, userId: int, name: string, write: bool, programFo
     var shared: bool = false
     var own: string
     var p: string
-    if n.length > 0 and n[0] == '*' {
+    if n.length > 0 and n[0] == '_' {
         shared = true
         n = n[1, n.length - 1]
     }

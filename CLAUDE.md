@@ -545,7 +545,7 @@ inputChar (bbs.cla) → processInput`.
   `basicGameId` set, other types say "not available yet"), sysops get
   `B` = the `Ok` prompt in `:BASIC:<user>:`; `basicPath` is
   `gameDataPath` while a game runs (`gamedata.cla`:
-  `:GameData:<gameId>:<userId>:name`, `*name` = the shared
+  `:GameData:<gameId>:<userId>:name`, `_name` = the shared
   `:GameData:<gameId>:name`, reads fall back per-user → shared →
   `:BASIC:`, folders made on first write, colons refused — the
   sandbox every interpreter shares; `docs/games.md`), screens `basic`

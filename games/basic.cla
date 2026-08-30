@@ -89,7 +89,7 @@ func basicScreen(op: char, a: int, b: int) {
 }
 
 // A bare BASIC file name into the sandbox: the game's GameData
-// folders while a game runs (gamedata.cla -- per-caller, `*` shared,
+// folders while a game runs (gamedata.cla -- per-caller, `_` shared,
 // reads fall back to the program folder), the caller's own folder
 // under the Games folder at the prompt. Never an HFS path.
 func basicPath(name: string, write: bool): string {
