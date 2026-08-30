@@ -1,6 +1,41 @@
 # Releases
 
-## Unreleased — v0.3
+## Unreleased — v0.4
+
+## v0.3 — 2026-08-30
+
+Daily maintenance, a working modem bridge for polling, and a FidoNet
+node that runs unattended:
+
+- Maintenance (`maint.cla`, `heap.cla`): boards carry an expiry
+  (`E) Expire after` on the board card; inbound echomail past it is
+  dropped at toss time), and a daily run at `maintenanceHour`
+  (`Config.txt`, default 4) expires posts and compacts every
+  database — header records and the append-only body heaps, with
+  crash recovery on open. Callers are refused while it runs; the
+  Mac's Maintenance menu toggles and starts it by hand. Measured
+  on the Mac II test instance. `docs/maintenance.md`.
+- B-tree overflow pages: one key holds unboundedly many values
+  (e.g. every thread starter), so busy boards no longer fill a page.
+- Incremental tossing: one packet, message or delete per timer tick
+  while the line is idle, paused by a caller; netmail dupes dropped;
+  `FidoNet > Toss Inbound Packets` starts a run by hand and the log
+  shows "Tossing packet X of Y".
+- FTN polling switch (`FidoNet > Toggle FTN Polling`, Sysop >
+  Networks `P`): off keeps requests queued; a hang-up watchdog
+  repeats +++/ATH and abandons the line rather than staying in
+  progress.
+- Modem emulator: stays connected to the serial port and reconnects
+  when it drops; dials out (`ATDT host[:port]` or a `dial.conf`
+  `tcp:`/`exec:` entry, so the FidoNet poll can run a bridge as a
+  child); serial-side output is queued so a streaming peer cannot
+  swallow `+++`; refused callers get NO ANSWER / BUSY.
+- Log window: every line carries the heap's free/largest-block
+  figures, auto-scrolls to the newest line (Maintenance > Toggle Log
+  Auto-Scroll), and the toolchain pin's call-temp leak fix keeps
+  long toss runs from running out of memory.
+- Test instance: the repo's Snow runs on serial bridge 1235 / modem
+  2324 with a 100 MB `snow/hdd2.img`; production stays on 1234/2323.
 
 ## v0.2 — 2026-08-28
 
