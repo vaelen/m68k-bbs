@@ -75,7 +75,7 @@ func ftnPollRequest(netId: int) {
     ftnNext()
 }
 
-// The sysop's polling switch (Maintenance menu, Sysop > Networks > P);
+// The sysop's polling switch (FidoNet menu, Sysop > Networks > P);
 // switching it on starts whatever queued meanwhile.
 func ftnSetEnabled(enabled: bool) {
     ftnEnabled = enabled

@@ -256,7 +256,7 @@ Runs before dialing, per network:
 - Mac menu bar: `Network > Poll All Networks` for the sysop at the
   machine (runs now if the line is idle).
 - **Polling switch** (`ftnEnabled`, on at launch, not persisted):
-  `Maintenance > Toggle FTN Polling` on the Mac, or `P` on the
+  `FidoNet > Toggle FTN Polling` on the Mac, or `P` on the
   Sysop > Networks menu, whose prompt is preceded by `FTN polling is
   ON/OFF.` Off, nothing dials — scheduler and requests queue as usual
   and run when it goes back on (`ftnSetEnabled`). A poll already in

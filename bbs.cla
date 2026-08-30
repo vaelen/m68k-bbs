@@ -61,6 +61,7 @@ menu Edit { standard edit }
 
 menu FidoNet {
     item PollAll "Poll All Networks"
+    item TogglePolling "Toggle FTN Polling"
 }
 
 // Menu captions: a "(" anywhere in the item text is the Menu Manager's
@@ -69,7 +70,6 @@ menu Maintenance {
     item ToggleClosed "Toggle Closed to Callers"
     item RunNow "Run Database Maintenance"
     item ToggleScroll "Toggle Log Auto-Scroll"
-    item TogglePolling "Toggle FTN Polling"
 }
 
 // Log window follows its newest line; off to scroll back and read.
@@ -1365,6 +1365,7 @@ extend FidoNet {
         }
         ftnPollAll()
     }
+    on TogglePolling.select { ftnSetEnabled(not ftnEnabled) }
 }
 
 extend Maintenance {
@@ -1383,7 +1384,6 @@ extend Maintenance {
             maintStart(true)
         }
     }
-    on TogglePolling.select { ftnSetEnabled(not ftnEnabled) }
     on ToggleScroll.select {
         logAutoScroll = not logAutoScroll
         if logAutoScroll {
