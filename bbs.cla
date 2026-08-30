@@ -62,6 +62,7 @@ menu Edit { standard edit }
 menu FidoNet {
     item PollAll "Poll All Networks"
     item TogglePolling "Toggle FTN Polling"
+    item TossNow "Toss Inbound Packets"
 }
 
 // Menu captions: a "(" anywhere in the item text is the Menu Manager's
@@ -1370,6 +1371,16 @@ extend FidoNet {
         ftnPollAll()
     }
     on TogglePolling.select { ftnSetEnabled(not ftnEnabled) }
+    on TossNow.select {
+        if tossing {
+            log("Toss: already running.")
+        } else if ftnPolling {
+            log("Toss: not started, a poll is on the line.")
+        } else {
+            tossStart()              // ticks once the line is idle
+            log("Toss: " + string(tossNames.count) + " entry(s) in " + ftnIn + ".")
+        }
+    }
 }
 
 extend Maintenance {

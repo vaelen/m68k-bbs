@@ -265,7 +265,9 @@ Runs before dialing, per network:
   `parseIntStr`; 0/blank = local) and **Echo tag**. Board lists show
   the tag beside networked boards.
 - Mac menu bar: `Network > Poll All Networks` for the sysop at the
-  machine (runs now if the line is idle).
+  machine (runs now if the line is idle); `Toss Inbound Packets` starts
+  a toss run over `:FTN:In` by hand (packets dropped in from outside,
+  or leftovers) — it ticks once the line is idle.
 - **Polling switch** (`ftnEnabled`, on at launch, not persisted):
   `FidoNet > Toggle FTN Polling` on the Mac, or `P` on the
   Sysop > Networks menu, whose prompt is preceded by `FTN polling is
