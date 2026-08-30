@@ -552,7 +552,9 @@ inputChar (bbs.cla) → processInput`.
   (character mode, no echo) / `basicline` (line mode), `basicPump()`
   from input and the `every 2 ticks` block in bbs.cla,
   `disconnected()` → `basicStop()`. `basic/basic-host.cla` +
-  `scripts/basic-host.sh` run it on the host over the TCP serial port
+  `scripts/basic.sh` run it in the terminal (`scripts/basic-host.sh`
+  serves it on a port; `--export DIR` = `main.c` + C runtime + `basic.sh`
+  to compile with `cc` on Linux) over the TCP serial port
   (`nc localhost 2345`); the host lane can't build `every` blocks, so
   that wrapper pumps to completion per receive. The 68k backend can't
   pass a fixed array by value or `return m.get(...)` directly — use
@@ -646,7 +648,7 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
 - `tests/` — host-lane test suites (`tests/fixtures/` — real fsxNet
   packets, `sst.bas`); `scripts/` — build/test/deploy, `xmodem-e2e.sh`
   (lrz over socat, raw and via `telnet-shim.py`), `ftn-e2e.sh` (a poll
-  against `emsi-peer.py`), `basic-host.sh` (BASIC over TCP)
+  against `emsi-peer.py`), `basic.sh`/`basic-host.sh` (BASIC in the terminal / over TCP / exported)
 - `bin/`, `vendor/` — pinned compiler + runtime/toolbox snapshot
 - `docs/` — language reference + Snow how-to (symlinks), language-gaps.md,
   telnet-negotiation-reference.md and vt100.codes.txt (protocol notes)

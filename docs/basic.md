@@ -200,14 +200,25 @@ then register it from Sysop > Games > New Game (type B, file name
 
 ## The host wrapper
 
-`scripts/basic-host.sh [file.bas]` builds `basic/basic-host.cla` on the
-host lane and listens on `$PORT` (default 2345):
+`basic/basic-host.cla` is the interpreter as a host-lane program. A
+Clarus CLI program has no stdin/stdout — its only terminal is the
+TCP-mapped serial port — so there are two ways in:
 
 ```
-scripts/basic-host.sh basic/QBasic-SST0.BAS    # run a program
-scripts/basic-host.sh                          # the Ok prompt
-nc localhost 2345
+scripts/basic.sh basic/QBasic-SST0.BAS    # run a program in this terminal
+scripts/basic.sh                          # the Ok prompt (SYSTEM quits)
+scripts/basic-host.sh [file.bas]          # serve on $PORT (2345); nc localhost 2345
 ```
+
+`basic.sh` builds `build/basic-host`, starts it listening and attaches
+`nc` in the foreground (retrying until the listener is up — no port
+probe, since the runtime accepts exactly one connection). Files a
+program opens live in the current directory, so `_scores.dat` is just a
+file there. To write games on a machine without the pinned compiler
+(Linux, another Mac): `scripts/basic-host.sh --export DIR` writes
+`main.c`, the C runtime and `basic.sh` to `DIR`; there `./basic.sh`
+compiles `main.c` with `cc` on first use and runs the same way.
+Re-export after changing `basic.cla`.
 
 The host lane can't build a program with an `every` block (timers make
 it a UI program), so the wrapper pumps to completion inside each
