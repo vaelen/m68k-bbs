@@ -79,7 +79,11 @@ computer aborts it (`NO CARRIER`), as does a 60 s ceiling.
 Result codes use the Hayes verbose (`ATV1`) framing, `<CR><LF>text<CR><LF>`.
 No command echo, S registers, numeric result codes or `RING`. The guard
 time is 0.5 s, half the Hayes default (`GUARD_MS` in `modem.c`). Data from
-the remote side that arrives in command mode is discarded.
+the remote side that arrives in command mode is discarded. Output to the
+serial side is queued and never blocks the modem: a remote streaming
+faster than the port drains is paused past a 64 KB backlog (`LQ_MAX`),
+and the backlog is dropped when the call ends, so `+++` timing stays
+honest and `NO CARRIER` arrives promptly.
 
 ## Test
 

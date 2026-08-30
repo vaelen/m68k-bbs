@@ -102,7 +102,9 @@ port 2323. It connects to Snow's serial bridge at start and reconnects
 every 10 s (quietly) if Snow goes away. Inbound telnet callers are
 answered at once: `\r\nCONNECT 57600\r\n` to the serial side, then
 `\r\nNO CARRIER\r\n` when they leave — exactly what `scanner.cla` watches
-for. From the Mac side it honors `+++`/`ATH` (hang up), `ATO`, and
+for. Output toward the Mac is queued (never blocks; a fast remote is paused
+past a 64 KB backlog), so `+++` timing holds under a streaming peer.
+From the Mac side it honors `+++`/`ATH` (hang up), `ATO`, and
 `ATDT`: a `dial.conf` name (`name = tcp:host:port | exec:command`; the
 FidoNet poll dials an `exec:fnemsi … --answer` entry, `CONNECT` arrives
 on the child's first byte) or a bare `host[:port]`. One call at a time;

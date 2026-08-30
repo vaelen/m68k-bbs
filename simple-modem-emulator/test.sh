@@ -106,6 +106,23 @@ try:
     local.sendall(b"ATDTslow\r"); time.sleep(0.5); t0 = time.time()
     local.sendall(b"ATH\r"); assert rd(local) == NOCARRIER and time.time() - t0 < 2
     local.sendall(b"AT\r"); assert rd(local) == OK
+    # 16. a peer flooding faster than the serial port drains must not
+    #     swallow the escape (the modem once blocked in write() and read
+    #     the computer's bytes late, in one batch, inside the guard time)
+    peer_l = listener(1236)
+    local.sendall(b"ATDT127.0.0.1:1236\r"); peer, _ = peer_l.accept(); assert rd(local) == CONNECT
+    peer.setblocking(False); end = time.time() + 2
+    while time.time() < end:                    # ~2 s of flood, nothing read locally
+        try: peer.send(b"*" * 4096)
+        except BlockingIOError: time.sleep(0.01)
+    time.sleep(1.1); local.sendall(b"+++"); time.sleep(1.1); local.sendall(b"ATH\r")
+    got = b""; end = time.time() + 8
+    while NOCARRIER not in got and time.time() < end: got += rd(local, 65536, t=0.5)
+    assert NOCARRIER in got, "escape lost under flood"
+    try: assert rd(peer) == b""              # dropped: EOF, or RST (unread flood)
+    except ConnectionResetError: pass
+    peer.close(); peer_l.close()
+    local.sendall(b"AT\r"); assert rd(local) == OK
     # 7. serial port down -> caller rejected with NO ANSWER
     ser.close(); local.close(); time.sleep(0.3)
     caller = call(); assert rd(caller) == NOANSWER

@@ -22,6 +22,7 @@
 #include <unistd.h>
 
 #define GUARD_MS 500            // Hayes S12 guard time, 25 x 20ms = 0.5s
+#define LQ_MAX 65536            // serial-side backlog that pauses the remote
 #define RECONNECT_MS 10000      // serial port reconnect interval
 #define DIAL_MS 60000           // dial ceiling (Hayes S7 is 50 s)
 #define CONNECT_MSG "\r\nCONNECT 57600\r\n"
@@ -45,6 +46,8 @@ static int nheld = 0;
 static long last_local_ms = 0;          // time of last byte from local
 static char cmd[256];                   // command line being typed in command mode
 static int ncmd = 0;
+static char *lq = NULL;                 // bytes waiting for the serial port
+static int lqlen = 0, lqcap = 0;
 
 static long now_ms(void) {
     struct timeval tv;
@@ -60,6 +63,34 @@ static void send_all(int fd, const char *buf, int len) {
         buf += n;
         len -= n;
     }
+}
+
+// Serial-side output never blocks: the port drains at its baud rate
+// while a TCP remote streams at LAN speed, and a write() that waited
+// for it stalled the loop -- the computer's "+++" then arrived in the
+// same late batch as its earlier bytes and the guard time was lost.
+// Bytes queue here and drain as select() finds the port writable; past
+// LQ_MAX the remote is not read (backpressure, like RTS/CTS).
+static void local_flush(void) {
+    while (lqlen > 0 && local >= 0) {
+        int n = (int)write(local, lq, (size_t)lqlen);
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return;
+        if (n <= 0) { lqlen = 0; return; }   // port gone; the read side will notice
+        memmove(lq, lq + n, (size_t)(lqlen - n));
+        lqlen -= n;
+    }
+}
+
+static void local_send(const char *buf, int len) {
+    if (local < 0 || len <= 0) return;
+    if (lqlen + len > lqcap) {
+        lqcap = (lqlen + len) * 2;
+        lq = realloc(lq, (size_t)lqcap);
+        if (lq == NULL) { perror("realloc"); exit(1); }
+    }
+    memcpy(lq + lqlen, buf, (size_t)len);
+    lqlen += len;
+    local_flush();
 }
 
 static void closefd(int *fd) {
@@ -80,6 +111,7 @@ static int connect_local(int port) {
         close(fd);
         return -1;
     }
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
     return fd;
 }
 
@@ -123,7 +155,8 @@ static void remote_close(void) {
 // The call is over (remote gone, ATH, or a dial that failed): NO CARRIER, on-hook.
 static void hangup(const char *why) {
     remote_close();
-    send_all(local, NO_CARRIER_MSG, sizeof NO_CARRIER_MSG - 1);
+    lqlen = 0;                          // buffered remote data dies with the carrier
+    local_send(NO_CARRIER_MSG, sizeof NO_CARRIER_MSG - 1);
     state = IDLE;
     fprintf(stderr, "%s\n", why);
 }
@@ -131,6 +164,7 @@ static void hangup(const char *why) {
 // The serial port went away: drop any call, start the retry clock.
 static void serial_lost(void) {
     closefd(&local);
+    lqlen = 0;
     local_retry_ms = now_ms() + RECONNECT_MS;
     if (state != IDLE) {
         remote_close();
@@ -145,7 +179,7 @@ static void go_online(void) {
     state = ONLINE;
     nheld = ncmd = 0;
     last_local_ms = 0;
-    send_all(local, CONNECT_MSG, sizeof CONNECT_MSG - 1);
+    local_send(CONNECT_MSG, sizeof CONNECT_MSG - 1);
 }
 
 // Start a non-blocking TCP connect to host:port; the loop finishes it.
@@ -269,7 +303,7 @@ static void do_command(void) {
     // ponytail: only H (hang up) and O (online) matter; anything else is OK.
     for (i = 2; i < ncmd; i++) {
         if (cmd[i] == 'D') {
-            if (state != IDLE) { send_all(local, ERROR_MSG, sizeof ERROR_MSG - 1); return; }
+            if (state != IDLE) { local_send(ERROR_MSG, sizeof ERROR_MSG - 1); return; }
             i++;
             if (i < ncmd && (cmd[i] == 'T' || cmd[i] == 'P')) i++;
             cmd[ncmd] = 0;
@@ -279,7 +313,7 @@ static void do_command(void) {
         if (cmd[i] == 'H' && state == ONLINE_CMD) { hangup("call ended"); return; }
         if (cmd[i] == 'O' && state == ONLINE_CMD) { go_online(); return; }
     }
-    send_all(local, OK_MSG, sizeof OK_MSG - 1);
+    local_send(OK_MSG, sizeof OK_MSG - 1);
 }
 
 // Bytes arrived from the local side (the "computer"): collect a command
@@ -326,7 +360,7 @@ static void check_guard(void) {
     if (nheld == 3) {
         state = ONLINE_CMD;
         ncmd = 0;
-        send_all(local, OK_MSG, sizeof OK_MSG - 1);
+        local_send(OK_MSG, sizeof OK_MSG - 1);
     } else {
         send_all(rout, held, nheld);    // lone '+' or '++': just data
     }
@@ -361,10 +395,14 @@ int main(int argc, char **argv) {
         FD_ZERO(&r);
         FD_ZERO(&w);
         FD_SET(lsock, &r);
-        if (local >= 0) { FD_SET(local, &r); if (local > maxfd) maxfd = local; }
+        if (local >= 0) {
+            FD_SET(local, &r);
+            if (lqlen > 0) FD_SET(local, &w);
+            if (local > maxfd) maxfd = local;
+        }
         if (rin >= 0) {
             if (state == DIALING && child == 0) FD_SET(rin, &w);   // connect in flight
-            else FD_SET(rin, &r);
+            else if (lqlen < LQ_MAX) FD_SET(rin, &r);              // else: let the port catch up
             if (rin > maxfd) maxfd = rin;
         }
         if (select(maxfd + 1, &r, &w, NULL, &tv) < 0) {
@@ -373,6 +411,7 @@ int main(int argc, char **argv) {
             return 1;
         }
         check_guard();
+        if (local >= 0 && FD_ISSET(local, &w)) local_flush();
         if (state == DIALING && now_ms() - dial_ms >= DIAL_MS) hangup("dial timed out");
 
         if (FD_ISSET(lsock, &r)) accept_caller(lsock);
@@ -397,7 +436,7 @@ int main(int argc, char **argv) {
                     go_online();
                     fprintf(stderr, "call connected\n");
                 }
-                if (state == ONLINE) send_all(local, buf, n);
+                if (state == ONLINE) local_send(buf, n);
             }
             // ponytail: in command mode remote data is dropped, like a real
             // modem with no buffer; it would be forwarded after ATO anyway.
