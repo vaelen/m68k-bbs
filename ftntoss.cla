@@ -237,6 +237,7 @@ func tossTick() {
         tossNext = tossNext + 1
         fi = file.info(tossPath)
         if fi.isDir { return }
+        log("Tossing packet " + string(tossNext) + " of " + string(tossNames.count) + ": " + tossNames[tossNext - 1])
         tossNetId = tossOpen(tossPath)
         return
     }
