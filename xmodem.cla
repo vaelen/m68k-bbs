@@ -381,7 +381,7 @@ func rvPath(name: string): string {
 func rvOpen(name: string): bool {
     rvFile = file.create(rvPath(name), "BINA", "68BB")
     if rvFile == nil {
-        log("Upload: cannot create " + rvPath(name) + ": " + lastError.message)
+        log("XMODEM receive: cannot create " + rvPath(name) + ": " + lastError.message)
         rvFinish(false)
         return false
     }
@@ -398,7 +398,7 @@ func xmodemRecvChar(c: char) {
         if c == xmCAN {
             rvCanCount = rvCanCount + 1
             if rvCanCount >= 2 {
-                log("Upload: cancelled by the caller.")
+                log("XMODEM receive: cancelled by the caller.")
                 rvFinish(false)
             }
             return
@@ -461,7 +461,7 @@ func xmodemRecvTick() {
     case rvWaitFrame {
         if rvProd {
             if rvTimer >= xmStartTicks {
-                log("Upload: no sender started.")
+                log("XMODEM receive: no sender started.")
                 rvCancel()
             } else if rvTimer mod rvProdTicks == 0 {
                 rvProds = rvProds + 1
@@ -529,7 +529,7 @@ func rvFrameDone() {
     }
     if rvNumByte == rvBlock {
         if not rvFile.writeAt(rvWritten, rvBuf) {
-            log("Upload: write failed: " + lastError.message)
+            log("XMODEM receive: write failed: " + lastError.message)
             rvCancel()
             return
         }
@@ -537,7 +537,7 @@ func rvFrameDone() {
         rvBlock = (rvBlock + 1) mod 256
         rvErrors = 0
     } else if rvNumByte != (rvBlock + 255) mod 256 {
-        log("Upload: block " + string(rvNumByte) + " out of sequence.")
+        log("XMODEM receive: block " + string(rvNumByte) + " out of sequence.")
         rvCancel()
         return
     }
@@ -574,7 +574,7 @@ func rvHeaderDone() {
         i = i + 1
     }
     if not xferAcceptName(name) {
-        log("Upload: name refused: " + name)
+        log("XMODEM receive: name refused: " + name)
         rvCancel()
         return
     }
@@ -602,7 +602,7 @@ func rvFileDone() {
 func rvError() {
     rvErrors = rvErrors + 1
     if rvErrors >= xmMaxErrors {
-        log("Upload: too many errors.")
+        log("XMODEM receive: too many errors.")
         rvCancel()
         return
     }

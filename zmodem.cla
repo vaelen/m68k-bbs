@@ -845,7 +845,7 @@ func zrData() {
     case zmZDATA {
         if zrState != zrWaitData { return }
         if not zrFile.writeAt(zrWritten, zmBuf) {
-            log("Upload: write failed: " + lastError.message)
+            log("ZMODEM receive: write failed: " + lastError.message)
             zmCancel()
             return
         }
@@ -878,7 +878,7 @@ func zrFileInfo() {
         i = i + 1
     }
     if not xferAcceptName(name) {
-        log("Upload: name refused: " + name)
+        log("ZMODEM receive: name refused: " + name)
         zmWire = ""
         zmHexHeader(zmZSKIP, 0)
         zmSend()
@@ -911,7 +911,7 @@ func zrFileInfo() {
     }
     zrFile = file.create(path, "BINA", "68BB")
     if zrFile == nil {
-        log("Upload: cannot create " + name + ": " + lastError.message)
+        log("ZMODEM receive: cannot create " + name + ": " + lastError.message)
         zmCancel()
         return
     }
@@ -927,11 +927,11 @@ func zrFileInfo() {
 func zrCrcReply(theirCrc: int) {
     if zmFileCrc(zrFile, zrResumeLen) == theirCrc {
         zrWritten = zrResumeLen
-        log("Upload: resuming " + zrName + " at " + string(zrWritten))
+        log("ZMODEM receive: resuming " + zrName + " at " + string(zrWritten))
     } else {
         zrFile.setSize(0)
         zrWritten = 0
-        log("Upload: partial " + zrName + " differs; restarting")
+        log("ZMODEM receive: partial " + zrName + " differs; restarting")
     }
     zrState = zrWaitData
     zrSendRpos()
@@ -942,7 +942,7 @@ func zrCrcReply(theirCrc: int) {
 func zrBad() {
     zmErrors = zmErrors + 1
     if zmErrors >= zmMaxErrors {
-        log("Upload: too many errors.")
+        log("ZMODEM receive: too many errors.")
         zmCancel()
         return
     }
@@ -973,7 +973,7 @@ func zrTick() {
         if zmTimer >= zmRinitTicks {
             zmErrors = zmErrors + 1
             if zmErrors >= zmMaxErrors {
-                log("Upload: no sender started.")
+                log("ZMODEM receive: no sender started.")
                 zmCancel()
             } else {
                 zrSendRinit()
@@ -984,7 +984,7 @@ func zrTick() {
         if zmTimer >= zmWaitTicks {
             zmErrors = zmErrors + 1
             if zmErrors >= zmMaxErrors {
-                log("Upload: no CRC answer.")
+                log("ZMODEM receive: no CRC answer.")
                 zmCancel()
             } else {
                 zmResend()
@@ -996,7 +996,7 @@ func zrTick() {
         if zmTimer >= zmWaitTicks {
             zmErrors = zmErrors + 1
             if zmErrors >= zmMaxErrors {
-                log("Upload: too many errors.")
+                log("ZMODEM receive: too many errors.")
                 zmCancel()
             } else {
                 zrSendRpos()
