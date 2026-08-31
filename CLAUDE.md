@@ -530,14 +530,18 @@ inputChar (bbs.cla) → processInput`.
   (name → description → type, `B` only today → file name);
   `docs/games.md`.
 - `screens.cla` — terminal-specific screen files under `:Screens:`
-  (`Color`/`Monochrome` × `ANSI`/`VT100`/`PETSCII`/`ASCII` folders;
-  fallback Color → Monochrome, then type → ASCII): `screenPath(name)`
+  (`80`/`40` × `Color`/`Monochrome` × `ANSI`/`VT100`/`PETSCII`/`ASCII`
+  folders; fallback Color → Monochrome, then type → ASCII, trying 80
+  then 40 at each rung — narrow terminals only ever get `40`):
+  `screenPath(name)`
   resolves, `loadScreen(name)` returns the content, `showScreen(name)`
   sends it line by line (CR/CRLF/LF all accepted, each goes out as
   `terminal.eol`; over-255-byte lines sliced) and returns false when
   no variant exists. `applyTerminal` shows `Welcome` this way after
   the first terminal pick (hardcoded one-liner when absent). The
-  folder tree is created at launch (`screensInit`; no `Color:ASCII`);
+  folder tree is created at launch (`screensInit`; `Color:ASCII` is
+  included — no such terminal type yet, but it's in the fallback
+  ladder ahead of `Monochrome:ASCII` for color terminals);
   missing screens are simply skipped.
 - `motd.cla` — the Message of the Day, `MOTD.txt` (TEXT/ttxt):
   `motdText` loaded at launch (`motdLoad`, missing → empty), `motdSave`
@@ -666,7 +670,7 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
   `gamedata.cla` — the `:GameData:<game>:<user>` sandbox games save into
 - `motd.cla` — Message of the Day file
 - `screens.cla` — terminal-specific screen files (`:Screens:`, with
-  Color→Monochrome and type→ASCII fallback)
+  80→40, Color→Monochrome and type→ASCII fallback)
 - `heap.cla`, `maint.cla` — body-heap compactor and the daily maintenance run
 - `scanner.cla`, `telnet.cla`, `user.cla`, `usersdb.cla`, `boardsdb.cla`,
   `postsdb.cla`, `maildb.cla`, `areasdb.cla`, `filesdb.cla`,

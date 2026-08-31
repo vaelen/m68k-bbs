@@ -2,37 +2,50 @@
 // SPDX-License-Identifier: MIT
 
 // Terminal-specific screen files, dropped by the sysop into
-// :Screens:Color:<type>: or :Screens:Monochrome:<type>: (type =
-// ANSI / VT100 / PETSCII / ASCII). screenPath picks the best match
-// for the caller's terminal: Color falls back to Monochrome, the
-// type falls back to ASCII. Files are TEXT with CR line ends (LF and
-// CRLF tolerated for host-edited files); no folder or file is
-// required -- a missing screen simply isn't shown.
+// :Screens:<80|40>:<Color|Monochrome>:<type>: (type = ANSI / VT100 /
+// PETSCII / ASCII). screenPath picks the best match for the caller's
+// terminal: at each Color/type rung, 80 falls back to 40 (wide
+// terminals only -- a narrow terminal never gets an 80-column file);
+// Color falls back to Monochrome, the type falls back to ASCII
+// (Color:ASCII before Monochrome:ASCII on a color terminal -- no
+// such terminal type today, but the rung keeps the ladder uniform).
+// Files are TEXT with CR line ends (LF and CRLF tolerated for
+// host-edited files); a missing screen simply isn't shown.
 
 // Create the :Screens folder tree at launch so the sysop has the
 // folders to drop files into. makeDir is one level at a time; an
 // already-present folder is fine. False (with lastError) on failure.
 func screensInit(): bool {
+    var widths: list of string
     var types: list of string
     var kinds: list of string
+    var w: int = 0
     var k: int = 0
     var t: int = 0
+    var d: string
+    widths.add("80")
+    widths.add("40")
     kinds.add("Color")
     kinds.add("Monochrome")
     types.add("ANSI")
     types.add("VT100")
     types.add("PETSCII")
-    types.add("ASCII")     // Monochrome only: ASCII terminals have no color
+    types.add("ASCII")
     if not screenEnsureDir(":Screens") { return false }
-    while k < kinds.count {
-        if not screenEnsureDir(":Screens:" + kinds[k]) { return false }
-        t = 0
-        while t < types.count {
-            if kinds[k] == "Color" and types[t] == "ASCII" { break }
-            if not screenEnsureDir(":Screens:" + kinds[k] + ":" + types[t]) { return false }
-            t = t + 1
+    while w < widths.count {
+        if not screenEnsureDir(":Screens:" + widths[w]) { return false }
+        k = 0
+        while k < kinds.count {
+            d = ":Screens:" + widths[w] + ":" + kinds[k]
+            if not screenEnsureDir(d) { return false }
+            t = 0
+            while t < types.count {
+                if not screenEnsureDir(d + ":" + types[t]) { return false }
+                t = t + 1
+            }
+            k = k + 1
         }
-        k = k + 1
+        w = w + 1
     }
     return true
 }
@@ -47,15 +60,31 @@ func screenPath(name: string): string {
     var t: string = termTypeName(terminal.type)
     var p: string
     if terminal.color {
-        p = ":Screens:Color:" + t + ":" + name
-        if file.exists(p) { return p }
+        p = screenPathAt("Color", t, name)
+        if p != "" { return p }
     }
-    p = ":Screens:Monochrome:" + t + ":" + name
-    if file.exists(p) { return p }
+    p = screenPathAt("Monochrome", t, name)
+    if p != "" { return p }
     if terminal.type != ASCII {
-        p = ":Screens:Monochrome:ASCII:" + name
+        if terminal.color {
+            p = screenPathAt("Color", "ASCII", name)
+            if p != "" { return p }
+        }
+        p = screenPathAt("Monochrome", "ASCII", name)
+        if p != "" { return p }
+    }
+    return ""
+}
+
+// One Color/type rung: 80 first on a wide terminal, then 40.
+func screenPathAt(kind: string, t: string, name: string): string {
+    var p: string
+    if terminal.columns >= minimumWideTerminalWidth {
+        p = ":Screens:80:" + kind + ":" + t + ":" + name
         if file.exists(p) { return p }
     }
+    p = ":Screens:40:" + kind + ":" + t + ":" + name
+    if file.exists(p) { return p }
     return ""
 }
 

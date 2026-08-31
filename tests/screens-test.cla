@@ -55,36 +55,52 @@ on App.startCLI(args: list of string) {
 
     terminal.type = ANSI
     terminal.color = true
+    setColumns(80)
 
     expect(screenPath("Welcome") == "", "no folders: no match")
     expect(not showScreen("Welcome"), "no folders: showScreen false")
 
     expect(screensInit(), "screensInit creates the tree")
     expect(screensInit(), "screensInit idempotent")
-    expect(file.exists(":Screens:Color:PETSCII") and file.exists(":Screens:Monochrome:ASCII"), "folders present")
-    expect(not file.exists(":Screens:Color:ASCII"), "no Color ASCII folder")
+    expect(file.exists(":Screens:80:Color:PETSCII") and file.exists(":Screens:40:Monochrome:ASCII"), "folders present")
+    expect(file.exists(":Screens:80:Color:ASCII") and file.exists(":Screens:40:Color:ASCII"), "Color ASCII folders present")
 
-    expect(writeScreen(":Screens:Monochrome:ASCII:Welcome", "ascii"), "write ASCII variant")
-    expect(screenPath("Welcome") == ":Screens:Monochrome:ASCII:Welcome", "falls back to Monochrome ASCII")
+    expect(writeScreen(":Screens:40:Monochrome:ASCII:Welcome", "a40"), "write 40 ASCII variant")
+    expect(screenPath("Welcome") == ":Screens:40:Monochrome:ASCII:Welcome", "falls all the way back")
 
-    expect(writeScreen(":Screens:Monochrome:ANSI:Welcome", "mono"), "write mono ANSI variant")
-    expect(screenPath("Welcome") == ":Screens:Monochrome:ANSI:Welcome", "Monochrome ANSI beats ASCII")
+    expect(writeScreen(":Screens:80:Monochrome:ASCII:Welcome", "a80"), "write 80 ASCII variant")
+    expect(screenPath("Welcome") == ":Screens:80:Monochrome:ASCII:Welcome", "80 beats 40 at the same rung")
 
-    expect(writeScreen(":Screens:Color:ANSI:Welcome", "color"), "write color ANSI variant")
-    expect(screenPath("Welcome") == ":Screens:Color:ANSI:Welcome", "Color ANSI beats Monochrome")
+    expect(writeScreen(":Screens:40:Color:ASCII:Welcome", "ca40"), "write 40 color ASCII variant")
+    expect(screenPath("Welcome") == ":Screens:40:Color:ASCII:Welcome", "Color ASCII beats Monochrome ASCII")
+
+    expect(writeScreen(":Screens:40:Monochrome:ANSI:Welcome", "m40"), "write 40 mono ANSI variant")
+    expect(screenPath("Welcome") == ":Screens:40:Monochrome:ANSI:Welcome", "matching type at 40 beats ASCII at 80")
+
+    expect(writeScreen(":Screens:80:Monochrome:ANSI:Welcome", "m80"), "write 80 mono ANSI variant")
+    expect(writeScreen(":Screens:40:Color:ANSI:Welcome", "c40"), "write 40 color ANSI variant")
+    expect(screenPath("Welcome") == ":Screens:40:Color:ANSI:Welcome", "Color at 40 beats Monochrome at 80")
+
+    expect(writeScreen(":Screens:80:Color:ANSI:Welcome", "c80"), "write 80 color ANSI variant")
+    expect(screenPath("Welcome") == ":Screens:80:Color:ANSI:Welcome", "80 Color ANSI is the top pick")
 
     terminal.color = false
-    expect(screenPath("Welcome") == ":Screens:Monochrome:ANSI:Welcome", "mono terminal skips Color")
+    expect(screenPath("Welcome") == ":Screens:80:Monochrome:ANSI:Welcome", "mono terminal skips Color")
+
+    setColumns(40)
+    terminal.color = true
+    expect(screenPath("Welcome") == ":Screens:40:Color:ANSI:Welcome", "narrow terminal never gets an 80 file")
 
     terminal.type = ASCII
-    expect(screenPath("Welcome") == ":Screens:Monochrome:ASCII:Welcome", "ASCII terminal")
+    terminal.color = false
+    expect(screenPath("Welcome") == ":Screens:40:Monochrome:ASCII:Welcome", "narrow ASCII terminal")
     expect(screenPath("Missing") == "", "unknown name: no match")
 
     // line ends: CR, CRLF and bare LF all end a line; blank lines kept;
     // a final line without a line end still goes out.
-    expect(writeScreen(":Screens:Monochrome:ASCII:Ends", "A\nB\n\x0AC\x0AD"), "write Ends")
+    expect(writeScreen(":Screens:40:Monochrome:ASCII:Ends", "A\nB\n\x0AC\x0AD"), "write Ends")
     expect(show("Ends") == "A|B|C|D|", "CR, CRLF and LF line ends")
-    expect(writeScreen(":Screens:Monochrome:ASCII:Blank", "A\n\nB"), "write Blank")
+    expect(writeScreen(":Screens:40:Monochrome:ASCII:Blank", "A\n\nB"), "write Blank")
     expect(show("Blank") == "A||B|", "blank line kept, last line unterminated")
 
     // a line past 255 bytes goes out in slices, line end intact
@@ -93,7 +109,7 @@ on App.startCLI(args: list of string) {
         i = i + 1
     }
     t.append("\n")
-    expect(file.writeText(":Screens:Monochrome:ASCII:Long", t, "TEXT", "ttxt"), "write Long")
+    expect(file.writeText(":Screens:40:Monochrome:ASCII:Long", t, "TEXT", "ttxt"), "write Long")
     out = ""
     outLen = 0
     expect(showScreen("Long"), "show Long")
