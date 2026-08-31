@@ -12,9 +12,12 @@
 
 const configFileName: string = "Config.txt"
 
+const systemNameMax: int = 50   // keeps the FTN Origin line under 79 columns
+
 record Config {
     newUserAccess: int = accessDefault     // Access flags for a new signup (docs/access.md)
     maintenanceHour: int = 4               // Hour (0-23, Mac local time) the daily maintenance window opens
+    systemName: string = "68kBBS"          // The board's name: FTN Origin lines and EMSI IDENT
 }
 
 var config: Config
@@ -27,6 +30,7 @@ func configSave(): bool {
     data.append("# 68kBBS settings. key=value, # comments.\n")
     data.append("newUserAccess=" + string(config.newUserAccess) + "\n")
     data.append("maintenanceHour=" + string(config.maintenanceHour) + "\n")
+    data.append("systemName=" + config.systemName + "\n")
     ok = f.writeAt(0, data)
     if ok { ok = f.flush() }
     f.close()
@@ -71,6 +75,10 @@ func configApply(line: string) {
     case "maintenanceHour" {
         n = configInt(val)
         if n >= 0 and n <= 23 { config.maintenanceHour = n }
+    }
+    case "systemName" {
+        if val.length > systemNameMax { val = val[0, systemNameMax] }
+        if val != "" { config.systemName = val }
     }
     }
 }

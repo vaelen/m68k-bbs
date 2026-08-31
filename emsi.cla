@@ -174,8 +174,8 @@ func emSendDat() {
         return
     }
     p.append("{EMSI}{" + addressStr(network.addr) + "}{" + network.sessionPw + "}")
-    p.append("{8N1,PUA}{ZMO,NRQ}{00}{68kBBS}{0.2}{" + ftnVersion + "}")
-    p.append("{IDENT}{[" + ftnSystemName + "][][" + ftnSysopName() + "][-Unpublished-][57600][]}")
+    p.append("{8N1,PUA}{ZMO,NRQ}{00}{" + ftnSystemName + "}{" + bbsVersion + "}{" + bbsVersion + "}")
+    p.append("{IDENT}{[" + ftnBoardName() + "][][" + ftnSysopName() + "][-Unpublished-][57600][]}")
     d.append("EMSI_DAT")
     d.append(hex4(p.length))
     d.append(p)

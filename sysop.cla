@@ -43,6 +43,7 @@ func drawSysopConfigMenu() {
     sendLine("")
     sendLine("A) New User Access (" + accessSummary(config.newUserAccess) + ")")
     sendLine("H) Maintenance hour (" + intStr(config.maintenanceHour) + ":00)")
+    sendLine("N) System name (" + config.systemName + ")")
     sendLine("Q) Return to Sysop Menu")
     sendLine("")
 }
@@ -76,6 +77,10 @@ func sysopConfigChoice(input: string) {
         user.screen = "confighour"
         displayPrompt()
     }
+    case "N" {
+        user.screen = "configname"
+        displayPrompt()
+    }
     case "Q" { gotoScreen("sysop") }
     else     { displayPrompt() }
     }
@@ -92,6 +97,22 @@ func configHourInput(input: string) {
             return
         }
         config.maintenanceHour = n
+        if configSave() {
+            sendLine("Saved.")
+        } else {
+            sendLine("Save failed: " + lastError.message)
+        }
+    }
+    gotoScreen("sysopconfig")
+}
+
+// Empty input keeps the name; otherwise saved at once (Origin lines,
+// EMSI IDENT).
+func configNameInput(input: string) {
+    var name: string = input
+    if name != "" {
+        if name.length > systemNameMax { name = name[0, systemNameMax] }
+        config.systemName = name
         if configSave() {
             sendLine("Saved.")
         } else {

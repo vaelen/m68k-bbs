@@ -3,6 +3,10 @@
 
 // Session state for the connected caller.
 
+// The app version: bbs.cla's app block and the FTN tearline/PID/EMSI
+// carry it. Lives here so module tests reach it without bbs.cla.
+const bbsVersion: string = "0.4"
+
 record User {
     name:          string(31)
     authenticated: bool

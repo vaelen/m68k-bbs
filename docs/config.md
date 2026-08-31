@@ -12,6 +12,7 @@ written out at launch so the keys are there to edit.
 |---|---|---|
 | `newUserAccess` | 367 (`accessDefault`) | Access flag bits given to a new signup (`docs/access.md`); the first account always gets every flag |
 | `maintenanceHour` | 4 | Hour (0–23, Mac local time) at which the daily maintenance window opens (`docs/maintenance.md`) |
+| `systemName` | `68kBBS` | The board's name, up to 50 chars: FTN Origin lines and the EMSI IDENT system field (`docs/fidonet.md`); the software name on tearlines/PID stays `68kBBS` |
 
 `configLoad()` runs at launch (before the databases open); `configSave()`
 rewrites the whole file. The live values are `config.<field>`.

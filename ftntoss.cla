@@ -11,14 +11,21 @@ include "postsdb.cla"
 include "maildb.cla"
 include "user.cla"
 include "usersdb.cla"
+include "config.cla"
 include "ftnpkt.cla"
 
 const ftnFolder: string = ":FTN"
 const ftnIn: string = ":FTN:In"
 const ftnOut: string = ":FTN:Out"
 const ftnTmp: string = ":FTN:Tmp"
-const ftnSystemName: string = "68kBBS"   // ponytail: the Origin line's system name; a sysop setting later
-const ftnVersion: string = "0.2"
+const ftnSystemName: string = "68kBBS"   // the software's name: tearline, PID, EMSI mailer field
+
+// The board's name for Origin lines and EMSI IDENT; the config default
+// covers a test lane that never ran configLoad.
+func ftnBoardName(): string {
+    if config.systemName == "" { return ftnSystemName }
+    return config.systemName
+}
 
 var tossEcho: int = 0
 var tossNet: int = 0
@@ -292,13 +299,13 @@ func scanEndLine(t: text) {
 // The common kludges every outbound message carries.
 func scanCommonKludges(t: text) {
     scanKludge(t, "TZUTC: " + tzStr(network.utcOffset))
-    scanKludge(t, "PID: " + ftnSystemName + " " + ftnVersion)
+    scanKludge(t, "PID: " + ftnSystemName + " " + bbsVersion)
     scanKludge(t, "CHRS: ASCII 1")
 }
 
 func scanTearline(t: text) {
     scanEndLine(t)
-    t.append("--- " + ftnSystemName + " " + ftnVersion)
+    t.append("--- " + ftnSystemName + " " + bbsVersion)
     t.append(ftnCR)
 }
 
@@ -318,7 +325,7 @@ func scanEchoBody(pid: int): text {
     t.append(postBody(pid))         // its own MSGID/REPLY lead the stored body
     ftnAscii(t)
     scanTearline(t)
-    t.append(" * Origin: " + ftnSystemName + " (" + addressStr(network.addr) + ")")
+    t.append(" * Origin: " + ftnBoardName() + " (" + addressStr(network.addr) + ")")
     t.append(ftnCR)
     t.append(scanSeenBy())
     t.append(ftnCR)

@@ -43,6 +43,12 @@ on App.startCLI(args: list of string) {
     expect(writeConfig("maintenanceHour=x\n"), "write a non-numeric hour")
     expect(configLoad() and config.maintenanceHour == 4, "non-numeric hour keeps the default")
 
+    expect(config.systemName == "68kBBS", "default system name")
+    expect(writeConfig("systemName=68K Mac Club\n"), "write a system name")
+    expect(configLoad() and config.systemName == "68K Mac Club", "system name parsed, spaces kept")
+    expect(writeConfig("systemName=\n"), "write an empty system name")
+    expect(configLoad() and config.systemName == "68kBBS", "empty name keeps the default")
+
     config.maintenanceHour = 23
     expect(configSave() and configLoad() and config.maintenanceHour == 23, "save/load roundtrip")
 

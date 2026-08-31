@@ -129,7 +129,7 @@ func happyPath() {
     expect(sent.indexOf("**EMSI_INQC816\x0D") == 0, "REQ -> INQ")
     i = sent.indexOf("**EMSI_DAT")
     expect(i > 0, "then our EMSI_DAT")
-    expect(sent.indexOf("{EMSI}{21:1/141}{SECRET}{8N1,PUA}{ZMO,NRQ}{00}{68kBBS}{0.2}") > 0, "DAT fields")
+    expect(sent.indexOf("{EMSI}{21:1/141}{SECRET}{8N1,PUA}{ZMO,NRQ}{00}{68kBBS}{0.4}") > 0, "DAT fields")
     expect(datCrcOk(sent, i), "our DAT's length and CRC check")
     expect(emState == emWaitAck, "waiting for ACK")
 
