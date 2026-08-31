@@ -83,11 +83,11 @@ on App.startCLI(args: list of string) {
     terminal.color = true
     expect(fg(Red) == "\x1B\x1C" and fg(BrightWhite) == "\x1B\x05", "petscii fg")
     expect(bg(Red) == "" and bgOff() == "", "petscii: no backgrounds")
-    expect(fgOff() == "\x1B\x9A", "petscii fgOff is light blue")
+    expect(fgOff() == "\x1B\x05", "petscii fgOff is white")
     expect(clearScreen() == "\x1B\x93", "petscii clear")
     expect(bold(true) == "" and underline(true) == "" and blink(true) == "", "petscii: no bold/underline/blink")
     expect(reverseVideo(true) == "\x1B\x12" and reverseVideo(false) == "\x1B\x92", "petscii reverse")
-    expect(attrsOff() == "\x1B\x92\x1B\x9A", "petscii attrsOff")
+    expect(attrsOff() == "\x1B\x92\x1B\x05", "petscii attrsOff")
     expect(moveTo(3, 2) == "\x1B\x13\x1B\x11\x1B\x11\x1B\x1D", "petscii moveTo")
     expect(moveTo(1, 1) == "\x1B\x13", "petscii moveTo home")
     // text: case swap, box drawing to C= graphics, other high bytes '?',

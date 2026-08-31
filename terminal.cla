@@ -149,7 +149,8 @@ func petsciiColor(color: Color): char {
     return '\x05'
 }
 
-const petsciiDefaultColor: char = '\x9A'   // light blue, the C64's own
+const petsciiDefaultColor: char = '\x05'   // white: C64 terminal programs
+                                           // run white-on-black
 
 // CP437 byte -> PETSCII byte for the shifted set: letters swap case,
 // single- and double-line box drawing and blocks go to the C= graphics
