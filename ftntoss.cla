@@ -327,17 +327,25 @@ func scanEchoBody(pid: int): text {
 }
 
 // The loaded board's unexported local posts into the open packet.
+// lastExported gates only local posts awaiting an acknowledged send, so
+// the inbound/deleted prefix before the first local post commits at once
+// — otherwise every scan re-walks all tossed echomail (a multi-minute
+// freeze on the 68k) and an all-inbound board never advances at all.
 func scanBoard() {
     var pid: int = board.lastExported + 1
     var last: int
+    var safe: int
+    var localSeen: bool = false
     var m: PktMsg
     if not postsOpen(board.id) {
         log("Scan: cannot open board " + string(board.id) + ": " + lastError.message)
         return
     }
     last = postsNextId()
+    safe = pid - 1
     while pid < last {
         if loadPost(pid) and (post.flags & postFlagInbound) == 0 {
+            localSeen = true
             m = new PktMsg
             m.fromName = scanClamp(post.sender, 35)
             m.toName = "All"
@@ -348,8 +356,14 @@ func scanBoard() {
             m.date = ftnDateStr(post.created)
             m.area = board.tag
             if pktAddMsg(m, scanEchoBody(pid)) { scanCount = scanCount + 1 }
+        } else {
+            if not localSeen { safe = pid }
         }
         pid = pid + 1
+    }
+    if safe > board.lastExported {
+        board.lastExported = safe
+        if not saveBoard() { log("Scan: mark save failed: " + lastError.message) }
     }
     scanBoards.add(board.id)
     scanHigh.add(last - 1)

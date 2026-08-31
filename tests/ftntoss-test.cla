@@ -177,6 +177,7 @@ func scanTests() {
     expect(loadNetwork(1), "network 1")
     // nothing pending: no packet
     expect(scanNetwork(1) == 0 and not file.exists(ftnOutPath(1)), "empty scan writes no packet")
+    expect(loadBoard(2) and board.lastExported == 1, "inbound-only prefix committed without a send")
 
     // a local post on the networked board (the inbound one must not go out)
     expect(postsOpen(2), "open board 2")
@@ -205,8 +206,8 @@ func scanTests() {
     // the raw packet keeps SEEN-BY and PATH (our reader strips them)
     expect(rawContains(ftnOutPath(1), "SEEN-BY: 1/100 1/141\x0D") and rawContains(ftnOutPath(1), "\x01PATH: 1/141\x0D"), "SEEN-BY/PATH written")
 
-    // marks untouched until commit; a rescan reproduces the packet
-    expect(loadBoard(2) and board.lastExported == 0, "lastExported untouched")
+    // local posts stay gated until commit; a rescan reproduces the packet
+    expect(loadBoard(2) and board.lastExported == 1, "local post not committed before ack")
     expect(scanNetwork(1) == 2, "rescan repeats")
     scanCommit(1)
     expect(loadBoard(2) and board.lastExported == 2, "lastExported advanced past the inbound post too")
