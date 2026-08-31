@@ -122,9 +122,11 @@ Sections in file order:
   rounds half-to-even and checks ±32767. Arrays: `ArrayInfo` per name
   over two heaps (`anums`, `astrs`), up to three dimensions, auto-DIM
   to 10.
-- **Evaluator** — recursive descent, one function per precedence
-  level (`IMP EQV XOR OR AND NOT relational + - MOD \ * / unary- ^`).
-  Logical operators work on the operands rounded to ints.
+- **Evaluator** — precedence climbing: one `evalClimb(minPrec)` loop
+  over a `binPrec` operator table (`IMP EQV XOR OR AND NOT relational
+  + - MOD \ * / unary- ^`, loosest first; NOT and unary `- +` are
+  prefix cases inside the same function). Logical operators work on
+  the operands rounded to ints.
 - **Output** — `outStr` tracks `cursorCol`/`cursorRow` for `POS`,
   `CSRLIN`, `TAB` and the 14-column comma zones, wraps an item that
   would cross `basicWidth`, and ends the line when an item exactly

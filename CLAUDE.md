@@ -540,7 +540,8 @@ inputChar (bbs.cla) → processInput`.
   SANE is Mac-only) with GW-BASIC 7-digit print formatting. `basic.cla`
   keeps source per line (`srcLines`/`srcNumbers`), tokenizes on `RUN`
   into one flat `prog: list of Tok` (pc = token index, no AST),
-  evaluates by recursive descent into `Val {isStr, n, s}`, and never
+  evaluates by precedence climbing (`evalClimb`/`binPrec`) into
+  `Val {isStr, n, s}`, and never
   blocks: `INPUT` parks in `BWaitLine`, `INKEY$`/`SLEEP` in
   `BWaitKey`/`BSleeping`; every error is an `abort` caught in
   `basicStep`. It knows nothing of the BBS — the including program
