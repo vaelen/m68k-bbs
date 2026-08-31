@@ -35,6 +35,16 @@ record Terminal {
 
 var terminal: Terminal
 
+func termTypeName(t: TerminalType): string {
+    switch t {
+    case ASCII { return "ASCII" }
+    case ANSI  { return "ANSI" }
+    case VT100 { return "VT100" }
+    case PETSCII { return "PETSCII" }
+    }
+    return ""
+}
+
 // The physical screen size, as the caller or NAWS reports it.
 func setColumns(actual: int) {
     terminal.columns = actual - 1

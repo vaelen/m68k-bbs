@@ -29,6 +29,7 @@ include "banned.cla"
 include "config.cla"
 include "wall.cla"
 include "motd.cla"
+include "screens.cla"
 include "games/basic.cla"
 include "xmodem.cla"
 include "zmodem.cla"
@@ -988,16 +989,6 @@ func newEmail(input: string) {
     postLoginStart()
 }
 
-func termTypeName(t: TerminalType): string {
-    switch t {
-    case ASCII { return "ASCII" }
-    case ANSI  { return "ANSI" }
-    case VT100 { return "VT100" }
-    case PETSCII { return "PETSCII" }
-    }
-    return ""
-}
-
 // colorOn/ansiOn are the menu entry's own claims -- a type implies
 // neither (VT52 is ASCII with escapes, PETSCII has color but no ESC).
 func applyTerminal(t: TerminalType, cols: int, colorOn: bool, ansiOn: bool) {
@@ -1018,8 +1009,11 @@ func applyTerminal(t: TerminalType, cols: int, colorOn: bool, ansiOn: bool) {
     msg = msg + " " + intStr(cols) + "x" + intStr(terminal.rows)
     log(msg)
     if not user.authenticated {
-        // first pick of the call: on to the login prompt
+        // first pick of the call: welcome screen, then the login prompt
         sendLine("")
+        if not showScreen("Welcome") {
+            sendLine("Welcome to 68kBBS!")
+        }
         sendLine("Type NEW at the login prompt to create an account.")
         gotoScreen("login")
         return
@@ -1329,6 +1323,9 @@ on App.launch {
         log("Configuration loaded (new user access " + intStr(config.newUserAccess) + ").")
     } else {
         log("Configuration unavailable: " + lastError.message)
+    }
+    if not screensInit() {
+        log("Screens folders unavailable: " + lastError.message)
     }
     if motdLoad() {
         log("Message of the day loaded (" + intStr(motdText.length) + " bytes).")

@@ -1,0 +1,115 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// Terminal-specific screen files, dropped by the sysop into
+// :Screens:Color:<type>: or :Screens:Monochrome:<type>: (type =
+// ANSI / VT100 / PETSCII / ASCII). screenPath picks the best match
+// for the caller's terminal: Color falls back to Monochrome, the
+// type falls back to ASCII. Files are TEXT with CR line ends (LF and
+// CRLF tolerated for host-edited files); no folder or file is
+// required -- a missing screen simply isn't shown.
+
+// Create the :Screens folder tree at launch so the sysop has the
+// folders to drop files into. makeDir is one level at a time; an
+// already-present folder is fine. False (with lastError) on failure.
+func screensInit(): bool {
+    var types: list of string
+    var kinds: list of string
+    var k: int = 0
+    var t: int = 0
+    kinds.add("Color")
+    kinds.add("Monochrome")
+    types.add("ANSI")
+    types.add("VT100")
+    types.add("PETSCII")
+    types.add("ASCII")     // Monochrome only: ASCII terminals have no color
+    if not screenEnsureDir(":Screens") { return false }
+    while k < kinds.count {
+        if not screenEnsureDir(":Screens:" + kinds[k]) { return false }
+        t = 0
+        while t < types.count {
+            if kinds[k] == "Color" and types[t] == "ASCII" { break }
+            if not screenEnsureDir(":Screens:" + kinds[k] + ":" + types[t]) { return false }
+            t = t + 1
+        }
+        k = k + 1
+    }
+    return true
+}
+
+func screenEnsureDir(p: string): bool {
+    if file.exists(p) { return true }
+    return file.makeDir(p)
+}
+
+// Path of the best matching screen file, "" when none exists.
+func screenPath(name: string): string {
+    var t: string = termTypeName(terminal.type)
+    var p: string
+    if terminal.color {
+        p = ":Screens:Color:" + t + ":" + name
+        if file.exists(p) { return p }
+    }
+    p = ":Screens:Monochrome:" + t + ":" + name
+    if file.exists(p) { return p }
+    if terminal.type != ASCII {
+        p = ":Screens:Monochrome:ASCII:" + name
+        if file.exists(p) { return p }
+    }
+    return ""
+}
+
+// The matching screen file's content; empty when no variant exists
+// or the read fails (lastError set).
+func loadScreen(name: string): text {
+    var data: text
+    var none: text
+    var path: string = screenPath(name)
+    var f: filehandle
+    if path == "" { return data }
+    f = file.open(path)
+    if f == nil { return data }
+    if not f.readAt(0, f.size(), data) {
+        f.close()
+        return none
+    }
+    f.close()
+    return data
+}
+
+// Send the screen to the caller line by line, so each line end goes
+// out as terminal.eol. Over-long lines are sent in 255-byte slices.
+// False when no variant of `name` exists.
+func showScreen(name: string): bool {
+    var data: text = loadScreen(name)
+    var start: int = 0
+    var i: int = 0
+    var c: char
+    if data.length == 0 { return false }
+    while i < data.length {
+        c = data[i]
+        if c == '\n' or c == '\x0A' {
+            // an LF right after a CR is the same line end, not a blank line
+            if c == '\n' or i == 0 or data[i - 1] != '\n' {
+                screenSendLine(data, start, i - start)
+            }
+            start = i + 1
+        }
+        i = i + 1
+    }
+    if start < data.length {
+        screenSendLine(data, start, data.length - start)
+    }
+    return true
+}
+
+func screenSendLine(data: text, start: int, len: int) {
+    var at: int = start
+    var left: int = len
+    while left > 255 {
+        sendData(data[at, 255])
+        at = at + 255
+        left = left - 255
+    }
+    sendLine(data[at, left])
+}

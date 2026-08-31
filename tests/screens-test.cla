@@ -1,0 +1,108 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for the terminal-specific screen files (screens.cla):
+// the Color -> Monochrome and type -> ASCII fallback, and the line-end
+// handling in showScreen. Run by scripts/test.sh from a scratch
+// directory. Exits 0 on pass, 1 on failure.
+
+include "../terminal.cla"
+include "../screens.cla"
+
+var failures: int = 0
+var out: string
+var outLen: int
+var lastLine: string
+
+// screens.cla sends through these; lines end with | so the test can
+// see where sendLine was called. out is a string (255-byte cap), so
+// the long-line test counts outLen instead.
+func sendData(s: string) {
+    out = out + s
+    outLen = outLen + s.length
+}
+func sendLine(s: string) {
+    sendData(s)
+    out = out + "|"
+    outLen = outLen + 1
+    lastLine = s
+}
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+func writeScreen(path: string, s: string): bool {
+    var t: text
+    t.append(s)
+    return file.writeText(path, t, "TEXT", "ttxt")
+}
+
+func show(name: string): string {
+    out = ""
+    showScreen(name)
+    return out
+}
+
+on App.startCLI(args: list of string) {
+    var t: text
+    var i: int
+
+    terminal.type = ANSI
+    terminal.color = true
+
+    expect(screenPath("Welcome") == "", "no folders: no match")
+    expect(not showScreen("Welcome"), "no folders: showScreen false")
+
+    expect(screensInit(), "screensInit creates the tree")
+    expect(screensInit(), "screensInit idempotent")
+    expect(file.exists(":Screens:Color:PETSCII") and file.exists(":Screens:Monochrome:ASCII"), "folders present")
+    expect(not file.exists(":Screens:Color:ASCII"), "no Color ASCII folder")
+
+    expect(writeScreen(":Screens:Monochrome:ASCII:Welcome", "ascii"), "write ASCII variant")
+    expect(screenPath("Welcome") == ":Screens:Monochrome:ASCII:Welcome", "falls back to Monochrome ASCII")
+
+    expect(writeScreen(":Screens:Monochrome:ANSI:Welcome", "mono"), "write mono ANSI variant")
+    expect(screenPath("Welcome") == ":Screens:Monochrome:ANSI:Welcome", "Monochrome ANSI beats ASCII")
+
+    expect(writeScreen(":Screens:Color:ANSI:Welcome", "color"), "write color ANSI variant")
+    expect(screenPath("Welcome") == ":Screens:Color:ANSI:Welcome", "Color ANSI beats Monochrome")
+
+    terminal.color = false
+    expect(screenPath("Welcome") == ":Screens:Monochrome:ANSI:Welcome", "mono terminal skips Color")
+
+    terminal.type = ASCII
+    expect(screenPath("Welcome") == ":Screens:Monochrome:ASCII:Welcome", "ASCII terminal")
+    expect(screenPath("Missing") == "", "unknown name: no match")
+
+    // line ends: CR, CRLF and bare LF all end a line; blank lines kept;
+    // a final line without a line end still goes out.
+    expect(writeScreen(":Screens:Monochrome:ASCII:Ends", "A\nB\n\x0AC\x0AD"), "write Ends")
+    expect(show("Ends") == "A|B|C|D|", "CR, CRLF and LF line ends")
+    expect(writeScreen(":Screens:Monochrome:ASCII:Blank", "A\n\nB"), "write Blank")
+    expect(show("Blank") == "A||B|", "blank line kept, last line unterminated")
+
+    // a line past 255 bytes goes out in slices, line end intact
+    while i < 30 {
+        t.append("0123456789")
+        i = i + 1
+    }
+    t.append("\n")
+    expect(file.writeText(":Screens:Monochrome:ASCII:Long", t, "TEXT", "ttxt"), "write Long")
+    out = ""
+    outLen = 0
+    expect(showScreen("Long"), "show Long")
+    expect(outLen == 301 and lastLine.length == 45, "300-byte line sent in slices")
+
+    if failures > 0 {
+        log("screens-test: FAILED")
+        quit 1
+    }
+    log("screens-test: all passed")
+    quit
+}
