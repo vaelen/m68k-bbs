@@ -11,6 +11,7 @@
 // docs/basic.md.
 
 include "../basic/basic.cla"
+include "toolbox/events.cla"   // TickCount, for the load-timing log
 
 const basicGamesFolder: string = ":BASIC"
 
@@ -197,23 +198,56 @@ func gameNumberInput(input: string) {
 
 // --- Running -----------------------------------------------------------
 
+// Game sources are fixed files, so the tokenized program is cached on
+// disk (<file>.TOK next to the source, keyed to its size + mod date):
+// the first run pays basicLoad + tokenize and writes the cache, later
+// runs load it directly. An edited .BAS misses the check and re-caches.
 func startBasicFile(name: string) {
     var src: text
+    var info: FileInfo
+    var srcPath: string
+    var tokPath: string
+    var cached: bool = false
+    var t0: int
+    var t1: int
+    var t2: int
+    var t3: int
+    var t4: int
+    var t5: int
     basicNew()
     basicGameMode = true
     basicWidth = terminal.columns        // physical width - 1: last column stays free
-    if not file.readText(basicGamesFolder + ":" + name, src) {
-        sendLine("Cannot read " + name + ".")
-        gotoScreen("games")
-        return
-    }
     sendLine("")
-    if not basicLoad(src) {
-        gotoScreen("games")
-        return
+    sendLine("Loading...")
+    srcPath = basicGamesFolder + ":" + name
+    tokPath = srcPath + ".TOK"
+    info = file.info(srcPath)            // FileInfo temp too big for 68k: keep it in a local
+    t0 = TickCount()
+    if file.exists(tokPath) {
+        cached = basicLoadTokens(tokPath, info.size, info.modified)
     }
-    log("BASIC: " + user.name + " runs " + name)
-    basicRun()
+    t1 = TickCount()
+    if cached {
+        basicRun()
+        log("BASIC: " + user.name + " runs " + name + " (cache " + intStr(t1 - t0) + " ticks)")
+    } else {
+        if not file.readText(srcPath, src) {
+            sendLine("Cannot read " + name + ".")
+            gotoScreen("games")
+            return
+        }
+        t2 = TickCount()
+        if not basicLoad(src) {
+            gotoScreen("games")
+            return
+        }
+        t3 = TickCount()
+        basicRun()
+        t4 = TickCount()
+        basicSaveTokens(tokPath, info.size, info.modified)
+        t5 = TickCount()
+        log("BASIC: " + user.name + " runs " + name + " (read " + intStr(t2 - t1) + ", parse " + intStr(t3 - t2) + ", tokenize " + intStr(t4 - t3) + ", cache write " + intStr(t5 - t4) + " ticks)")
+    }
     basicActive = true
     basicPump()
 }

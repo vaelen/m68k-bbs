@@ -547,10 +547,16 @@ inputChar (bbs.cla) → processInput`.
   defines `basicOut(s)`, `basicScreen(op, a, b)`, `basicPath(name,
   write)`, `basicEnv(name)` and drives `basicNew`/`basicLoad`/
   `basicRun`/`basicPrompt`/`basicStep(budget)`/`basicLine`/`basicKey`/
-  `basicStop` off `basicState`. `games/basic.cla` is the BBS wrapper:
+  `basicStop` off `basicState`. RUN skips re-tokenizing when the
+  source is unchanged (`srcDirty`); `basicSaveTokens`/`basicLoadTokens`
+  serialize the tokenized program (big-endian, `tokCacheVersion` — bump
+  on `K_*`/`Tok` changes — stamped with the source's size + mod date).
+  `games/basic.cla` is the BBS wrapper:
   the Games menu lists the enabled rows of the Games database
   (`gamenum` prompt; a `Basic` pick runs `:BASIC:<filename>` with
-  `basicGameId` set, other types say "not available yet"), sysops get
+  `basicGameId` set — first run tokenizes and writes `<file>.TOK`,
+  later runs load it; `startBasicFile` logs the load timing in ticks —
+  other types say "not available yet"), sysops get
   `B` = the `Ok` prompt in `:BASIC:<user>:`; `basicPath` is
   `gameDataPath` while a game runs (`gamedata.cla`:
   `:GameData:<gameId>:<userId>:name`, `_name` = the shared

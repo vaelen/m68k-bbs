@@ -70,6 +70,12 @@ description → type (`B`, the default) → file name, created enabled.
 Deleting a row never touches the game's file. Adding a BASIC game is
 therefore: put the `.BAS` file in `:BASIC:`, then register it here.
 
+The first run of a BASIC game parses and tokenizes the source (slow on
+the 68k) and writes a token cache next to it (`<file>.TOK`, keyed to
+the source's size + mod date); later runs load the cache directly.
+Editing the `.BAS` invalidates the cache automatically; the `.TOK` can
+always be deleted safely.
+
 ## Plan
 
 Three stages, in development order:

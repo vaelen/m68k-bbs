@@ -464,6 +464,60 @@ func fileTests() {
     check("10 OPEN \"DA\" FOR INPUT AS #1:INPUT #1,A$:PRINT A$", "", "Z\n", "end flushed the file")
 }
 
+// Token cache: save after a run, reload, and get identical output with
+// no source present; a stale or corrupt cache is refused.
+func tokenCacheTests() {
+    var got: text
+    var t: text
+    var src: string = "5 REM L1: unused label\n10 READ A$,B\n20 DATA HI,7\n30 FOR I=1 TO 2:PRINT A$;B*I:NEXT\n40 GOTO 60\n50 PRINT \"SKIPPED\"\n60 END"
+    var want: text = runProgram(src, "")
+    expect(basicSaveTokens("bas_TOK.TOK", 111, 222), "cache save ok")
+    basicNew()
+    expect(not basicLoadTokens("bas_TOK.TOK", 999, 222), "stale size refused")
+    expect(not basicLoadTokens("bas_TOK.TOK", 111, 999), "stale date refused")
+    expect(not basicLoadTokens("bas_NOPE.TOK", 111, 222), "missing cache refused")
+    expect(basicLoadTokens("bas_TOK.TOK", 111, 222), "cache load ok")
+    expect(srcNumbers.count == 0, "cache load has no source")
+    out = ""
+    basicRun()
+    pump("")
+    got = out
+    expect(got == want, "cached run output matches")
+    // a second RUN off the same cached program still works (dirty skip)
+    out = ""
+    basicRun()
+    pump("")
+    expect(out == want, "cached rerun output matches")
+    // corrupt cache: truncate the file and reload
+    file.readText("bas_TOK.TOK", t)
+    file.writeText("bas_CUT.TOK", t.textAt(0, t.length / 2), "CTOK", "68BB")
+    basicNew()
+    expect(not basicLoadTokens("bas_CUT.TOK", 111, 222), "truncated cache refused")
+}
+
+// The dirty flag: RUN twice without edits skips re-tokenizing; an edit
+// or DEFtype at runtime still behaves as before the varKey memo.
+func dirtyAndDefTypeTests() {
+    basicNew()
+    basicLoad(fromText("10 PRINT 1\n"))
+    expect(srcDirty, "load marks dirty")
+    out = ""
+    basicRun()
+    pump("")
+    expect(not srcDirty, "run clears dirty")
+    out = ""
+    basicRun()
+    pump("")
+    expectOut(" 1 \n", "rerun without retokenize")
+    srcSet(20, "PRINT 2")
+    expect(srcDirty, "edit marks dirty")
+    out = ""
+    basicRun()
+    pump("")
+    expectOut(" 1 \n 2 \n", "edit retokenizes")
+    check("10 A=5\n20 DEFSTR A\n30 A=\"X\"\n40 PRINT A\n50 DEFSNG A\n60 PRINT A", "", "X\n 5 \n", "deftype swaps key mid-run")
+}
+
 func sstTest() {
     var sst: text
     var pos: int
@@ -553,6 +607,8 @@ on App.startCLI(args: list of string) {
     fileTests()
     usingTests()
     errorTests()
+    tokenCacheTests()
+    dirtyAndDefTypeTests()
     sstTest()
     if failures > 0 { quit 1 }
     log("basic-test: all passed")

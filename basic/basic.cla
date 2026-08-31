@@ -47,11 +47,13 @@ var basicFixedSeed: int = 0       // tests: RANDOMIZE uses this seed when nonzer
 
 var srcLines: intmap of text
 var srcNumbers: list of int
+var srcDirty: bool = true     // source changed since prog was tokenized
 
 // Replace, insert, or (empty s) delete line n.
 func srcSetText(n: int, t: text) {
     var i: int = 0
     var j: int
+    srcDirty = true
     if t.length == 0 {
         if not srcLines.has(n) { return }
         srcLines.remove(n)
@@ -85,6 +87,7 @@ func srcSet(n: int, s: string) {
 func srcClear() {
     srcLines.clear()
     srcNumbers.clear()
+    srcDirty = true
 }
 
 func srcLineStr(n: int): string {
@@ -324,7 +327,24 @@ const K_WAIT: int = 137
 const K_VARPTR: int = 138
 
 
+// The switch in keywordScan compiles to a sequential string-compare
+// chain, and identifiers miss every case, so tokenizing paid ~150
+// compares per word; kwIds memoizes the answer (identifiers cache
+// their 0 too). Cleared per RUN so it never outgrows one program.
+var kwIds: map of int
+
 func keywordId(w: string): int {
+    var v: int
+    if kwIds.has(w) {
+        v = kwIds[w]
+        return v
+    }
+    v = keywordScan(w)
+    kwIds[w] = v
+    return v
+}
+
+func keywordScan(w: string): int {
     switch w {
     case "PRINT" { return K_PRINT }
     case "INPUT" { return K_INPUT }
@@ -472,6 +492,7 @@ var prog: list of Tok             // the tokenized program
 var lineIndex: intmap of int      // line number -> index of its TLine
 var labels: map of int            // LABEL -> line number
 var names: list of string         // interned variable names (with suffix)
+var varKeys: list of string       // memoized varKey per name id ("" = not computed)
 var nameIds: map of int
 var strPool: list of string       // string literals
 var dataText: list of string      // raw text of every DATA statement
@@ -482,6 +503,7 @@ func internName(w: string): int {
     if nameIds.has(w) { return nameIds[w] }
     id = names.count
     names.add(w)
+    varKeys.add("")
     nameIds[w] = id
     return id
 }
@@ -565,9 +587,12 @@ func tkWord() {
         c = tkSrc[tkPos]
         if c == '$' or c == '%' or c == '!' or c == '#' or c == '&' { tkPos = tkPos + 1 }
     }
-    i = start
-    while i < tkPos {
-        w = w + upperChar(tkSrc[i])
+    i = tkPos - start
+    if i > 255 { i = 255 }
+    w = tkSrc[start, i]
+    i = 0
+    while i < w.length {
+        w[i] = upperChar(w[i])
         i = i + 1
     }
     k = keywordId(w)
@@ -684,10 +709,12 @@ func tokenizeProgram() {
     lineIndex.clear()
     labels.clear()
     names.clear()
+    varKeys.clear()
     nameIds.clear()
     strPool.clear()
     dataText.clear()
     dataLine.clear()
+    kwIds.clear()
     while i < srcNumbers.count {
         n = srcNumbers[i]
         lineIndex[n] = prog.count
@@ -697,6 +724,7 @@ func tokenizeProgram() {
     }
     tkOut = prog
     tkEmit(TEnd, 0)
+    srcDirty = false
 }
 
 // --- Values and variables ---------------------------------------------
@@ -742,7 +770,12 @@ func numCint(n: Num): Num {
     return r
 }
 
-func numAsInt(n: Num): int { return numToInt(numCint(n)) }
+// Fast path: GOTO targets, subscripts and logic operands are almost
+// always exactly integral, and truncation equals rounding there.
+func numAsInt(n: Num): int {
+    if numIsInt(n) { return numToInt(n) }
+    return numToInt(numCint(n))
+}
 
 var nums: map of Num
 var strs: map of string
@@ -767,8 +800,10 @@ func isStrKey(key: string): bool { return key[key.length - 1] == '$' }
 func isIntKey(key: string): bool { return key[key.length - 1] == '%' }
 
 // The variable key for a name id: the name with its suffix, or the
-// DEFtype-implied suffix when it has none.
-func varKey(id: int): string {
+// DEFtype-implied suffix when it has none. Memoized per id in varKeys
+// (this runs several times per statement); the cache is reset whenever
+// defTypes changes (clearVars, stmtDefType).
+func varKeyCompute(id: int): string {
     var name: string = names[id]
     var last: char = name[name.length - 1]
     var d: char
@@ -778,6 +813,22 @@ func varKey(id: int): string {
     if d == '$' { return name + "$" }
     if d == '%' { return name + "%" }
     return name
+}
+
+func varKey(id: int): string {
+    var key: string = varKeys[id]
+    if key != "" { return key }
+    key = varKeyCompute(id)
+    varKeys[id] = key
+    return key
+}
+
+func varKeysReset() {
+    var i: int = 0
+    while i < varKeys.count {
+        varKeys[i] = ""
+        i = i + 1
+    }
 }
 
 // (assigned to locals first: the 68k backend can't return a map get)
@@ -820,6 +871,7 @@ func clearVars() {
         defTypes[i] = char(0)
         i = i + 1
     }
+    varKeysReset()
 }
 
 // --- Execution state --------------------------------------------------
@@ -842,19 +894,22 @@ func tok(): Tok {
     return cur[pc]
 }
 
+// The predicates below read cur[pc] fields in place rather than through
+// tok(): tok() copies a whole Tok (Num included) and these run dozens
+// of times per statement.
 func isOp(c: char): bool {
-    var t: Tok = tok()
-    return t.kind == TOp and t.ival == int(c)
+    if pc >= cur.count { return false }
+    return cur[pc].kind == TOp and cur[pc].ival == int(c)
 }
 
 func isOpCode(code: int): bool {
-    var t: Tok = tok()
-    return t.kind == TOp and t.ival == code
+    if pc >= cur.count { return false }
+    return cur[pc].kind == TOp and cur[pc].ival == code
 }
 
 func isKw(k: int): bool {
-    var t: Tok = tok()
-    return t.kind == TKw and t.ival == k
+    if pc >= cur.count { return false }
+    return cur[pc].kind == TKw and cur[pc].ival == k
 }
 
 func expectOp(c: char) {
@@ -879,15 +934,19 @@ func skipKw(k: int): bool {
 }
 
 func atLineEnd(): bool {
-    var t: Tok = tok()
-    return t.kind == TLine or t.kind == TEnd
+    var k: TokKind
+    if pc >= cur.count { return true }
+    k = cur[pc].kind
+    return k == TLine or k == TEnd
 }
 
 func atStmtEnd(): bool {
-    var t: Tok = tok()
-    if t.kind == TLine or t.kind == TEnd { return true }
-    if t.kind == TOp and t.ival == int(':') { return true }
-    if t.kind == TKw and t.ival == K_ELSE { return true }
+    var k: TokKind
+    if pc >= cur.count { return true }
+    k = cur[pc].kind
+    if k == TLine or k == TEnd { return true }
+    if k == TOp and cur[pc].ival == int(':') { return true }
+    if k == TKw and cur[pc].ival == K_ELSE { return true }
     return false
 }
 
@@ -1911,6 +1970,7 @@ func stmtDefType(suffix: char) {
         }
         if not skipOp(',') { break }
     }
+    varKeysReset()
 }
 
 // DATA is read from the raw text the tokenizer saved per statement.
@@ -3011,9 +3071,10 @@ func immediateLine(s: string) {
     basicState = BRunning
 }
 
-// Start the program from its first line, or from line n.
+// Start the program from its first line, or from line n. An unchanged
+// source (or a token cache load) skips re-tokenizing.
 func startProgram(line: int) {
-    tokenizeProgram()
+    if srcDirty { tokenizeProgram() }
     clearVars()
     clearStacks()
     fns.clear()
@@ -3425,6 +3486,214 @@ func stmtInputFile(lineMode: bool) {
         assignLValue(key, idx, v)
         if lineMode or not skipOp(',') { break }
     }
+}
+
+// --- Token cache ------------------------------------------------------
+// A tokenized program serialized to disk, so a fixed .BAS file (a BBS
+// game) skips basicLoad + tokenizeProgram on later runs. The format is
+// the in-memory structures verbatim, big-endian:
+//   "CTOK" version(1) srcSize(4) srcModified(4)
+//   names count + Pascal strings; strPool likewise;
+//   data count + per item Pascal string + line(4);
+//   labels count + per entry Pascal string + line(4);
+//   prog count + per token kind(1) + two ints (m,e for TNum;
+//   ival,aux otherwise). lineIndex and nameIds are rebuilt on load.
+// The header must match the source file's size and mod date, so an
+// edited .BAS invalidates its cache. Bump tokCacheVersion whenever the
+// K_* numbering or the Tok record changes. A failed load returns false
+// with the program cleared; the caller falls back to the source.
+
+const tokCacheVersion: int = 1
+const tokKindMax: int = 6     // int(TEnd)
+
+var tcPos: int = 0
+var tcFail: bool = false
+
+func tcByte(t: text): int {
+    var v: int
+    if tcPos >= t.length {
+        tcFail = true
+        return 0
+    }
+    v = int(t[tcPos])
+    tcPos = tcPos + 1
+    return v
+}
+
+func tcInt(t: text): int {
+    var v: int
+    if tcPos + 4 > t.length {
+        tcFail = true
+        return 0
+    }
+    v = t.intAt(tcPos)
+    tcPos = tcPos + 4
+    return v
+}
+
+func tcStr(t: text): string {
+    var n: int
+    var s: string
+    if tcPos >= t.length {
+        tcFail = true
+        return ""
+    }
+    n = int(t[tcPos])
+    if tcPos + 1 + n > t.length {
+        tcFail = true
+        return ""
+    }
+    s = t.stringAt(tcPos)
+    tcPos = tcPos + 1 + n
+    return s
+}
+
+func tcPutInt(t: text, v: int) {
+    t.append(char((v >> 24) & 0xFF))
+    t.append(char((v >> 16) & 0xFF))
+    t.append(char((v >> 8) & 0xFF))
+    t.append(char(v & 0xFF))
+}
+
+func tcPutStr(t: text, s: string) {
+    t.append(char(s.length))
+    t.append(s)
+}
+
+func basicSaveTokens(path: string, srcSize: int, srcModified: int): bool {
+    var t: text
+    var i: int
+    t.append("CTOK")
+    t.append(char(tokCacheVersion))
+    tcPutInt(t, srcSize)
+    tcPutInt(t, srcModified)
+    tcPutInt(t, names.count)
+    i = 0
+    while i < names.count {
+        tcPutStr(t, names[i])
+        i = i + 1
+    }
+    tcPutInt(t, strPool.count)
+    i = 0
+    while i < strPool.count {
+        tcPutStr(t, strPool[i])
+        i = i + 1
+    }
+    tcPutInt(t, dataText.count)
+    i = 0
+    while i < dataText.count {
+        tcPutStr(t, dataText[i])
+        tcPutInt(t, dataLine[i])
+        i = i + 1
+    }
+    tcPutInt(t, labels.count)
+    for k, v in labels {
+        tcPutStr(t, k)
+        tcPutInt(t, v)
+    }
+    tcPutInt(t, prog.count)
+    i = 0
+    while i < prog.count {
+        t.append(char(int(prog[i].kind)))
+        if prog[i].kind == TNum {
+            tcPutInt(t, prog[i].num.m)
+            tcPutInt(t, prog[i].num.e)
+        } else {
+            tcPutInt(t, prog[i].ival)
+            tcPutInt(t, prog[i].aux)
+        }
+        i = i + 1
+    }
+    return file.writeText(path, t, "CTOK", "68BB")
+}
+
+func basicLoadTokens(path: string, srcSize: int, srcModified: int): bool {
+    var t: text
+    var n: int
+    var i: int
+    var k: int
+    var s: string
+    var tk: Tok
+    if not file.readText(path, t) { return false }
+    tcPos = 0
+    tcFail = false
+    if tcByte(t) != int('C') or tcByte(t) != int('T') or tcByte(t) != int('O') or tcByte(t) != int('K') { return false }
+    if tcByte(t) != tokCacheVersion { return false }
+    if tcInt(t) != srcSize { return false }
+    if tcInt(t) != srcModified { return false }
+    if tcFail { return false }
+    prog.clear()
+    lineIndex.clear()
+    labels.clear()
+    names.clear()
+    varKeys.clear()
+    nameIds.clear()
+    strPool.clear()
+    dataText.clear()
+    dataLine.clear()
+    n = tcInt(t)
+    if tcFail or n < 0 { return false }
+    i = 0
+    while i < n {
+        internName(tcStr(t))
+        if tcFail { return false }
+        i = i + 1
+    }
+    n = tcInt(t)
+    if tcFail or n < 0 { return false }
+    i = 0
+    while i < n {
+        strPool.add(tcStr(t))
+        if tcFail { return false }
+        i = i + 1
+    }
+    n = tcInt(t)
+    if tcFail or n < 0 { return false }
+    i = 0
+    while i < n {
+        dataText.add(tcStr(t))
+        dataLine.add(tcInt(t))
+        if tcFail { return false }
+        i = i + 1
+    }
+    n = tcInt(t)
+    if tcFail or n < 0 { return false }
+    i = 0
+    while i < n {
+        s = tcStr(t)
+        labels[s] = tcInt(t)
+        if tcFail { return false }
+        i = i + 1
+    }
+    n = tcInt(t)
+    if tcFail or n < 1 { return false }
+    i = 0
+    while i < n {
+        k = tcByte(t)
+        if tcFail or k < 0 or k > tokKindMax { return false }
+        tk.kind = TokKind(k)
+        if tk.kind == TNum {
+            tk.num.m = tcInt(t)
+            tk.num.e = tcInt(t)
+            tk.ival = 0
+            tk.aux = 0
+        } else {
+            tk.ival = tcInt(t)
+            tk.aux = tcInt(t)
+            tk.num.m = 0
+            tk.num.e = 0
+        }
+        if tcFail { return false }
+        if tk.kind == TId and (tk.ival < 0 or tk.ival >= names.count) { return false }
+        if tk.kind == TStr and (tk.ival < 0 or tk.ival >= strPool.count) { return false }
+        if tk.kind == TLine { lineIndex[tk.ival] = prog.count }
+        prog.add(tk)
+        i = i + 1
+    }
+    if prog[prog.count - 1].kind != TEnd { return false }
+    srcClear()
+    srcDirty = false
+    return true
 }
 
 // --- Lifecycle -----------------------------------------------------------

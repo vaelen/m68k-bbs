@@ -63,7 +63,9 @@ hooks append to a `text`).
 |---|---|
 | `basicNew()` | clear program, variables, stacks, files; state `BIdle` |
 | `basicLoad(src: text): bool` | replace the program from source (CR, LF or CRLF line ends; unnumbered lines get previous + 1, 10 for the first); prints `Duplicate line number n` and returns false on a collision |
-| `basicRun()` | tokenize and start at the first line; errors end in `BDone` |
+| `basicRun()` | tokenize (skipped when the source is unchanged since the last tokenize, or a token cache was just loaded) and start at the first line; errors end in `BDone` |
+| `basicSaveTokens(path, srcSize, srcModified): bool` | write the tokenized program (built by the last `basicRun`) to a cache file, stamped with the source's size and mod date |
+| `basicLoadTokens(path, srcSize, srcModified): bool` | load a token cache instead of source: false (program cleared, caller falls back to `basicLoad`) on a missing/corrupt file, version mismatch, or a stamp that doesn't match the given size/date. On success `basicRun` starts it without re-tokenizing; there is no source, so `LIST` shows nothing. Bump `tokCacheVersion` when the `K_*` numbering or `Tok` layout changes |
 | `basicPrompt()` | print `Ok`, state `BPrompt`; from here `RUN`'s errors return to the prompt |
 | `basicStep(budget: int): bool` | execute up to `budget` statements, stopping early at a wait, the end, an error, or after ~1 KB of output (so a serial line keeps draining). Returns true while the host should keep calling: `BRunning`, `BSleeping`, `BWaitKey` |
 | `basicLine(s: string)` | a completed input line: the answer to `INPUT`/`LINE INPUT` (`BWaitLine`) or a line typed at the prompt (`BPrompt`) |
