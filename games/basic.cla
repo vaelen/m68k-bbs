@@ -214,7 +214,6 @@ func startBasicFile(name: string) {
     var t3: int
     var t4: int
     var t5: int
-    basicNew()
     basicGameMode = true
     basicWidth = terminal.columns        // physical width - 1: last column stays free
     sendLine("")
@@ -222,6 +221,17 @@ func startBasicFile(name: string) {
     srcPath = basicGamesFolder + ":" + name
     tokPath = srcPath + ".TOK"
     info = file.info(srcPath)            // FileInfo temp too big for 68k: keep it in a local
+    if progStamp == tokenStamp(tokPath, info.size, info.modified) {
+        // this game's tokens are still in memory from the last run
+        cursorCol = 0
+        cursorRow = 1
+        basicRun()
+        log("BASIC: " + user.name + " runs " + name + " (resident)")
+        basicActive = true
+        basicPump()
+        return
+    }
+    basicNew()
     t0 = TickCount()
     if file.exists(tokPath) {
         cached = basicLoadTokens(tokPath, info.size, info.modified)
@@ -250,6 +260,49 @@ func startBasicFile(name: string) {
     }
     basicActive = true
     basicPump()
+}
+
+// At launch, tokenize any enabled BASIC game whose .TOK cache is
+// missing or stale, so no caller ever pays the first-run tokenize
+// (minutes on a 68000). Fresh caches cost only a header check; the
+// last game warmed stays resident in memory.
+func basicWarmCaches() {
+    var id: int = 1
+    var nextId: int = gamesNextId()
+    var srcPath: string
+    var tokPath: string
+    var info: FileInfo
+    var src: text
+    var t0: int
+    while id < nextId {
+        if loadGame(id) and game.enabled {
+            switch game.type {
+            case Basic {
+                srcPath = basicGamesFolder + ":" + game.filename
+                if file.exists(srcPath) {
+                    info = file.info(srcPath)
+                    tokPath = srcPath + ".TOK"
+                    if not basicTokensFresh(tokPath, info.size, info.modified) {
+                        t0 = TickCount()
+                        basicNew()
+                        if file.readText(srcPath, src) and basicLoad(src) {
+                            tokenizeProgram()
+                            if basicSaveTokens(tokPath, info.size, info.modified) {
+                                log("BASIC: tokenized " + game.filename + " (" + intStr(TickCount() - t0) + " ticks).")
+                            } else {
+                                log("BASIC: cache write failed for " + game.filename + ": " + lastError.message)
+                            }
+                        } else {
+                            log("BASIC: cannot tokenize " + game.filename + ".")
+                        }
+                    }
+                }
+            }
+            else { }
+            }
+        }
+        id = id + 1
+    }
 }
 
 func startBasicPrompt() {

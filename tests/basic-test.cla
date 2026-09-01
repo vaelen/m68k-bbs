@@ -488,6 +488,17 @@ func tokenCacheTests() {
     basicRun()
     pump("")
     expect(out == want, "cached rerun output matches")
+    // the stamp: set by a cache load, cleared by any source mutation
+    expect(progStamp == tokenStamp("bas_TOK.TOK", 111, 222), "cache load sets stamp")
+    srcSet(70, "PRINT 9")
+    expect(progStamp == "", "edit clears stamp")
+    basicNew()
+    expect(progStamp == "", "new clears stamp")
+    // header-only freshness check
+    expect(basicTokensFresh("bas_TOK.TOK", 111, 222), "fresh cache detected")
+    expect(not basicTokensFresh("bas_TOK.TOK", 999, 222), "stale size not fresh")
+    expect(not basicTokensFresh("bas_TOK.TOK", 111, 999), "stale date not fresh")
+    expect(not basicTokensFresh("bas_NOPE.TOK", 111, 222), "missing cache not fresh")
     // corrupt cache: truncate the file and reload
     file.readText("bas_TOK.TOK", t)
     file.writeText("bas_CUT.TOK", t.textAt(0, t.length / 2), "CTOK", "68BB")

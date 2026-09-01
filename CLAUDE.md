@@ -577,9 +577,12 @@ inputChar (bbs.cla) → processInput`.
   `games/basic.cla` is the BBS wrapper:
   the Games menu lists the enabled rows of the Games database
   (`gamenum` prompt; a `Basic` pick runs `:BASIC:<filename>` with
-  `basicGameId` set — first run tokenizes and writes `<file>.TOK`,
-  later runs load it; `startBasicFile` logs the load timing in ticks —
-  other types say "not available yet"), sysops get
+  `basicGameId` set — stale `.TOK` caches are rebuilt at launch by
+  `basicWarmCaches` (header check via `basicTokensFresh`), runs load
+  the cache, and the token state stays resident between sessions
+  (`progStamp` in basic.cla, cleared on any source mutation) so a
+  re-run of the same game skips loading; `startBasicFile` logs the
+  load timing in ticks — other types say "not available yet"), sysops get
   `B` = the `Ok` prompt in `:BASIC:<user>:`; `basicPath` is
   `gameDataPath` while a game runs (`gamedata.cla`:
   `:GameData:<gameId>:<userId>:name`, `_name` = the shared

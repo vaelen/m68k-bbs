@@ -70,11 +70,17 @@ description → type (`B`, the default) → file name, created enabled.
 Deleting a row never touches the game's file. Adding a BASIC game is
 therefore: put the `.BAS` file in `:BASIC:`, then register it here.
 
-The first run of a BASIC game parses and tokenizes the source (slow on
-the 68k) and writes a token cache next to it (`<file>.TOK`, keyed to
-the source's size + mod date); later runs load the cache directly.
-Editing the `.BAS` invalidates the cache automatically; the `.TOK` can
-always be deleted safely.
+Running a BASIC game tokenizes the source (slow on the 68k — minutes
+on an 8 MHz SE) into a token cache next to it (`<file>.TOK`, keyed to
+the source's size + mod date); later runs load the cache directly. At
+launch `basicWarmCaches` re-tokenizes any enabled BASIC game whose
+cache is missing or stale (fresh ones cost a header check,
+`basicTokensFresh`), so callers never pay the first-run cost. The
+loaded token state also stays in memory between sessions (`progStamp`,
+cleared whenever the source mutates): re-running the game the
+interpreter already holds skips loading entirely — the log line says
+`(resident)`. Editing the `.BAS` invalidates cache and residency
+automatically; the `.TOK` can always be deleted safely.
 
 ## Plan
 

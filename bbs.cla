@@ -1402,6 +1402,7 @@ on App.launch {
     }
     if gamesOpen() {
         log("Games database open (" + intStr(gameCount()) + " games).")
+        basicWarmCaches()
     } else {
         log("Games database unavailable: " + lastError.message)
     }

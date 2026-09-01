@@ -49,11 +49,22 @@ var srcLines: intmap of text
 var srcNumbers: list of int
 var srcDirty: bool = true     // source changed since prog was tokenized
 
+// Identity of the token state in memory ("" = none): the file it came
+// from plus that file's size and mod date, so a long-running host can
+// re-run the same fixed program without reloading anything. Set by
+// basicLoadTokens/basicSaveTokens, cleared whenever the source mutates.
+var progStamp: string
+
+func tokenStamp(path: string, srcSize: int, srcModified: int): string {
+    return path + "|" + string(srcSize) + "|" + string(srcModified)
+}
+
 // Replace, insert, or (empty s) delete line n.
 func srcSetText(n: int, t: text) {
     var i: int = 0
     var j: int
     srcDirty = true
+    progStamp = ""
     if t.length == 0 {
         if not srcLines.has(n) { return }
         srcLines.remove(n)
@@ -88,6 +99,7 @@ func srcClear() {
     srcLines.clear()
     srcNumbers.clear()
     srcDirty = true
+    progStamp = ""
 }
 
 func srcLineStr(n: int): string {
@@ -3558,7 +3570,23 @@ func basicSaveTokens(path: string, srcSize: int, srcModified: int): bool {
         }
         i = i + 1
     }
-    return file.writeText(path, t, "CTOK", "68BB")
+    if not file.writeText(path, t, "CTOK", "68BB") { return false }
+    progStamp = tokenStamp(path, srcSize, srcModified)
+    return true
+}
+
+// True when path holds a token cache for exactly this source, checked
+// from the header alone -- cheap enough to run per file at startup.
+func basicTokensFresh(path: string, srcSize: int, srcModified: int): bool {
+    var t: text
+    if not file.readText(path, t) { return false }
+    tcPos = 0
+    tcFail = false
+    if tcByte(t) != int('C') or tcByte(t) != int('T') or tcByte(t) != int('O') or tcByte(t) != int('K') { return false }
+    if tcByte(t) != tokCacheVersion { return false }
+    if tcInt(t) != srcSize { return false }
+    if tcInt(t) != srcModified { return false }
+    return not tcFail
 }
 
 func basicLoadTokens(path: string, srcSize: int, srcModified: int): bool {
@@ -3647,6 +3675,7 @@ func basicLoadTokens(path: string, srcSize: int, srcModified: int): bool {
     if prog[prog.count - 1].kind != TEnd { return false }
     srcClear()
     srcDirty = false
+    progStamp = tokenStamp(path, srcSize, srcModified)
     return true
 }
 
