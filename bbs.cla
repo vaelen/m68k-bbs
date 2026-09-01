@@ -50,7 +50,7 @@ var timeBox: TimeSecsBox
 
 app BBS {
     name: "68kBBS"
-    version: "0.4"     // literal required here; keep equal to bbsVersion (user.cla)
+    version: "0.5b"     // literal required here; keep equal to bbsVersion (user.cla)
     author: "Andrew C. Young"
     about: "A simple BBS for classic Macs."
     id: "68BB"
