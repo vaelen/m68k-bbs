@@ -339,7 +339,9 @@ func scanEchoBody(pid: int): text {
 // — otherwise every scan re-walks all tossed echomail (a multi-minute
 // freeze on the 68k) and an all-inbound board never advances at all.
 func scanBoard() {
-    var pid: int = board.lastExported + 1
+    var cur: text
+    var rec: text
+    var pid: int
     var last: int
     var safe: int
     var localSeen: bool = false
@@ -349,24 +351,27 @@ func scanBoard() {
         return
     }
     last = postsNextId()
-    safe = pid - 1
-    while pid < last {
-        if loadPost(pid) and (post.flags & postFlagInbound) == 0 {
-            localSeen = true
-            m = new PktMsg
-            m.fromName = scanClamp(post.sender, 35)
-            m.toName = "All"
-            m.subject = scanClamp(post.subject, 71)
-            m.orig = network.addr
-            m.dest = network.uplink
-            m.attr = 0
-            m.date = ftnDateStr(post.created)
-            m.area = board.tag
-            if pktAddMsg(m, scanEchoBody(pid)) { scanCount = scanCount + 1 }
-        } else {
-            if not localSeen { safe = pid }
+    safe = board.lastExported
+    if dbScanStart(postsDb, cur, board.lastExported + 1, false) {
+        pid = dbScanNext(postsDb, cur, rec)
+        while pid != 0 {
+            if loadPost(pid) and (post.flags & postFlagInbound) == 0 {
+                localSeen = true
+                m = new PktMsg
+                m.fromName = scanClamp(post.sender, 35)
+                m.toName = "All"
+                m.subject = scanClamp(post.subject, 71)
+                m.orig = network.addr
+                m.dest = network.uplink
+                m.attr = 0
+                m.date = ftnDateStr(post.created)
+                m.area = board.tag
+                if pktAddMsg(m, scanEchoBody(pid)) { scanCount = scanCount + 1 }
+            } else {
+                if not localSeen { safe = pid }
+            }
+            pid = dbScanNext(postsDb, cur, rec)
         }
-        pid = pid + 1
     }
     if safe > board.lastExported {
         board.lastExported = safe
