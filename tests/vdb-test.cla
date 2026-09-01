@@ -308,6 +308,18 @@ on App.startCLI(args: list of string) {
     expect(dbScanNext(sdb, cur, srec) == 29, "skip positions correctly (39..30 consumed)")
     dbClose(sdb)
 
+    // --- header cache coherence --------------------------------------
+    sdb = dbCreate("HDRC", 32, "68BB")
+    dbAdd(sdb, "one")
+    expect(dbNextRecordId(sdb) == 2, "cached header tracks adds")
+    dbAdd(sdb, "two")
+    dbDelete(sdb, 1)
+    expect(dbRecordCount(sdb) == 1 and dbNextRecordId(sdb) == 3, "cached header tracks delete + add")
+    dbClose(sdb)
+    sdb = dbOpen("HDRC", "68BB")
+    expect(dbIsOpen(sdb) and dbRecordCount(sdb) == 1, "reopen reseeds the cache from disk")
+    dbClose(sdb)
+
     if failures > 0 {
         log("vdb-test: FAILED")
         quit 1

@@ -60,23 +60,47 @@ func dbPagesNeeded(recordSize: int): int {
 
 // --- Header (page 0) and free list (page 1) ---------------------------
 
-// Reads and validates page 0 into hdr. Field offsets per the spec:
+// Cached header pages by database name. Every header write goes
+// through dbWriteHeader, which refreshes the entry, so commits,
+// rollbacks and recovery keep the cache current; open/close drop it.
+var dbHdrCache: map of text
+
+func dbHdrCacheDrop(name: string) {
+    if dbHdrCache.has(name) { dbHdrCache.remove(name) }
+}
+
+// Reads and validates page 0 into hdr (from the cache after the first
+// read -- always a copy, since callers mutate their hdr before
+// committing). Field offsets per the spec:
 // sig 0, version 4, page_size 6, record_size 8, record_count 10,
 // next_record_id 14, last_compacted 18, journal_pending 22,
 // index_count 23, index list 32.
 func dbReadHeader(db: Database, hdr: text): bool {
     var f: filehandle = db.data
+    var c: text
+    if dbHdrCache.has(db.name) {
+        c = dbHdrCache[db.name]
+        btTextReset(hdr)
+        hdr.append(c)
+        return true
+    }
     if not f.readAt(0, dbPageSize, hdr) { return false }
     if hdr.length != dbPageSize { return false }
     if hdr[0] != 'V' or hdr[1] != 'D' or hdr[2] != 'B' or int(hdr[3]) != 0 { return false }
     if hdr.wordAt(4) != 2 { return false }
     if hdr.wordAt(6) != dbPageSize { return false }
+    c.append(hdr)
+    dbHdrCache[db.name] = c
     return true
 }
 
 func dbWriteHeader(db: Database, hdr: text): bool {
     var f: filehandle = db.data
-    return f.writeAt(0, hdr)
+    var c: text
+    if not f.writeAt(0, hdr) { return false }
+    c.append(hdr)
+    dbHdrCache[db.name] = c
+    return true
 }
 
 func dbReadFreeList(db: Database, fl: text): bool {
@@ -617,6 +641,7 @@ func dbOpen(name: string, creator: string): Database {
     var none: Database
     var hdr: text
     var idx: filehandle
+    dbHdrCacheDrop(name)
     db.name = name
     db.creator = creator
     db.data = file.open(name + ".DAT")
@@ -653,6 +678,7 @@ func dbClose(db: Database) {
     var f: filehandle = db.data
     var j: filehandle = db.journal
     var idx: filehandle = db.index
+    dbHdrCacheDrop(db.name)
     if f != nil {
         f.flush()
         f.close()
