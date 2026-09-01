@@ -56,8 +56,8 @@ func areaPickerWidths(w: list of int) {
 func drawAreaPicker() {
     var w: list of int
     var cells: list of string
-    var nextId: int = dbNextRecordId(areasDb)
-    var id: int = 1
+    var cur: text
+    var id: int
     var rec: text
 
     areaPickerWidths(w)
@@ -67,18 +67,20 @@ func drawAreaPicker() {
         cells.add("Description")
     }
     sendTableHeader("File Areas", cells, w)
-    while id < nextId {
-        rec = dbFind(areasDb, id)
-        if rec.length == areaRecordSize and areaVisible(rec) {
-            cells.clear()
-            cells.add(intStr(id))
-            cells.add(dbExtractString(rec, aOffName))
-            if terminal.columns >= minimumWideTerminalWidth {
-                cells.add(dbExtractString(rec, aOffDescription))
+    if dbScanStart(areasDb, cur, 1, false) {
+        id = dbScanNext(areasDb, cur, rec)
+        while id != 0 {
+            if areaVisible(rec) {
+                cells.clear()
+                cells.add(intStr(id))
+                cells.add(dbExtractString(rec, aOffName))
+                if terminal.columns >= minimumWideTerminalWidth {
+                    cells.add(dbExtractString(rec, aOffDescription))
+                }
+                sendLine(rowLine(cells, w))
             }
-            sendLine(rowLine(cells, w))
+            id = dbScanNext(areasDb, cur, rec)
         }
-        id = id + 1
     }
     sendRule(BottomLeft, BottomCenter, BottomRight, w)
     if terminal.columns < minimumWideTerminalWidth {
@@ -140,16 +142,15 @@ func enterArea() {
 
 // Files visible to the current caller (pending hidden from non-sysops).
 func visibleFileCount(): int {
-    var n: int = 0
-    var id: int = 1
-    var nextId: int = filesNextId()
+    var cur: text
     var rec: text
-    while id < nextId {
-        rec = dbFind(filesDb, id)
-        if rec.length == fileRecordSize and fileVisible(rec) {
-            n = n + 1
-        }
-        id = id + 1
+    var n: int = 0
+    var id: int
+    if not dbScanStart(filesDb, cur, 1, false) { return 0 }
+    id = dbScanNext(filesDb, cur, rec)
+    while id != 0 {
+        if fileVisible(rec) { n = n + 1 }
+        id = dbScanNext(filesDb, cur, rec)
     }
     return n
 }
@@ -174,7 +175,8 @@ func fileListWidths(w: list of int) {
 func drawFileList() {
     var w: list of int
     var cells: list of string
-    var id: int = filesNextId() - 1
+    var cur: text
+    var id: int
     var pageRows: int = terminal.rows - 8
     var skip: int = 0
     var rec: text
@@ -194,24 +196,30 @@ func drawFileList() {
         cells.add("Description")
     }
     sendTableHeader(area.name, cells, w)
-    while id >= 1 and fileNumIds.count < pageRows {
-        rec = dbFind(filesDb, id)
-        if rec.length == fileRecordSize and fileVisible(rec) {
-            if skip > 0 {
-                skip = skip - 1
-            } else {
-                fileNumIds.add(id)
-                cells.clear()
-                cells.add(intStr(fileNumIds.count))
-                cells.add(dbExtractString(rec, fOffName))
-                if terminal.columns >= minimumWideTerminalWidth {
-                    cells.add(sizeStr(rec.intAt(fOffSize)))
-                    cells.add(dbExtractString(rec, fOffDescription))
+    if dbScanStart(filesDb, cur, filesNextId() - 1, true) {
+        id = dbScanNext(filesDb, cur, rec)
+        while id != 0 and fileNumIds.count < pageRows {
+            if fileVisible(rec) {
+                if skip > 0 {
+                    skip = skip - 1
+                } else {
+                    fileNumIds.add(id)
+                    cells.clear()
+                    cells.add(intStr(fileNumIds.count))
+                    cells.add(dbExtractString(rec, fOffName))
+                    if terminal.columns >= minimumWideTerminalWidth {
+                        cells.add(sizeStr(rec.intAt(fOffSize)))
+                        cells.add(dbExtractString(rec, fOffDescription))
+                    }
+                    sendLine(rowLine(cells, w))
                 }
-                sendLine(rowLine(cells, w))
+            }
+            if fileNumIds.count < pageRows {
+                id = dbScanNext(filesDb, cur, rec)
+            } else {
+                id = 0
             }
         }
-        id = id - 1
     }
     sendTableFooter("Page " + intStr(filePage) + " of " + intStr(filePages), w)
     if fileNumIds.count == 0 {

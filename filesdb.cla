@@ -225,17 +225,17 @@ func pendingFileCount(): int {
     var aid: int = 1
     var id: int = 0
     var db: Database
+    var cur: text
     var rec: text
     while aid < areasNextId() {
         db = dbOpen(filesName(aid), "68BB")
         if dbIsOpen(db) {
-            id = 1
-            while id < dbNextRecordId(db) {
-                rec = dbFind(db, id)
-                if rec.length == fileRecordSize and (rec.intAt(fOffFlags) & fileFlagPending) != 0 {
-                    n = n + 1
+            if dbScanStart(db, cur, 1, false) {
+                id = dbScanNext(db, cur, rec)
+                while id != 0 {
+                    if (rec.intAt(fOffFlags) & fileFlagPending) != 0 { n = n + 1 }
+                    id = dbScanNext(db, cur, rec)
                 }
-                id = id + 1
             }
             dbClose(db)
         }
