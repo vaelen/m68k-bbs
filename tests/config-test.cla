@@ -49,6 +49,12 @@ on App.startCLI(args: list of string) {
     expect(writeConfig("systemName=\n"), "write an empty system name")
     expect(configLoad() and config.systemName == "68kBBS", "empty name keeps the default")
 
+    expect(config.modemInit == "AT&FE1Q0V1X4&C1&D2S0=0", "default modem init string")
+    expect(writeConfig("modemInit=ATZ\n"), "write a modem init string")
+    expect(configLoad() and config.modemInit == "ATZ", "modem init string parsed")
+    expect(writeConfig("modemInit=\n"), "write an empty modem init string")
+    expect(configLoad() and config.modemInit == "", "empty modem init string means no init")
+
     config.maintenanceHour = 23
     expect(configSave() and configLoad() and config.maintenanceHour == 23, "save/load roundtrip")
 

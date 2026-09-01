@@ -46,6 +46,12 @@ sets the same flag by hand — it never disconnects a caller already
 online, and the log reports `Closed to callers.` / `Open to callers.`
 (Clarus menu items carry no checkmark, and a `(` in a caption would
 dim the item -- it is the Menu Manager's disabled-item metacharacter).
+`Maintenance > Hang Up` (Cmd-H) drops the line by hand via the paced
+`+++`/`ATH` sequence; `Maintenance > Initialize Modem` does the same
+hang-up and then sends `Config.txt`'s `modemInit` string — the sequence
+that also runs at startup (`modemReset`, called from `modem.opened`).
+Every modem command is logged as it goes out (`Hanging Up: ATH`,
+`Resetting Modem: <string>`).
 `Maintenance > Toggle Log Auto-Scroll` (on by default) is the log
 window's follow-newest-line behaviour; turn it off to scroll back
 through the log while lines keep arriving. The manual setting survives a

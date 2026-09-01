@@ -43,6 +43,7 @@ func drawSysopConfigMenu() {
     sendLine("")
     sendLine("A) New User Access (" + accessSummary(config.newUserAccess) + ")")
     sendLine("H) Maintenance hour (" + intStr(config.maintenanceHour) + ":00)")
+    sendLine("M) Modem init string (" + config.modemInit + ")")
     sendLine("N) System name (" + config.systemName + ")")
     sendLine("Q) Return to Sysop Menu")
     sendLine("")
@@ -75,6 +76,10 @@ func sysopConfigChoice(input: string) {
     }
     case "H" {
         user.screen = "confighour"
+        displayPrompt()
+    }
+    case "M" {
+        user.screen = "configmodem"
         displayPrompt()
     }
     case "N" {
@@ -113,6 +118,20 @@ func configNameInput(input: string) {
     if name != "" {
         if name.length > systemNameMax { name = name[0, systemNameMax] }
         config.systemName = name
+        if configSave() {
+            sendLine("Saved.")
+        } else {
+            sendLine("Save failed: " + lastError.message)
+        }
+    }
+    gotoScreen("sysopconfig")
+}
+
+// Empty input keeps the init string; otherwise saved at once. Sent at
+// startup and from Maintenance > Initialize Modem.
+func configModemInput(input: string) {
+    if input != "" {
+        config.modemInit = input
         if configSave() {
             sendLine("Saved.")
         } else {

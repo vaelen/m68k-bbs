@@ -336,7 +336,11 @@ inputChar (bbs.cla) → processInput`.
   prompt; the terminal menu redraws fully and defaults to color ANSI on
   empty input. Logoff paces `+++` / `ATH` through a `every 30 ticks`
   timer (`hangupPhase`) to honor the Hayes guard time; the resulting
-  NO CARRIER resets the session. Sessions reset in `connected()`
+  NO CARRIER resets the session. `modemReset()` (startup via
+  `modem.opened`; `Maintenance > Initialize Modem`) runs that hang-up
+  then sends `config.modemInit` (`modemInitPhase`); `Maintenance >
+  Hang Up` (Cmd-H) is the hang-up alone; modem commands are logged as
+  sent. Sessions reset in `connected()`
   (`new User` / `new Terminal`). bbs.cla also owns the shared
   connection-facing table senders (`sendRule`, `sendTableTitle`,
   `sendTableHeader`, `sendTableFooter` — see `docs/tables.md`), the

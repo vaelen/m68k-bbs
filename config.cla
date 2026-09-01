@@ -18,6 +18,7 @@ record Config {
     newUserAccess: int = accessDefault     // Access flags for a new signup (docs/access.md)
     maintenanceHour: int = 4               // Hour (0-23, Mac local time) the daily maintenance window opens
     systemName: string = "68kBBS"          // The board's name: FTN Origin lines and EMSI IDENT
+    modemInit: string = "AT&FE1Q0V1X4&C1&D2S0=0"   // Sent at startup and Maintenance > Initialize Modem; empty = none
 }
 
 var config: Config
@@ -31,6 +32,7 @@ func configSave(): bool {
     data.append("newUserAccess=" + string(config.newUserAccess) + "\n")
     data.append("maintenanceHour=" + string(config.maintenanceHour) + "\n")
     data.append("systemName=" + config.systemName + "\n")
+    data.append("modemInit=" + config.modemInit + "\n")
     ok = f.writeAt(0, data)
     if ok { ok = f.flush() }
     f.close()
@@ -79,6 +81,9 @@ func configApply(line: string) {
     case "systemName" {
         if val.length > systemNameMax { val = val[0, systemNameMax] }
         if val != "" { config.systemName = val }
+    }
+    case "modemInit" {
+        config.modemInit = val         // explicit empty = no init string
     }
     }
 }
