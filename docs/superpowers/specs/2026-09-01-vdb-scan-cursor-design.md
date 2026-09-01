@@ -172,4 +172,8 @@ applies).
   conversions change no observable output.
 - **On the SE**: before/after `TickCount` log lines around
   `drawPostList` and `drawBoardPicker` for one release, so the win is
-  measured rather than assumed.
+  measured rather than assumed. Baseline, measured on production
+  2026-09-01 (~15 boards, 1 network, ANSI 80×24): board picker 396
+  ticks (~6.6 s), post list page 347 ticks (~5.8 s). The 9600-baud
+  line time for one such table is ~90 ticks, so ~¾ of the wait is
+  DB reads; target ~120–150 ticks per draw.
