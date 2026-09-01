@@ -242,10 +242,39 @@ no knowledge of vDB, exactly as `btree.c` is in libvdb.
 Records and arrays can hold `filehandle` values, so a `Database`
 record owns its open files, mirroring the C struct.
 
-**TODO — iteration API.** vDB has no way to walk records except
-`dbNextRecordId(db)` + probing `dbFind` over 1 .. next−1 (IDs are
-dense and never reused, so this works but does one index lookup per
-probe, misses included). Add a real cursor — e.g. `dbFirstId`/
-`dbNextId(afterId)` walking the primary index's leaf chain (which is
-already maintained in sorted order for exactly this) — when boards
-get big enough for probing to hurt.
+## Scan cursors (2026-09-01)
+
+Enumeration walks the primary index leaf-sequentially instead of
+probing `dbFind` per ID (which did one root-to-leaf descent per probe,
+misses included). The cursor is a **transient, caller-owned `text`
+blob** whose layout is private to btree.cla (state, direction, entry
+index, current leaf page number, the descent path's page numbers, and
+a snapshot of the current leaf page):
+
+- `dbScanStart(db, cur, fromId, descending)` — seed at the smallest
+  ID ≥ fromId (ascending) or the largest ≤ fromId (descending); one
+  `btDescend`. Ascending from 1 = full scan oldest-first; descending
+  from `dbNextRecordId(db) − 1` = newest-first.
+- `dbScanNext(db, cur, rec)` — advance, fill `rec` with the record's
+  bytes, return its ID; 0 when exhausted (sticky). Unreadable records
+  are logged and skipped.
+- `dbScanSkip(db, cur, n)` — skip n live index entries without
+  reading record pages (page positioning); returns the count skipped.
+
+Ascending steps follow the `next_leaf` chain; descending steps find
+the previous leaf through the stored path (previous child in the
+parent, rightmost spine back down), so no `prev_leaf` pointer and no
+format change. ~50 entries come off each 512-byte leaf read.
+
+Rules: a cursor lives inside **one event handler** — created, drained,
+dropped; what persists between events is a position (an ID), and the
+next draw re-seeks. **Never write to a database while one of its scans
+is live** — mutators collect IDs first, then act (see `expirePosts`).
+heap.cla's compactor deliberately stays on ID probing: it updates
+records mid-walk.
+
+**Header cache.** Page 0 is cached in a module map keyed by `db.name`:
+`dbReadHeader` serves a copy from the cache (filling it on first
+read), `dbWriteHeader` refreshes the entry on every successful write
+(commit, rollback, recovery), and `dbOpen`/`dbClose` drop it. All
+page-0 I/O goes through those two functions.

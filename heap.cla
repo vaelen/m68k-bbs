@@ -6,6 +6,11 @@
 // bytes with an (offset, length) pair at fixed field positions, bodies
 // are exact-fit with no framing, and deletes orphan their bytes.
 //
+// Enumeration here deliberately stays on ID probing, not dbScan:
+// heapFixOffsets updates records while iterating, which the scan
+// cursor's no-writes rule forbids, and compaction runs only during
+// maintenance with callers rejected.
+//
 // Fresh-file rewrite with deterministic offsets: walk records in ID
 // order appending each live body to <name>.NEW; a body's new offset is
 // the running total of the live bodies before it, so it can be

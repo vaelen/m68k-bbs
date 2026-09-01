@@ -222,14 +222,15 @@ func deleteMessage(id: int): bool {
 // ponytail: a scan over every header -- Mail is small; index mOffMsgId
 // when an inbox holds thousands.
 func findMailByMsgId(crc: int): int {
-    var id: int = 1
-    var last: int = mailNextId()
+    var cur: text
     var rec: text
+    var id: int
     if crc == 0 { return -1 }
-    while id < last {
-        rec = dbFind(mailDb, id)
-        if rec.length == mailRecordSize and rec.intAt(mOffMsgId) == crc { return id }
-        id = id + 1
+    if not dbScanStart(mailDb, cur, 1, false) { return -1 }
+    id = dbScanNext(mailDb, cur, rec)
+    while id != 0 {
+        if rec.intAt(mOffMsgId) == crc { return id }
+        id = dbScanNext(mailDb, cur, rec)
     }
     return -1
 }

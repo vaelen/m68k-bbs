@@ -186,9 +186,17 @@ inputChar (bbs.cla) → processInput`.
   escaped).
 - `btree.cla` — reusable file-based B-tree (multi-level, lazy
   deletion, type-4 overflow pages so one key holds unboundedly many
-  values -- `btMaxInline` inline, the rest chained) over a `filehandle`; `vdb.cla` — journaled page database
+  values -- `btMaxInline` inline, the rest chained) over a `filehandle`,
+  plus transient scan cursors (`btScanStart`/`btScanNext`, caller-owned
+  opaque `text` blob, ascending or descending — descending walks the
+  parent path, no format change); `vdb.cla` — journaled page database
   with secondary indexes on top of it (formats: `docs/vdb-clarus.md`;
-  design: `docs/vdb.md`). `usersdb.cla` — the "Users" vDB database
+  design: `docs/vdb.md`), a cached header page (module map, refreshed
+  by every `dbWriteHeader`, dropped on open/close), and the scan API
+  every enumerating screen uses (`dbScanStart`/`dbScanNext`/
+  `dbScanSkip`; cursors live inside one event handler, never write to
+  a database mid-scan — collect IDs first; heap.cla's compactor
+  deliberately still probes IDs). `usersdb.cla` — the "Users" vDB database
   (160-byte records: username/hash/email/access flags (i32)/created/
   lastSeen; vDB record ID = user ID; username indexed
   case-insensitively).

@@ -113,7 +113,7 @@ func postCount(): int {
     return dbRecordCount(postsDb)
 }
 
-// For enumerating posts: loop loadPost over 1 .. postsNextId()-1.
+// The next post ID; enumeration goes through dbScan on postsDb.
 func postsNextId(): int {
     return dbNextRecordId(postsDb)
 }

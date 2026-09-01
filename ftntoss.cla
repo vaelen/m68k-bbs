@@ -466,18 +466,20 @@ func scanCommit(netId: int) {
 
 // Counts for the sysop's network card.
 func ftnPendingPosts(netId: int): int {
+    var cur: text
+    var rec: text
     var id: int = 1
     var last: int = boardsNextId()
     var pid: int
-    var plast: int
     var n: int = 0
     while id < last {
         if loadBoard(id) and boardNetworked() and board.networkId == netId and postsOpen(id) {
-            pid = board.lastExported + 1
-            plast = postsNextId()
-            while pid < plast {
-                if loadPost(pid) and (post.flags & postFlagInbound) == 0 { n = n + 1 }
-                pid = pid + 1
+            if dbScanStart(postsDb, cur, board.lastExported + 1, false) {
+                pid = dbScanNext(postsDb, cur, rec)
+                while pid != 0 {
+                    if (rec.wordAt(pOffFlags) & postFlagInbound) == 0 { n = n + 1 }
+                    pid = dbScanNext(postsDb, cur, rec)
+                }
             }
         }
         id = id + 1
