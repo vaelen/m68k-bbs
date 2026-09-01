@@ -1,6 +1,45 @@
 # Releases
 
-## Unreleased — v0.4
+## Unreleased — v0.5
+
+## v0.4 — 2026-09-01
+
+Door games, custom welcome screens, and a modem the sysop controls:
+
+- Games menu (`gamesdb.cla`, `gamedata.cla`): entries live in a Games
+  database (sysop `G` tree + New Game wizard; types Basic, ZCode,
+  Native, Hermes — BASIC runs today), and running games read and write
+  through the `:GameData:<game>:<user>` sandbox with per-user /
+  shared / bundled fallback. `docs/games.md`.
+- BASIC speed: an on-disk token cache (`<file>.TOK`, keyed to source
+  size+date) cuts game load from ~26 s to ~4 s on the Mac II, and the
+  expression evaluator was rewritten as precedence climbing (3.2x on
+  the game-start benchmark). `scripts/basic.sh` runs the interpreter
+  in a terminal; `basic-host.sh --export` emits compilable C.
+- Welcome screens (`screens.cla`): terminal-specific files under
+  `:Screens:` (`80`/`40` x `Color`/`Monochrome` x type), with a
+  fallback ladder (Color → Monochrome, type → ASCII, 80 → 40 at each
+  rung); the m68k.club screens live in the repo. PETSCII defaults to
+  white text (C64 terminals run white-on-black).
+- IP banning: the modem emulator parses full Hayes command lines
+  (chained, extended `+NAME` syntax), logs caller IPs with timestamps,
+  and `AT+BAN` strikes the current caller — 5 minutes, then an hour,
+  then a day, with a quiet day resetting the record. The BBS hangs up
+  banned login names with `AT+BAN;H`.
+- Modem control: `Config.txt` `modemInit` (default
+  `AT&FE1Q0V1X4&C1&D2S0=0`, sysop Configuration `M`) is sent after a
+  paced hang-up at startup and from `Maintenance > Initialize Modem`;
+  `Maintenance > Hang Up` (Cmd-H) drops the line by hand; every modem
+  command is logged as sent.
+- `systemName` (`Config.txt`, sysop Configuration `N`) names the
+  board on FTN Origin lines and EMSI IDENT.
+- Board picker shows each board's last-post date and network name
+  (`lastPost` stamped at post time, backfilled at launch); over-long
+  table cells end in `...`.
+- Scan commits `lastExported` over the inbound prefix at once, so
+  FidoNet polls no longer re-walk all tossed echomail (a multi-minute
+  freeze per poll); the log window trims its oldest lines so long
+  runs never hit the 32,000-byte TextEdit cap.
 
 ## v0.3 — 2026-08-30
 
