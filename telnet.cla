@@ -212,6 +212,9 @@ func dataChar(c: char) {
 
 // Send caller-facing data, doubling IAC bytes for telnet clients.
 // Chunked sends around each IAC keep clear of the 255-byte string cap.
+// (A buffer-and-flush variant was tried 2026-09-01 and reverted: sends
+// are cheap under Snow, and per-line output keeps slow screens visibly
+// drawing instead of appearing hung.)
 func telnetSend(conn: connection, s: string) {
     var i: int = 0
     var start: int = 0

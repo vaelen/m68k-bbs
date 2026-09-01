@@ -18,7 +18,18 @@ record Config {
     newUserAccess: int = accessDefault     // Access flags for a new signup (docs/access.md)
     maintenanceHour: int = 4               // Hour (0-23, Mac local time) the daily maintenance window opens
     systemName: string = "68kBBS"          // The board's name: FTN Origin lines and EMSI IDENT
-    modemInit: string = "AT&FE1Q0V1X4&C1&D2S0=0"   // Sent at startup and Maintenance > Initialize Modem; empty = none
+    modemInit: string = "AT&FE1Q0V1X4&C1&D2S0=0"   // Sent at startup and Modem > Initialize Modem; empty = none
+    modemSpeed: int = 57600                // Serial port bps; a Modem-menu value (cosmetic under Snow; a real SE may drop upload bytes above 19200)
+    modemPort: string = "modem"            // "modem" or "printer" -- which serial port the BBS answers
+}
+
+// The speeds the Modem menu offers (a subset of the Serial Driver's
+// standard rates).
+func modemSpeedValid(n: int): bool {
+    switch n {
+    case 300, 1200, 2400, 4800, 9600, 19200, 57600 { return true }
+    }
+    return false
 }
 
 var config: Config
@@ -33,6 +44,8 @@ func configSave(): bool {
     data.append("maintenanceHour=" + string(config.maintenanceHour) + "\n")
     data.append("systemName=" + config.systemName + "\n")
     data.append("modemInit=" + config.modemInit + "\n")
+    data.append("modemSpeed=" + string(config.modemSpeed) + "\n")
+    data.append("modemPort=" + config.modemPort + "\n")
     ok = f.writeAt(0, data)
     if ok { ok = f.flush() }
     f.close()
@@ -84,6 +97,13 @@ func configApply(line: string) {
     }
     case "modemInit" {
         config.modemInit = val         // explicit empty = no init string
+    }
+    case "modemSpeed" {
+        n = configInt(val)
+        if modemSpeedValid(n) { config.modemSpeed = n }
+    }
+    case "modemPort" {
+        if val == "modem" or val == "printer" { config.modemPort = val }
     }
     }
 }

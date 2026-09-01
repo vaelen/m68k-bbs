@@ -146,7 +146,11 @@ onto the image (file type/creator don't matter; the app opens by name).
 line suffixed with `[free NK, max MK]` heap figures -- the 2026-08-29
 OOM diagnostic, kept as a permanent health readout) and in the
 runtime's exit log, which the Mac writes to a file named `out` on
-"BBS HD" when the app quits. To read it after quitting Snow cleanly:
+"BBS HD" when the app quits. The log window is a buffered canvas
+tailing a 100-line ring (`logLines`/`logRedraw`; appends set
+`logDirty`, the 2-tick timer redraws) -- no scrollbar, no selection;
+TextEdit re-wrapped the whole content per line, ~1 s on the SE.
+History past the window is the `out` file. To read it after quitting Snow cleanly:
 `HOME=scratch hmount snow/hdd2.img && hcopy -t :out ./out.txt && humount`.
 The file also contains the runtime's UI trace (`T OPEN ...`) and exit
 code — useful for verifying a session after the fact.
@@ -345,10 +349,16 @@ inputChar (bbs.cla) → processInput`.
   empty input. Logoff paces `+++` / `ATH` through a `every 30 ticks`
   timer (`hangupPhase`) to honor the Hayes guard time; the resulting
   NO CARRIER resets the session. `modemReset()` (startup via
-  `modem.opened`; `Maintenance > Initialize Modem`) runs that hang-up
-  then sends `config.modemInit` (`modemInitPhase`); `Maintenance >
+  `modem.opened`; `Modem > Initialize Modem`) runs that hang-up
+  then sends `config.modemInit` (`modemInitPhase`); `Modem >
   Hang Up` (Cmd-H) is the hang-up alone; modem commands are logged as
-  sent. Sessions reset in `connected()`
+  sent. The Modem menu (flat -- Clarus menus have no submenus or
+  checkmarks, so the active choice is dimmed via `modemMenuSync`) also
+  picks the port speed (300..57600) and port (modem/printer), saved as
+  `modemSpeed`/`modemPort` in Config.txt; a change closes and reopens
+  the port (`modemReopen`, dropping any caller). `Maintenance > Run
+  Benchmarks` logs the string/DB micro-benchmarks (`benchLog`).
+  Sessions reset in `connected()`
   (`new User` / `new Terminal`). bbs.cla also owns the shared
   connection-facing table senders (`sendRule`, `sendTableTitle`,
   `sendTableHeader`, `sendTableFooter` — see `docs/tables.md`), the

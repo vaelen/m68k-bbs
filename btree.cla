@@ -551,11 +551,11 @@ const btScanFresh: int = 0
 const btScanRun: int = 1
 const btScanDone: int = 2
 
-// Empty a text in place: a text parameter cannot be rebound, and text
-// has no clear() -- fromBytes with a zero count resizes to empty.
+// Empty a text in place (a text parameter cannot be rebound).
+// ponytail: thin wrapper kept for its call sites; new code can call
+// t.clear() directly.
 func btTextReset(t: text) {
-    var none: char[1]
-    t.fromBytes(none, 0)
+    t.clear()
 }
 
 func btScanKey(cur: text): int {

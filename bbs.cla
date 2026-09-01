@@ -61,7 +61,7 @@ window Main {
     size: 480, 300
     resizable: min(300, 150)
 
-    textview LogView { fill: both; scrollbar: both }
+    canvas LogView { fill: both; buffered }
 }
 
 menu File {
@@ -70,24 +70,37 @@ menu File {
 
 menu Edit { standard edit }
 
+// Menu captions: a "(" anywhere in the item text is the Menu Manager's
+// "disabled item" metacharacter, so no parentheses here. Clarus menus
+// are flat -- no submenus, no checkmarks -- so the speed and port
+// choices are items, with the ACTIVE one dimmed (modemMenuSync).
+menu Modem {
+    item HangUp "Hang Up" key "H"
+    item InitModem "Initialize Modem"
+    separator
+    item Speed300 "300 bps"
+    item Speed1200 "1200 bps"
+    item Speed2400 "2400 bps"
+    item Speed4800 "4800 bps"
+    item Speed9600 "9600 bps"
+    item Speed19200 "19200 bps"
+    item Speed57600 "57600 bps"
+    separator
+    item PortModem "Modem Port"
+    item PortPrinter "Printer Port"
+}
+
 menu FidoNet {
     item PollAll "Poll All Networks"
     item TogglePolling "Toggle FTN Polling"
     item TossNow "Toss Inbound Packets"
 }
 
-// Menu captions: a "(" anywhere in the item text is the Menu Manager's
-// "disabled item" metacharacter, so no parentheses here.
 menu Maintenance {
-    item HangUp "Hang Up" key "H"
-    item InitModem "Initialize Modem"
     item ToggleClosed "Toggle Closed to Callers"
     item RunNow "Run Database Maintenance"
-    item ToggleScroll "Toggle Log Auto-Scroll"
+    item RunBench "Run Benchmarks"
 }
-
-// Log window follows its newest line; off to scroll back and read.
-var logAutoScroll: bool = true
 
 var modem: connection
 var isConnected: bool = false
@@ -1167,10 +1180,55 @@ var modemInitPhase: int = 0   // countdown to sending config.modemInit, once the
 var telnetProbe: int = 0   // countdown to the end of the telnet probe
 
 // Hang up (paced +++/ATH) and then send the init string: startup and
-// Maintenance > Initialize Modem.
+// Modem > Initialize Modem.
 func modemReset() {
     modemInitPhase = 3
     hangupPhase = 1
+}
+
+// Open the serial port per config (Modem menu / Config.txt).
+func modemOpen() {
+    var spec: string = config.modemPort + ":" + intStr(config.modemSpeed)
+    log("Opening " + config.modemPort + " port at " + intStr(config.modemSpeed) + " bps.")
+    modem.open(serial spec)
+}
+
+// Dim the ACTIVE speed and port items -- flat-menu stand-in for
+// checkmarks; you can't select what's already in effect.
+func modemMenuSync() {
+    Modem.Speed300.enabled = config.modemSpeed != 300
+    Modem.Speed1200.enabled = config.modemSpeed != 1200
+    Modem.Speed2400.enabled = config.modemSpeed != 2400
+    Modem.Speed4800.enabled = config.modemSpeed != 4800
+    Modem.Speed9600.enabled = config.modemSpeed != 9600
+    Modem.Speed19200.enabled = config.modemSpeed != 19200
+    Modem.Speed57600.enabled = config.modemSpeed != 57600
+    Modem.PortModem.enabled = config.modemPort != "modem"
+    Modem.PortPrinter.enabled = config.modemPort != "printer"
+}
+
+// A Modem-menu change: persist it, close and reopen the port.
+// modem.opened then runs modemReset, so the line comes back
+// initialized; a caller on the line is dropped without ceremony.
+func modemReopen() {
+    if isConnected { log("Modem change with a caller online; the call is dropped.") }
+    modem.close()
+    modemOpen()
+    modemMenuSync()
+}
+
+func setModemSpeed(n: int) {
+    if config.modemSpeed == n { return }
+    config.modemSpeed = n
+    if not configSave() { log("Config save failed: " + lastError.message) }
+    modemReopen()
+}
+
+func setModemPort(p: string) {
+    if config.modemPort == p { return }
+    config.modemPort = p
+    if not configSave() { log("Config save failed: " + lastError.message) }
+    modemReopen()
 }
 
 // The probe window is over: the telnet processor has already consumed
@@ -1199,6 +1257,7 @@ func logoff() {
 // Keeps a BASIC program moving between caller keystrokes (games/basic.cla).
 every 2 ticks {
     if basicActive and (basicState == BRunning or basicState == BSleeping) { basicPump() }
+    if logDirty { logRedraw() }
 }
 
 every 30 ticks {
@@ -1217,6 +1276,10 @@ every 30 ticks {
         if ftnPolling { log("FTN: session in progress.") }
     }
     if user.screen == "xfer" { xferTick() }
+    if Main.front != nil {
+        // a resized or freshly exposed window redraws even when clean
+        if Main.front.LogView.width != logLastW or Main.front.LogView.height != logLastH { logRedraw() }
+    }
     if telnetProbe > 0 {
         telnetProbe = telnetProbe - 1
         if telnetProbe == 0 { telnetProbeDone() }
@@ -1311,34 +1374,72 @@ func disconnected() {
     ftnNext()                   // a poll the sysop queued runs now
 }
 
-// Append text to the log window, dropping LF (0x0A) -- the Mac newline
-// is CR, so CRLF/LF input would otherwise litter the view with boxes.
-// ponytail: rebuilds the whole textview text per append. Past logTrimAt
-// bytes the oldest whole lines go, back to logTrimTo, targeting ~50
-// lines at ~90 bytes each -- more makes scrolling/refresh drag on the
-// SE -- and the trim runs once per ~10 lines, not per line.
-const logTrimAt: int = 4800
-const logTrimTo: int = 4000
+// The log window is a buffered canvas showing the tail of a ring of
+// the last logKeep lines (TextEdit re-wrapped and redrew the whole
+// content on every append -- about a second per line on the SE; a
+// QuickDraw redraw of the visible tail is a few ms). No scrollbar: the
+// window is a live tail, history lives in the `out` exit log; a taller
+// window shows more lines. Appends only push to the ring and set
+// logDirty -- the 2-tick timer redraws, so bursts of log lines cost
+// one redraw.
+const logKeep: int = 100
+const logLineH: int = 12          // Geneva 9-ish line height, baseline offset below
+var logLines: list of string
+var logDirty: bool = false
+var logLastW: int = 0
+var logLastH: int = 0
 
 func appendLog(chunk: text) {
-    var m: Main = Main.front
-    var filtered: text
-    var t: text
+    var line: text
     var i: int = 0
-    if m == nil { return }
+    var c: char
     while i < chunk.length {
-        if chunk[i] != '\x0A' { filtered.append(chunk[i]) }
+        c = chunk[i]
+        if c == '\x0D' or i == chunk.length - 1 {
+            if c != '\x0D' and c != '\x0A' { line.append(c) }
+            if line.length > 0 {
+                if line.length > 250 {
+                    logLines.add(line[0, 250])
+                } else {
+                    logLines.add(line[0, line.length])
+                }
+                line.clear()
+            }
+        } else if c != '\x0A' {
+            line.append(c)
+        }
         i = i + 1
     }
-    t = m.LogView.text + filtered
-    if t.length > logTrimAt {
-        i = t.length - logTrimTo
-        while i < t.length and t[i] != '\n' { i = i + 1 }
-        if i < t.length { i = i + 1 }        // past the CR; none found = empty
-        t = t.textAt(i, t.length - i)
+    while logLines.count > logKeep {
+        logLines.shift()
     }
-    m.LogView.text = t
-    if logAutoScroll { m.LogView.scrollToEnd() }
+    logDirty = true
+}
+
+// Redraw the visible tail of the ring; runs from the timer, never
+// from appendLog itself.
+func logRedraw() {
+    var m: Main = Main.front
+    var rows: int
+    var first: int
+    var y: int
+    var i: int
+    logDirty = false
+    if m == nil { return }
+    logLastW = m.LogView.width
+    logLastH = m.LogView.height
+    rows = (logLastH - 4) / logLineH
+    if rows < 1 { return }
+    first = logLines.count - rows
+    if first < 0 { first = 0 }
+    m.LogView.clear()
+    y = logLineH
+    i = first
+    while i < logLines.count {
+        m.LogView.drawText(3, y, logLines[i])
+        y = y + logLineH
+        i = i + 1
+    }
 }
 
 // Every log(...) call lands here (after reaching the diagnostic stream)
@@ -1414,7 +1515,126 @@ on App.launch {
     if not ftnEnsureFolders() {
         log("FTN folders unavailable: " + lastError.message)
     }
-    modem.open(serial "modem:57600")
+    modemMenuSync()
+    modemOpen()
+}
+
+// Micro-benchmark of the table-draw suspects, logged in ticks:
+// Maintenance > Run Benchmarks. Comparison history:
+// docs/superpowers/bench-2026-09-01-68k-strings.md.
+func benchLog() {
+    var t0: int
+    var i: int
+    var n: int
+    var s: string
+    var s80: string
+    var t: text
+    var rec: text
+    var cells: list of string
+    var w: list of int
+
+    s80 = pad("x", 80)
+
+    t0 = TickCount()
+    i = 0
+    while i < 1000 {
+        s = ""
+        n = 0
+        while n < 10 {
+            s = s + "xxxxxxxx"
+            n = n + 1
+        }
+        i = i + 1
+    }
+    log("bench concat 10x8 x1000: " + intStr(TickCount() - t0))
+
+    t0 = TickCount()
+    i = 0
+    while i < 1000 {
+        t = ""
+        n = 0
+        while n < 80 {
+            t.append('x')
+            n = n + 1
+        }
+        i = i + 1
+    }
+    log("bench text append 80ch x1000: " + intStr(TickCount() - t0))
+
+    t0 = TickCount()
+    i = 0
+    while i < 1000 {
+        trackOutput(s80)
+        i = i + 1
+    }
+    log("bench trackOutput 80 x1000: " + intStr(TickCount() - t0))
+
+    t0 = TickCount()
+    i = 0
+    while i < 1000 {
+        translateOut(s80)
+        i = i + 1
+    }
+    log("bench translateOut ANSI 80 x1000: " + intStr(TickCount() - t0))
+
+    t0 = TickCount()
+    i = 0
+    while i < 1000 {
+        t = ""
+        t.append(s80)
+        i = i + 1
+    }
+    log("bench text bulk append 80 x1000: " + intStr(TickCount() - t0))
+
+    t0 = TickCount()
+    i = 0
+    while i < 1000 {
+        s = dateTimeStr(now())
+        i = i + 1
+    }
+    log("bench dateTimeStr x1000: " + intStr(TickCount() - t0))
+
+    t0 = TickCount()
+    i = 0
+    while i < 1000 {
+        s = intStr(1234567)
+        i = i + 1
+    }
+    log("bench intStr x1000: " + intStr(TickCount() - t0))
+
+    t0 = TickCount()
+    i = 0
+    while i < 200 {
+        rec = dbFind(boardsDb, 1)
+        i = i + 1
+    }
+    log("bench dbFind x200: " + intStr(TickCount() - t0))
+
+    cells.add("1")
+    cells.add("General")
+    cells.add("A test description")
+    cells.add("09-01-26")
+    cells.add("fsxNet")
+    w.add(3)
+    w.add(11)
+    w.add(31)
+    w.add(8)
+    w.add(10)
+    t0 = TickCount()
+    i = 0
+    while i < 1000 {
+        s = rowLine(cells, w)
+        i = i + 1
+    }
+    log("bench rowLine wide x1000: " + intStr(TickCount() - t0))
+
+    t0 = TickCount()
+    i = 0
+    while i < 1000 {
+        s = ruleLine(TopLeft, TopCenter, TopRight, w)
+        i = i + 1
+    }
+    log("bench ruleLine wide x1000: " + intStr(TickCount() - t0))
 }
 
 on modem.opened {
@@ -1468,13 +1688,25 @@ extend FidoNet {
     }
 }
 
-extend Maintenance {
+extend Modem {
     on HangUp.select {
         hangupPhase = 1
     }
     on InitModem.select {
         modemReset()
     }
+    on Speed300.select { setModemSpeed(300) }
+    on Speed1200.select { setModemSpeed(1200) }
+    on Speed2400.select { setModemSpeed(2400) }
+    on Speed4800.select { setModemSpeed(4800) }
+    on Speed9600.select { setModemSpeed(9600) }
+    on Speed19200.select { setModemSpeed(19200) }
+    on Speed57600.select { setModemSpeed(57600) }
+    on PortModem.select { setModemPort("modem") }
+    on PortPrinter.select { setModemPort("printer") }
+}
+
+extend Maintenance {
     on ToggleClosed.select {
         rejectCallers = not rejectCallers
         if rejectCallers {
@@ -1490,13 +1722,9 @@ extend Maintenance {
             maintStart(true)
         }
     }
-    on ToggleScroll.select {
-        logAutoScroll = not logAutoScroll
-        if logAutoScroll {
-            log("Log auto-scroll on.")
-        } else {
-            log("Log auto-scroll off.")
-        }
+    on RunBench.select {
+        log("Benchmarks running; the app is busy until they finish.")
+        benchLog()
     }
 }
 

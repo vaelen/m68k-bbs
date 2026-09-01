@@ -1,8 +1,6 @@
 // Copyright 2026, Andrew C. Young <andrew@vaelen.org>
 // SPDX-License-Identifier: MIT
 
-include "toolbox/events.cla"   // TickCount, for the draw-timing logs
-
 // Bulletin board reader: the caller-facing board picker and post
 // list. Included by bbs.cla, which owns the screen dispatch;
 // sysop.cla owns the admin screens for the same data.
@@ -125,7 +123,6 @@ func drawBoardPicker() {
     var cur: text
     var id: int
     var rec: text
-    var t0: int = TickCount()
 
     boardPickerWidths(w)
     cells.add("ID")
@@ -153,7 +150,6 @@ func drawBoardPicker() {
     } else {
         sendLine("V) Select Board (or enter ID)   Q) Return to Main Menu")
     }
-    log("Board picker drawn (" + intStr(TickCount() - t0) + " ticks).")
 }
 
 // Enter or Q returns to the main menu; V (or a digit, via inputChar)
@@ -220,7 +216,6 @@ func drawPostList() {
     var pageRows: int = terminal.rows - 9
     var skip: int = 0
     var rec: text
-    var t0: int = TickCount()
 
     postPages = (postCount() + pageRows - 1) / pageRows
     if postPages < 1 { postPages = 1 }
@@ -261,7 +256,6 @@ func drawPostList() {
     if postIds.count == 0 {
         sendLine("No posts yet.")
     }
-    log("Post list page drawn (" + intStr(TickCount() - t0) + " ticks).")
 }
 
 func drawPostsMenu() {
