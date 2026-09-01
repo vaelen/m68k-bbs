@@ -5,7 +5,7 @@
 
 // The app version: bbs.cla's app block and the FTN tearline/PID/EMSI
 // carry it. Lives here so module tests reach it without bbs.cla.
-const bbsVersion: string = "0.4"
+const bbsVersion: string = "0.5"
 
 record User {
     name:          string(31)
