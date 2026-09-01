@@ -48,26 +48,49 @@ func boardPickerWidths(w: list of int) {
 
 // Fill in lastPost for boards that predate the field (0): the newest
 // surviving post's date. Run once at launch; a board that really has
-// no posts is rescanned each launch, cheaply.
+// no posts is rescanned each launch, cheaply. Board IDs are collected
+// first -- boardTouch writes the Boards database, and a scan must not
+// see writes.
 func boardsBackfillLastPost() {
-    var id: int = 1
-    var last: int = boardsNextId()
-    var pid: int
-    while id < last {
-        if loadBoard(id) and board.lastPost == 0 and postsOpen(id) {
-            pid = postsNextId() - 1
-            while pid > 0 {
-                if loadPost(pid) {
-                    boardTouch(id, post.created)
-                    pid = 0
-                } else {
-                    pid = pid - 1
-                }
-            }
+    var cur: text
+    var rec: text
+    var todo: list of int
+    var i: int = 0
+    var id: int
+    if dbScanStart(boardsDb, cur, 1, false) {
+        id = dbScanNext(boardsDb, cur, rec)
+        while id != 0 {
+            if rec.intAt(bOffLastPost) == 0 { todo.add(id) }
+            id = dbScanNext(boardsDb, cur, rec)
         }
-        id = id + 1
+    }
+    while i < todo.count {
+        if postsOpen(todo[i]) and dbScanStart(postsDb, cur, postsNextId() - 1, true) {
+            id = dbScanNext(postsDb, cur, rec)
+            if id != 0 { boardTouch(todo[i], rec.intAt(pOffCreated)) }
+        }
+        i = i + 1
     }
     postsClose()
+}
+
+// Network names looked up once per draw: the picker shows the same
+// network on most rows.
+var netMemoIds: list of int
+var netMemoNames: list of string
+
+func networkNameFor(netId: int): string {
+    var i: int = 0
+    var name: string
+    while i < netMemoIds.count {
+        if netMemoIds[i] == netId { return netMemoNames[i] }
+        i = i + 1
+    }
+    name = intStr(netId)
+    if loadNetwork(netId) { name = network.name }
+    netMemoIds.add(netId)
+    netMemoNames.add(name)
+    return name
 }
 
 // The caller's cells: the network's name (not the echo tag) in the
@@ -89,10 +112,8 @@ func boardPickerCells(id: int, rec: text, cells: list of string) {
     netId = rec.intAt(bOffNetwork)
     if netId == 0 {
         cells.add("local")
-    } else if loadNetwork(netId) {
-        cells.add(network.name)
     } else {
-        cells.add(intStr(netId))
+        cells.add(networkNameFor(netId))
     }
 }
 
@@ -101,8 +122,8 @@ func boardPickerCells(id: int, rec: text, cells: list of string) {
 func drawBoardPicker() {
     var w: list of int
     var cells: list of string
-    var nextId: int = dbNextRecordId(boardsDb)
-    var id: int = 1
+    var cur: text
+    var id: int
     var rec: text
     var t0: int = TickCount()
 
@@ -114,14 +135,16 @@ func drawBoardPicker() {
         cells.add("Last")
         cells.add("Network")
     }
+    netMemoIds.clear()
+    netMemoNames.clear()
     sendTableHeader("Bulletin Boards", cells, w)
-    while id < nextId {
-        rec = dbFind(boardsDb, id)
-        if rec.length == boardRecordSize {
+    if dbScanStart(boardsDb, cur, 1, false) {
+        id = dbScanNext(boardsDb, cur, rec)
+        while id != 0 {
             boardPickerCells(id, rec, cells)
             sendLine(rowLine(cells, w))
+            id = dbScanNext(boardsDb, cur, rec)
         }
-        id = id + 1
     }
     sendRule(BottomLeft, BottomCenter, BottomRight, w)
     if terminal.columns < minimumWideTerminalWidth {
@@ -192,7 +215,8 @@ func postListWidths(w: list of int) {
 func drawPostList() {
     var w: list of int
     var cells: list of string
-    var id: int = postsNextId() - 1
+    var cur: text
+    var id: int
     var pageRows: int = terminal.rows - 9
     var skip: int = 0
     var rec: text
@@ -213,24 +237,25 @@ func drawPostList() {
         cells.add("Date")
     }
     sendTableHeader(board.name, cells, w)
-    while id >= 1 and postIds.count < pageRows {
-        rec = dbFind(postsDb, id)
-        if rec.length == postRecordSize {
-            if skip > 0 {
-                skip = skip - 1
+    if dbScanStart(postsDb, cur, postsNextId() - 1, true) {
+        dbScanSkip(postsDb, cur, skip)
+        id = dbScanNext(postsDb, cur, rec)
+        while id != 0 and postIds.count < pageRows {
+            postIds.add(id)
+            cells.clear()
+            cells.add(intStr(postIds.count))
+            cells.add(dbExtractString(rec, pOffSubject))
+            if terminal.columns >= minimumWideTerminalWidth {
+                cells.add(dbExtractString(rec, pOffSender))
+                cells.add(dateTimeStr(rec.intAt(pOffCreated)))
+            }
+            sendLine(rowLine(cells, w))
+            if postIds.count < pageRows {
+                id = dbScanNext(postsDb, cur, rec)
             } else {
-                postIds.add(id)
-                cells.clear()
-                cells.add(intStr(postIds.count))
-                cells.add(dbExtractString(rec, pOffSubject))
-                if terminal.columns >= minimumWideTerminalWidth {
-                    cells.add(dbExtractString(rec, pOffSender))
-                    cells.add(dateTimeStr(rec.intAt(pOffCreated)))
-                }
-                sendLine(rowLine(cells, w))
+                id = 0
             }
         }
-        id = id - 1
     }
     sendTableFooter("Page " + intStr(postPage) + " of " + intStr(postPages), w)
     if postIds.count == 0 {
