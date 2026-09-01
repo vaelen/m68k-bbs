@@ -104,7 +104,9 @@ answered at once: `\r\nCONNECT 57600\r\n` to the serial side, then
 `\r\nNO CARRIER\r\n` when they leave — exactly what `scanner.cla` watches
 for. Output toward the Mac is queued (never blocks; a fast remote is paused
 past a 64 KB backlog), so `+++` timing holds under a streaming peer.
-From the Mac side it honors `+++`/`ATH` (hang up), `ATO`, and
+From the Mac side it honors `+++`/`ATH` (hang up), `ATO`, `AT+BAN`
+(strike the caller's IP: 5 min, then 1 h, then 24 h; chain as
+`AT+BAN;H`; `AT+BAN=0` clears), and
 `ATDT`: a `dial.conf` name (`name = tcp:host:port | exec:command`; the
 FidoNet poll dials an `exec:fnemsi … --answer` entry, `CONNECT` arrives
 on the child's first byte) or a bare `host[:port]`. One call at a time;
@@ -489,8 +491,9 @@ inputChar (bbs.cla) → processInput`.
   at launch (`bannedLoad`; missing file → the 31 defaults written out),
   `isBanned` case-insensitive, `bannedAdd`/`bannedRemove` save at once.
   Signup refuses a banned name ("That username is not allowed."); a
-  banned name at the login prompt hangs up straight away (`hangupPhase`,
-  no message, no login-log record). Sysop menu `X` lists/adds/deletes.
+  banned name at the login prompt hangs up straight away (`hangupPhase`
+  with `banCaller` set, so the modem gets `AT+BAN;H` — the emulator
+  strikes the caller's IP; no message, no login-log record). Sysop menu `X` lists/adds/deletes.
   `docs/banned.md`.
 - `walldb.cla` — the "Wall" vDB (160-byte records:
   name/created/message ≤120 chars — `wallMessageMax`; no indexes, ID

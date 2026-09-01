@@ -32,8 +32,8 @@ make
 The modem connects to `localhost:connect_port` at start and stays
 connected. If that fails or the connection drops (the emulator quit), it
 retries every 10 s, silently; a call in progress at the time is dropped.
-It logs to stderr: serial port connected/lost, calls placed, answered and
-ended.
+It logs to stderr, one timestamped line each: serial port connected/lost,
+calls placed, answered (with the caller's IP) and ended, and bans.
 
 ## Inbound calls
 
@@ -74,16 +74,35 @@ computer aborts it (`NO CARRIER`), as does a 60 s ceiling.
 | `ATD…` | dials (above) | `ERROR` |
 | `ATH` / `ATH0` | `OK` | hang up: `NO CARRIER`, remote closed |
 | `ATO` | `OK` | back to data mode, `CONNECT 57600` |
+| `AT+BAN` | `ERROR` | ban the caller's IP (below), `OK` |
+| `AT+BAN=0` | clear the ban list, `OK` | same |
 | any other `AT…` | `OK` | `OK` |
 
+The command line is parsed as real Hayes syntax — basic commands
+(`E0V1X4`), S registers (`S0=0`, `S11?`), `&`/`%`/`\` sets, extended
+`+NAME[=value][?]` commands, optional spaces and semicolons — so chains
+like `AT+BAN;H` work; everything unrecognized parses cleanly and is
+ignored (`OK`).
+
 Result codes use the Hayes verbose (`ATV1`) framing, `<CR><LF>text<CR><LF>`.
-No command echo, S registers, numeric result codes or `RING`. The guard
+No command echo, numeric result codes or `RING`. The guard
 time is 0.5 s, half the Hayes default (`GUARD_MS` in `modem.c`). Data from
 the remote side that arrives in command mode is discarded. Output to the
 serial side is queued and never blocks the modem: a remote streaming
 faster than the port drains is paused past a 64 KB backlog (`LQ_MAX`),
 and the backlog is dropped when the call ends, so `+++` timing stays
 honest and `NO CARRIER` arrives promptly.
+
+## IP bans
+
+`AT+BAN` while an inbound caller is on the line (i.e. between `+++` and
+`ATH`, or chained: `AT+BAN;H`) records a strike against that caller's IP.
+Strike 1 blocks the IP for 5 minutes, strike 2 for an hour, strike 3 and
+up for a day; a caller whose last strike is over a day old starts over at
+zero. Banned callers are dropped without a word (the serial side never
+sees them). The list lives in memory (gone on restart, capped at 8192
+IPs, stalest reused) and every ban and rejection is logged with the IP
+and duration. `AT+BAN=0` clears the whole list.
 
 ## Test
 

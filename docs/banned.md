@@ -11,8 +11,15 @@ one text file (`banned.cla`).
   with `That username is not allowed.` and the name prompt repeats.
 - **Login prompt**: typing a banned name hangs up straight away — no
   message, no password prompt, no login-log record — via the same
-  paced `+++` / `ATH` sequence as a normal logoff (`hangupPhase`).
-  The Mac-side log gets `Banned name at login (<name>); hanging up.`
+  paced `+++` sequence as a normal logoff (`hangupPhase`), but the
+  final command is `AT+BAN;H` instead of `ATH` (`banCaller`): the
+  modem emulator records a strike against the caller's IP and blocks
+  it for 5 minutes, then an hour, then a day on repeat offenses
+  (`simple-modem-emulator/README.md`, "IP bans"). Note a real modem
+  may reject the unknown `+BAN` with `ERROR` without executing the
+  chained `H` — this is for the emulator; on real hardware the line
+  drops anyway when the caller gives up.
+  The Mac-side log gets `Banned name at login (<name>); banning caller.`
 - Matching is case-insensitive (`isBanned`), on the whole name.
 
 ## Editing (Sysop menu `X`)

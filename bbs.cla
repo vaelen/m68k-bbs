@@ -871,8 +871,9 @@ func loginName(input: string) {
     } else if upperStr(input) == "NEW" {
         gotoScreen("newname")
     } else if isBanned(input) {
-        log("Banned name at login (" + input + "); hanging up.")
+        log("Banned name at login (" + input + "); banning caller.")
         user.screen = "logoff"
+        banCaller = true
         hangupPhase = 1
     } else {
         pendingId = findUserId(input)
@@ -1149,6 +1150,7 @@ func mainChoice(input: string) {
 // once-a-second timer below.
 
 var hangupPhase: int = 0
+var banCaller: bool = false   // hang up with AT+BAN;H: strike the caller's IP
 var telnetProbe: int = 0   // countdown to the end of the telnet probe
 
 // The probe window is over: the telnet processor has already consumed
@@ -1202,7 +1204,8 @@ every 30 ticks {
         hangupPhase = hangupPhase + 1
         if hangupPhase == 3 { modem.send("+++") }       // ~1s of silence first
         if hangupPhase == 5 {                            // ~1s after +++
-            modem.send("ATH\x0D")
+            if banCaller { modem.send("AT+BAN;H\x0D") } else { modem.send("ATH\x0D") }
+            banCaller = false
             hangupPhase = 0
         }
     }
@@ -1216,6 +1219,7 @@ func connected() {
     telnetReset()
     telnetIntercept = true   // watch for negotiation during the probe
     hangupPhase = 0
+    banCaller = false
     pendingId = 0
     pendingHash = 0
     returning = false

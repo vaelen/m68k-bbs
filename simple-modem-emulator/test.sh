@@ -123,6 +123,17 @@ try:
     except ConnectionResetError: pass
     peer.close(); peer_l.close()
     local.sendall(b"AT\r"); assert rd(local) == OK
+    # 17. chained/extended commands parse; unknown ones are just OK
+    local.sendall(b"AT E0 V1 &C1;+GCI=FF;S0=0 X4 %C1\r"); assert rd(local) == OK
+    local.sendall(b"AT+BAN\r"); assert rd(local) == ERROR   # nobody on the line
+    # 18. AT+BAN;H bans the caller and hangs up; the next call is refused
+    caller = call(); assert rd(local) == CONNECT
+    time.sleep(1.1); local.sendall(b"+++"); assert rd(local) == OK
+    local.sendall(b"AT+BAN;H\r"); assert rd(local) == NOCARRIER; caller.close()
+    c = call(); assert rd(local, t=1) == b""; c.close()      # banned: no CONNECT
+    local.sendall(b"AT+BAN=0\r"); assert rd(local) == OK     # clear the ban list
+    caller = call(); assert rd(local) == CONNECT
+    caller.close(); assert rd(local) == NOCARRIER
     # 7. serial port down -> caller rejected with NO ANSWER
     ser.close(); local.close(); time.sleep(0.3)
     caller = call(); assert rd(caller) == NOANSWER

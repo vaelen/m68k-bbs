@@ -12,6 +12,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +20,7 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #define GUARD_MS 500            // Hayes S12 guard time, 25 x 20ms = 0.5s
@@ -49,10 +51,71 @@ static int ncmd = 0;
 static char *lq = NULL;                 // bytes waiting for the serial port
 static int lqlen = 0, lqcap = 0;
 
+// IP bans (AT+BAN strikes the current inbound caller): 5 min, then 1 h,
+// then 24 h; a caller whose last strike is over a day old starts over.
+#define BAN_MAX 8192
+struct ban {
+    in_addr_t ip;
+    int count;                          // strikes so far
+    long last_ms;                       // time of the last strike
+};
+static struct ban bans[BAN_MAX];
+static int nbans = 0;
+static in_addr_t caller_ip = 0;         // current inbound caller, 0 = none
+static char caller_ip_str[INET_ADDRSTRLEN];
+
 static long now_ms(void) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return tv.tv_sec * 1000L + tv.tv_usec / 1000;
+}
+
+// Timestamped log line to stderr.
+static void logts(const char *fmt, ...) {
+    char ts[32];
+    time_t t = time(NULL);
+    va_list ap;
+    strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", localtime(&t));
+    fprintf(stderr, "%s ", ts);
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+}
+
+static long ban_dur_ms(int count) {
+    if (count >= 3) return 24L * 3600 * 1000;
+    if (count == 2) return 3600L * 1000;
+    return 5L * 60 * 1000;
+}
+
+static struct ban *ban_find(in_addr_t ip) {
+    int i;
+    for (i = 0; i < nbans; i++) if (bans[i].ip == ip) return &bans[i];
+    return NULL;
+}
+
+// AT+BAN: strike the current inbound caller. 0 if nobody is on the line.
+static int ban_caller(void) {
+    struct ban *b;
+    if (caller_ip == 0) return 0;
+    b = ban_find(caller_ip);
+    if (b == NULL) {
+        if (nbans < BAN_MAX) {
+            b = &bans[nbans++];
+        } else {                        // full: reuse the stalest entry
+            int i;
+            b = &bans[0];
+            for (i = 1; i < nbans; i++) if (bans[i].last_ms < b->last_ms) b = &bans[i];
+        }
+        b->ip = caller_ip;
+        b->count = 0;
+    }
+    b->count++;
+    b->last_ms = now_ms();
+    logts("banned %s for %ld minutes (strike %d)", caller_ip_str,
+          ban_dur_ms(b->count) / 60000L, b->count);
+    return 1;
 }
 
 static void send_all(int fd, const char *buf, int len) {
@@ -138,7 +201,7 @@ static void serial_try(void) {
     long t = now_ms();
     if (local >= 0 || t < local_retry_ms) return;
     local = connect_local(cport);
-    if (local >= 0) fprintf(stderr, "serial port connected\n");
+    if (local >= 0) logts("serial port connected");
     else local_retry_ms = t + RECONNECT_MS;   // quiet: logged once, on loss
 }
 
@@ -146,6 +209,7 @@ static void remote_close(void) {
     if (rout >= 0 && rout != rin) close(rout);
     closefd(&rin);
     rout = -1;
+    caller_ip = 0;
     if (child > 0) {                    // reaped by itself: SIGCHLD is ignored
         kill(child, SIGTERM);
         child = 0;
@@ -158,7 +222,7 @@ static void hangup(const char *why) {
     lqlen = 0;                          // buffered remote data dies with the carrier
     local_send(NO_CARRIER_MSG, sizeof NO_CARRIER_MSG - 1);
     state = IDLE;
-    fprintf(stderr, "%s\n", why);
+    logts("%s", why);
 }
 
 // The serial port went away: drop any call, start the retry clock.
@@ -169,9 +233,9 @@ static void serial_lost(void) {
     if (state != IDLE) {
         remote_close();
         state = IDLE;
-        fprintf(stderr, "serial port lost; call dropped\n");
+        logts("serial port lost; call dropped");
     } else {
-        fprintf(stderr, "serial port lost\n");
+        logts("serial port lost");
     }
 }
 
@@ -260,12 +324,12 @@ static void dial(const char *s) {
     for (i = 0; s[i]; i++) if (s[i] != ' ' && s[i] != '-') num[n++] = s[i];
     num[n] = 0;
     if (lookup(num, target, sizeof target)) {
-        fprintf(stderr, "dialing %s -> %s\n", num, target);
+        logts("dialing %s -> %s", num, target);
         if (strncmp(target, "exec:", 5) == 0) { dial_exec(target + 5); return; }
         if (strncmp(target, "tcp:", 4) != 0) { hangup("bad target"); return; }
         host = target + 4;
     } else if (strchr(num, '.') || strchr(num, ':')) {
-        fprintf(stderr, "dialing %s\n", num);
+        logts("dialing %s", num);
         host = num;
     } else {
         hangup("no such number");
@@ -277,43 +341,112 @@ static void dial(const char *s) {
 }
 
 static void accept_caller(int lsock) {
-    int fd = accept(lsock, NULL, NULL);
+    struct sockaddr_in a;
+    socklen_t al = sizeof a;
+    char ip[INET_ADDRSTRLEN];
+    struct ban *b;
+    long t = now_ms();
+    int fd = accept(lsock, (struct sockaddr *)&a, &al);
     if (fd < 0) return;
+    inet_ntop(AF_INET, &a.sin_addr, ip, sizeof ip);
+    b = ban_find(a.sin_addr.s_addr);
+    if (b && t - b->last_ms > ban_dur_ms(3)) b->count = 0;  // a quiet day clears the record
+    if (b && b->count > 0 && t - b->last_ms < ban_dur_ms(b->count)) {
+        logts("rejecting banned caller %s (%ld min left)", ip,
+              (b->last_ms + ban_dur_ms(b->count) - t) / 60000L + 1);
+        close(fd);
+        return;
+    }
     if (state != IDLE) {                // ponytail: one call at a time; busy
         send_all(fd, BUSY_MSG, sizeof BUSY_MSG - 1);
         close(fd);
         return;
     }
     if (local < 0) {
-        fprintf(stderr, "serial port down; rejecting caller\n");
+        logts("serial port down; rejecting caller %s", ip);
         send_all(fd, NO_ANSWER_MSG, sizeof NO_ANSWER_MSG - 1);
         close(fd);
         return;
     }
     rin = rout = fd;
+    caller_ip = a.sin_addr.s_addr;
+    snprintf(caller_ip_str, sizeof caller_ip_str, "%s", ip);
     go_online();
-    fprintf(stderr, "call connected\n");
+    logts("call connected from %s", ip);
 }
 
-// Handle one complete command line typed in command mode.
+// Handle one complete command line typed in command mode: a Hayes
+// tokenizer over the whole line — basic commands (letter + digits),
+// S registers (Sn=v / Sn?), prefixed sets (&X / %X / \X), extended
+// commands (+NAME[=value][?]), optional semicolon separators. Only
+// D, H, O and +BAN act; everything else parses and is ignored.
 static void do_command(void) {
-    int i;
+    int i, err = 0;
     for (i = 0; i < ncmd; i++) cmd[i] = (char)toupper((unsigned char)cmd[i]);
+    cmd[ncmd] = 0;
     if (ncmd < 2 || cmd[0] != 'A' || cmd[1] != 'T') return; // not a command; ignore
-    // ponytail: only H (hang up) and O (online) matter; anything else is OK.
-    for (i = 2; i < ncmd; i++) {
-        if (cmd[i] == 'D') {
+    i = 2;
+    while (i < ncmd) {
+        char c = cmd[i];
+        if (c == ' ' || c == ';') { i++; continue; }
+        if (c == 'D') {                 // dial: consumes the rest of the line
             if (state != IDLE) { local_send(ERROR_MSG, sizeof ERROR_MSG - 1); return; }
             i++;
             if (i < ncmd && (cmd[i] == 'T' || cmd[i] == 'P')) i++;
-            cmd[ncmd] = 0;
             dial(cmd + i);              // sends its own result
             return;
         }
-        if (cmd[i] == 'H' && state == ONLINE_CMD) { hangup("call ended"); return; }
-        if (cmd[i] == 'O' && state == ONLINE_CMD) { go_online(); return; }
+        if (c == '+' || c == '#' || c == '$') {   // extended: +NAME[=value][?]
+            int start = i, namelen, vstart = 0, vlen = 0;
+            i++;
+            while (i < ncmd && (isalnum((unsigned char)cmd[i]) || cmd[i] == '-' || cmd[i] == '_')) i++;
+            namelen = i - start;
+            if (i < ncmd && cmd[i] == '?') {
+                i++;
+            } else if (i < ncmd && cmd[i] == '=') {
+                vstart = ++i;
+                while (i < ncmd && cmd[i] != ';') i++;
+                vlen = i - vstart;
+            }
+            if (namelen == 4 && memcmp(cmd + start, "+BAN", 4) == 0) {
+                if (vstart == 0) {
+                    if (!ban_caller()) err = 1;
+                } else if (vlen == 1 && cmd[vstart] == '0') {
+                    nbans = 0;          // AT+BAN=0: clear the ban list
+                    logts("ban list cleared");
+                } else {
+                    err = 1;
+                }
+            }
+            continue;                   // other extended commands: ignored
+        }
+        if (c == '&' || c == '%' || c == '\\') {  // &Xn etc.: ignored
+            i++;
+            if (i < ncmd && isalpha((unsigned char)cmd[i])) i++;
+            while (i < ncmd && isdigit((unsigned char)cmd[i])) i++;
+            continue;
+        }
+        if (c == 'S') {                 // Sn=v / Sn?: ignored
+            i++;
+            while (i < ncmd && isdigit((unsigned char)cmd[i])) i++;
+            if (i < ncmd && cmd[i] == '?') i++;
+            else if (i < ncmd && cmd[i] == '=') {
+                i++;
+                while (i < ncmd && isdigit((unsigned char)cmd[i])) i++;
+            }
+            continue;
+        }
+        if (isalpha((unsigned char)c)) {          // basic: letter + digits
+            i++;
+            while (i < ncmd && isdigit((unsigned char)cmd[i])) i++;
+            if (c == 'H' && state == ONLINE_CMD) { hangup("call ended"); return; }
+            if (c == 'O' && state == ONLINE_CMD) { go_online(); return; }
+            continue;
+        }
+        i++;                            // junk: skip a byte, keep parsing
     }
-    local_send(OK_MSG, sizeof OK_MSG - 1);
+    if (err) local_send(ERROR_MSG, sizeof ERROR_MSG - 1);
+    else local_send(OK_MSG, sizeof OK_MSG - 1);
 }
 
 // Bytes arrived from the local side (the "computer"): collect a command
@@ -385,7 +518,7 @@ int main(int argc, char **argv) {
         perror("listen");
         return 1;
     }
-    fprintf(stderr, "listening on %d, serial port at localhost:%d\n", lport, cport);
+    logts("listening on %d, serial port at localhost:%d", lport, cport);
 
     for (;;) {
         fd_set r, w;
@@ -424,7 +557,7 @@ int main(int argc, char **argv) {
             } else {
                 fcntl(rin, F_SETFL, fcntl(rin, F_GETFL) & ~O_NONBLOCK);
                 go_online();
-                fprintf(stderr, "call connected\n");
+                logts("call connected");
             }
         }
         if (rin >= 0 && FD_ISSET(rin, &r)) {
@@ -434,7 +567,7 @@ int main(int argc, char **argv) {
             } else {
                 if (state == DIALING) {         // exec: target's first byte
                     go_online();
-                    fprintf(stderr, "call connected\n");
+                    logts("call connected");
                 }
                 if (state == ONLINE) local_send(buf, n);
             }
