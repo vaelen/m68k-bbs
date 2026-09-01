@@ -360,23 +360,12 @@ func accessName(a: int): string {
 // The table senders themselves (sendRule, sendTableTitle,
 // sendTableHeader) live in bbs.cla -- boards.cla uses them too.
 
-// First id in [fromId, nextId) whose record is live, or nextId.
-func nextLiveId(db: Database, fromId: int, nextId: int, size: int): int {
-    var rec: text
-    var id: int = fromId
-    while id < nextId {
-        rec = dbFind(db, id)
-        if rec.length == size { return id }
-        id = id + 1
-    }
-    return nextId
-}
-
 // Close a page: bottom rule, then the more-prompt (staying on the list
 // screen) or, when no live records remain, back to `menuScreen`.
-func finishListPage(db: Database, nextId: int, size: int, menuScreen: string, w: list of int) {
+func finishListPage(db: Database, menuScreen: string, w: list of int) {
+    var cur: text
     sendRule(BottomLeft, BottomCenter, BottomRight, w)
-    if nextLiveId(db, listFromId, nextId, size) < nextId {
+    if dbScanStart(db, cur, listFromId, false) and dbScanSkip(db, cur, 1) == 1 {
         sendData("[Enter] More  [Q] Menu > ")
     } else {
         user.screen = menuScreen
@@ -416,10 +405,10 @@ func userListInput(input: string) {
 func drawUserListPage() {
     var w: list of int
     var cells: list of string
-    var nextId: int = dbNextRecordId(usersDb)
+    var cur: text
     var pageRows: int = terminal.rows - 8
     var shown: int = 0
-    var id: int = 0
+    var id: int
     var rec: text
 
     userListWidths(w)
@@ -432,10 +421,9 @@ func drawUserListPage() {
     }
     sendTableHeader("Users", cells, w)
 
-    id = listFromId
-    while id < nextId and shown < pageRows {
-        rec = dbFind(usersDb, id)
-        if rec.length == userRecordSize {
+    if dbScanStart(usersDb, cur, listFromId, false) {
+        id = dbScanNext(usersDb, cur, rec)
+        while id != 0 and shown < pageRows {
             cells.clear()
             cells.add(intStr(id))
             cells.add(dbExtractString(rec, uOffName))
@@ -450,11 +438,15 @@ func drawUserListPage() {
             }
             sendLine(rowLine(cells, w))
             shown = shown + 1
+            listFromId = id + 1
+            if shown < pageRows {
+                id = dbScanNext(usersDb, cur, rec)
+            } else {
+                id = 0
+            }
         }
-        id = id + 1
     }
-    listFromId = id
-    finishListPage(usersDb, nextId, userRecordSize, "sysopusers", w)
+    finishListPage(usersDb, "sysopusers", w)
 }
 
 // --- Board list --------------------------------------------------------
@@ -490,10 +482,10 @@ func boardListInput(input: string) {
 func drawBoardListPage() {
     var w: list of int
     var cells: list of string
-    var nextId: int = dbNextRecordId(boardsDb)
+    var cur: text
     var pageRows: int = terminal.rows - 8
     var shown: int = 0
-    var id: int = 0
+    var id: int
     var rec: text
 
     boardListWidths(w)
@@ -505,18 +497,21 @@ func drawBoardListPage() {
     }
     sendTableHeader("Message Boards", cells, w)
 
-    id = listFromId
-    while id < nextId and shown < pageRows {
-        rec = dbFind(boardsDb, id)
-        if rec.length == boardRecordSize {
+    if dbScanStart(boardsDb, cur, listFromId, false) {
+        id = dbScanNext(boardsDb, cur, rec)
+        while id != 0 and shown < pageRows {
             boardRowCells(id, rec, cells)
             sendLine(rowLine(cells, w))
             shown = shown + 1
+            listFromId = id + 1
+            if shown < pageRows {
+                id = dbScanNext(boardsDb, cur, rec)
+            } else {
+                id = 0
+            }
         }
-        id = id + 1
     }
-    listFromId = id
-    finishListPage(boardsDb, nextId, boardRecordSize, "sysopboards", w)
+    finishListPage(boardsDb, "sysopboards", w)
 }
 
 // --- Detail cards ------------------------------------------------------
@@ -1216,10 +1211,10 @@ func areaListInput(input: string) {
 func drawAreaListPage() {
     var w: list of int
     var cells: list of string
-    var nextId: int = dbNextRecordId(areasDb)
+    var cur: text
     var pageRows: int = terminal.rows - 8
     var shown: int = 0
-    var id: int = 0
+    var id: int
     var rec: text
 
     areaListWidths(w)
@@ -1231,10 +1226,9 @@ func drawAreaListPage() {
     }
     sendTableHeader("File Areas", cells, w)
 
-    id = listFromId
-    while id < nextId and shown < pageRows {
-        rec = dbFind(areasDb, id)
-        if rec.length == areaRecordSize {
+    if dbScanStart(areasDb, cur, listFromId, false) {
+        id = dbScanNext(areasDb, cur, rec)
+        while id != 0 and shown < pageRows {
             cells.clear()
             cells.add(intStr(id))
             cells.add(dbExtractString(rec, aOffName))
@@ -1244,11 +1238,15 @@ func drawAreaListPage() {
             }
             sendLine(rowLine(cells, w))
             shown = shown + 1
+            listFromId = id + 1
+            if shown < pageRows {
+                id = dbScanNext(areasDb, cur, rec)
+            } else {
+                id = 0
+            }
         }
-        id = id + 1
     }
-    listFromId = id
-    finishListPage(areasDb, nextId, areaRecordSize, "sysopareas", w)
+    finishListPage(areasDb, "sysopareas", w)
 }
 
 func startShowArea() {
@@ -1612,10 +1610,11 @@ func gameListInput(input: string) {
 func drawGameListPage() {
     var w: list of int
     var cells: list of string
-    var nextId: int = dbNextRecordId(gamesDb)
+    var cur: text
+    var rec: text
     var pageRows: int = terminal.rows - 8
     var shown: int = 0
-    var id: int = 0
+    var id: int
 
     gameListWidths(w)
     cells.add("ID")
@@ -1627,24 +1626,30 @@ func drawGameListPage() {
     }
     sendTableHeader("Games", cells, w)
 
-    id = listFromId
-    while id < nextId and shown < pageRows {
-        if loadGame(id) {
-            cells.clear()
-            cells.add(intStr(id))
-            cells.add(game.name)
-            if terminal.columns >= minimumWideTerminalWidth {
-                cells.add(gameTypeName(game.type))
-                cells.add(game.filename)
-                cells.add(enabledName(game.enabled))
+    if dbScanStart(gamesDb, cur, listFromId, false) {
+        id = dbScanNext(gamesDb, cur, rec)
+        while id != 0 and shown < pageRows {
+            if loadGame(id) {
+                cells.clear()
+                cells.add(intStr(id))
+                cells.add(game.name)
+                if terminal.columns >= minimumWideTerminalWidth {
+                    cells.add(gameTypeName(game.type))
+                    cells.add(game.filename)
+                    cells.add(enabledName(game.enabled))
+                }
+                sendLine(rowLine(cells, w))
+                shown = shown + 1
             }
-            sendLine(rowLine(cells, w))
-            shown = shown + 1
+            listFromId = id + 1
+            if shown < pageRows {
+                id = dbScanNext(gamesDb, cur, rec)
+            } else {
+                id = 0
+            }
         }
-        id = id + 1
     }
-    listFromId = id
-    finishListPage(gamesDb, nextId, gameRecordSize, "sysopgames", w)
+    finishListPage(gamesDb, "sysopgames", w)
 }
 
 func startShowGame() {
@@ -2001,10 +2006,10 @@ func netListInput(input: string) {
 func drawNetListPage() {
     var w: list of int
     var cells: list of string
-    var nextId: int = dbNextRecordId(networksDb)
+    var cur: text
     var pageRows: int = terminal.rows - 8
     var shown: int = 0
-    var id: int = 0
+    var id: int
     var rec: text
 
     netListWidths(w)
@@ -2016,10 +2021,9 @@ func drawNetListPage() {
         cells.add("Last poll")
     }
     sendTableHeader("Networks", cells, w)
-    id = listFromId
-    while id < nextId and shown < pageRows {
-        rec = dbFind(networksDb, id)
-        if rec.length == networkRecordSize {
+    if dbScanStart(networksDb, cur, listFromId, false) {
+        id = dbScanNext(networksDb, cur, rec)
+        while id != 0 and shown < pageRows {
             cells.clear()
             cells.add(intStr(id))
             cells.add(dbExtractString(rec, nOffName))
@@ -2030,11 +2034,15 @@ func drawNetListPage() {
             }
             sendLine(rowLine(cells, w))
             shown = shown + 1
+            listFromId = id + 1
+            if shown < pageRows {
+                id = dbScanNext(networksDb, cur, rec)
+            } else {
+                id = 0
+            }
         }
-        id = id + 1
     }
-    listFromId = id
-    finishListPage(networksDb, nextId, networkRecordSize, "sysopnets", w)
+    finishListPage(networksDb, "sysopnets", w)
 }
 
 // ID or name; loads the network. Empty input -> 0 (cancel), unknown -> -1.
