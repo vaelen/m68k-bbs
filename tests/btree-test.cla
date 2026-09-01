@@ -40,6 +40,9 @@ on App.startCLI(args: list of string) {
     var v: list of int
     var i: int
     var ordered: bool
+    var cur: text
+    var f2: filehandle
+    var hit: bool
 
     f = btCreate("BT.IDX", "VDBi", "68BB")
     expect(f != nil, "btree created")
@@ -94,6 +97,92 @@ on App.startCLI(args: list of string) {
     expect(countValues(f, 0) == 0 - 1, "big key gone")
     expect(countValues(f, 5) == 2, "small key survives the big delete")
     f.close()
+
+    // --- scan cursor -------------------------------------------------
+    f2 = btCreate("BTS.IDX", "VDBi", "68BB")
+    expect(f2 != nil, "scan tree created")
+    // 2500 keys (value = key * 7): ~70 leaves, two internal levels
+    i = 1
+    while i <= 2500 {
+        if not btInsert(f2, i, i * 7) {
+            expect(false, "scan insert " + string(i))
+            i = 2501
+        }
+        i = i + 1
+    }
+
+    expect(btScanStart(f2, cur, 1, false), "ascending scan starts")
+    i = 0
+    ordered = true
+    while btScanNext(f2, cur) {
+        i = i + 1
+        if btScanKey(cur) != i or btScanValue(cur) != i * 7 { ordered = false }
+    }
+    expect(i == 2500 and ordered, "ascending scan: all keys, in order")
+    expect(not btScanNext(f2, cur), "exhausted scan stays done")
+
+    expect(btScanStart(f2, cur, 2500, true), "descending scan starts")
+    i = 2500
+    ordered = true
+    while btScanNext(f2, cur) {
+        if btScanKey(cur) != i or btScanValue(cur) != i * 7 { ordered = false }
+        i = i - 1
+    }
+    expect(i == 0 and ordered, "descending scan: all keys, in order")
+
+    // seeded mid-range
+    expect(btScanStart(f2, cur, 1200, false) and btScanNext(f2, cur), "asc seek 1200")
+    expect(btScanKey(cur) == 1200, "asc seek lands on 1200")
+    expect(btScanStart(f2, cur, 1200, true) and btScanNext(f2, cur), "desc seek 1200")
+    expect(btScanKey(cur) == 1200, "desc seek lands on 1200")
+
+    // holes: delete 900..1100 (empties several consecutive leaves)
+    i = 900
+    while i <= 1100 {
+        btDeleteValue(f2, i, i * 7)
+        i = i + 1
+    }
+    expect(btScanStart(f2, cur, 1000, false) and btScanNext(f2, cur), "asc seek into hole")
+    expect(btScanKey(cur) == 1101, "asc scan skips the hole forward")
+    expect(btScanStart(f2, cur, 1000, true) and btScanNext(f2, cur), "desc seek into hole")
+    expect(btScanKey(cur) == 899, "desc scan skips the hole backward")
+    // crossing the emptied leaves mid-run
+    btScanStart(f2, cur, 890, false)
+    i = 0
+    hit = true
+    while i < 15 and btScanNext(f2, cur) {
+        i = i + 1
+        if i <= 10 {
+            if btScanKey(cur) != 889 + i { hit = false }
+        } else {
+            if btScanKey(cur) != 1090 + i { hit = false }
+        }
+    }
+    expect(i == 15 and hit, "ascending run crosses emptied leaves")
+    btScanStart(f2, cur, 1110, true)
+    i = 0
+    hit = true
+    while i < 15 and btScanNext(f2, cur) {
+        i = i + 1
+        if i <= 10 {
+            if btScanKey(cur) != 1111 - i { hit = false }
+        } else {
+            if btScanKey(cur) != 910 - i { hit = false }
+        }
+    }
+    expect(i == 15 and hit, "descending run crosses emptied leaves")
+
+    // ends of the range
+    expect(btScanStart(f2, cur, 3000, true) and btScanNext(f2, cur) and btScanKey(cur) == 2500, "desc from past the top lands on max")
+    expect(not (btScanStart(f2, cur, 3000, false) and btScanNext(f2, cur)), "asc from past the top is empty")
+    expect(not (btScanStart(f2, cur, 0, true) and btScanNext(f2, cur)), "desc from below the bottom is empty")
+    f2.close()
+
+    // empty tree
+    f2 = btCreate("BTE.IDX", "VDBi", "68BB")
+    expect(not (btScanStart(f2, cur, 1, false) and btScanNext(f2, cur)), "empty tree asc scan is empty")
+    expect(not (btScanStart(f2, cur, 1, true) and btScanNext(f2, cur)), "empty tree desc scan is empty")
+    f2.close()
 
     if failures > 0 {
         log("btree-test: FAILED")

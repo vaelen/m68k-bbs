@@ -536,6 +536,217 @@ func btFind(f: filehandle, key: int, values: list of int): bool {
     return false
 }
 
+// --- Scan cursors -----------------------------------------------------
+// A transient, caller-owned cursor over the tree in key order, either
+// direction. The blob layout is private: state(1) dir(1) entry_index(2)
+// leaf_page(4) key(4) value(4) depth(2) path page numbers
+// (btMaxDepth * 4), then a snapshot of the current leaf page.
+// Descending walks re-read path pages to find the previous leaf (the
+// leaf chain is forward-only), so the tree MUST NOT be written while a
+// scan is live -- create, drain and drop the cursor inside one event
+// handler; mutators collect keys first, then act.
+
+const btScanHdrSize: int = 146     // 18 + btMaxDepth * 4
+const btScanFresh: int = 0
+const btScanRun: int = 1
+const btScanDone: int = 2
+
+// Empty a text in place: a text parameter cannot be rebound, and text
+// has no clear() -- fromBytes with a zero count resizes to empty.
+func btTextReset(t: text) {
+    var none: char[1]
+    t.fromBytes(none, 0)
+}
+
+func btScanKey(cur: text): int {
+    return cur.intAt(8)
+}
+
+func btScanValue(cur: text): int {
+    return cur.intAt(12)
+}
+
+// Byte offset (within the blob) of leaf entry `idx`.
+func btScanEntryOff(cur: text, idx: int): int {
+    var off: int = btScanHdrSize + btLeafHeaderSize
+    var i: int = 0
+    while i < idx {
+        off = off + 10 + cur.wordAt(off + 4) * 4
+        i = i + 1
+    }
+    return off
+}
+
+// Make entry `idx` of the snapshot current.
+func btScanLoad(cur: text, idx: int) {
+    var off: int = btScanEntryOff(cur, idx)
+    cur.setWordAt(2, idx)
+    cur.setIntAt(8, cur.intAt(off))
+    cur.setIntAt(12, cur.intAt(off + 6))
+}
+
+// Replace the leaf snapshot (page `pageNum`, content `page`).
+func btScanSetLeaf(cur: text, pageNum: int, page: text) {
+    var head: text
+    head.append(cur.textAt(0, btScanHdrSize))
+    btTextReset(cur)
+    cur.append(head)
+    cur.append(page)
+    cur.setIntAt(4, pageNum)
+}
+
+// Ascending: follow the next_leaf chain to the next non-empty leaf.
+// (The path is not maintained -- ascending never reads it.)
+func btScanNextLeaf(f: filehandle, cur: text): bool {
+    var page: text
+    var next: int = cur.intAt(btScanHdrSize + 3)
+    while next != 0 {
+        if not f.readAt(next * btPageSize, btPageSize, page) { return false }
+        if page.length != btPageSize { return false }
+        btScanSetLeaf(cur, next, page)
+        if cur.wordAt(btScanHdrSize + 1) > 0 { return true }
+        next = cur.intAt(btScanHdrSize + 3)
+    }
+    return false
+}
+
+// Descending: the previous leaf in tree order, via the path -- find
+// this child in its parent, take the one before it (recursing up at a
+// first child), then ride the rightmost spine back down to a leaf.
+// May land on an empty leaf; the caller loops.
+func btScanPrevLeaf(f: filehandle, cur: text): bool {
+    var page: text
+    var level: int = cur.wordAt(16) - 2
+    var child: int
+    var idx: int
+    var n: int
+    var i: int
+    while level >= 0 {
+        if not f.readAt(cur.intAt(18 + level * 4) * btPageSize, btPageSize, page) { return false }
+        if page.length != btPageSize { return false }
+        child = cur.intAt(18 + (level + 1) * 4)
+        n = page.wordAt(1)
+        idx = 0 - 1
+        i = 0
+        while i <= n {
+            if page.intAt(3 + 8 * i) == child {
+                idx = i
+                i = n + 1
+            }
+            i = i + 1
+        }
+        if idx > 0 {
+            child = page.intAt(3 + 8 * (idx - 1))
+            level = level + 1
+            while level < btMaxDepth {
+                if not f.readAt(child * btPageSize, btPageSize, page) { return false }
+                if page.length != btPageSize { return false }
+                cur.setIntAt(18 + level * 4, child)
+                if int(page[0]) == btPtLeaf {
+                    cur.setWordAt(16, level + 1)
+                    btScanSetLeaf(cur, child, page)
+                    return true
+                }
+                if int(page[0]) != btPtInternal { return false }
+                child = page.intAt(3 + 8 * page.wordAt(1))
+                level = level + 1
+            }
+            return false
+        }
+        level = level - 1
+    }
+    return false
+}
+
+// Move to the adjacent leaf in scan direction and make its first
+// (asc) or last (desc) entry current. Marks the cursor done at the
+// end; otherwise the state byte is left for the caller to set.
+func btScanStep(f: filehandle, cur: text): bool {
+    var ok: bool
+    if int(cur[1]) == 1 {
+        ok = btScanPrevLeaf(f, cur)
+        while ok and cur.wordAt(btScanHdrSize + 1) == 0 {
+            ok = btScanPrevLeaf(f, cur)
+        }
+        if ok { btScanLoad(cur, cur.wordAt(btScanHdrSize + 1) - 1) }
+    } else {
+        ok = btScanNextLeaf(f, cur)
+        if ok { btScanLoad(cur, 0) }
+    }
+    if not ok { cur[0] = char(btScanDone) }
+    return ok
+}
+
+// Seed a scan at fromKey: the smallest key >= fromKey (ascending) or
+// the largest <= fromKey (descending). True when an entry is current.
+func btScanStart(f: filehandle, cur: text, fromKey: int, descending: bool): bool {
+    var path: list of int
+    var page: text
+    var n: int
+    var i: int
+    var off: int
+    var k: int
+    var found: int = 0 - 1
+    btTextReset(cur)
+    while cur.length < btScanHdrSize { cur.append(char(0)) }
+    cur[0] = char(btScanDone)
+    if not btDescend(f, fromKey, path, page) { return false }
+    if descending { cur[1] = char(1) }
+    cur.setWordAt(16, path.count)
+    i = 0
+    while i < path.count {
+        cur.setIntAt(18 + i * 4, path[i])
+        i = i + 1
+    }
+    cur.append(page)
+    cur.setIntAt(4, path[path.count - 1])
+    n = cur.wordAt(btScanHdrSize + 1)
+    off = btScanHdrSize + btLeafHeaderSize
+    i = 0
+    while i < n {
+        k = cur.intAt(off)
+        if descending {
+            if k <= fromKey { found = i }
+        } else {
+            if found < 0 and k >= fromKey { found = i }
+        }
+        off = off + 10 + cur.wordAt(off + 4) * 4
+        i = i + 1
+    }
+    if found >= 0 {
+        btScanLoad(cur, found)
+        cur[0] = char(btScanFresh)
+        return true
+    }
+    if not btScanStep(f, cur) { return false }
+    cur[0] = char(btScanFresh)
+    return true
+}
+
+// Advance one entry; the first call after btScanStart returns the
+// seeded entry itself. False (sticky) when the scan is exhausted.
+func btScanNext(f: filehandle, cur: text): bool {
+    var idx: int
+    if cur.length < btScanHdrSize or int(cur[0]) == btScanDone { return false }
+    if int(cur[0]) == btScanFresh {
+        cur[0] = char(btScanRun)
+        return true
+    }
+    idx = cur.wordAt(2)
+    if int(cur[1]) == 1 {
+        if idx > 0 {
+            btScanLoad(cur, idx - 1)
+            return true
+        }
+    } else {
+        if idx + 1 < cur.wordAt(btScanHdrSize + 1) {
+            btScanLoad(cur, idx + 1)
+            return true
+        }
+    }
+    return btScanStep(f, cur)
+}
+
 // Shared removal walk (lazy: no merging, an emptied leaf stays).
 // valueOnly: remove the first occurrence of `value` under `key`
 // (dropping the entry if it was the last value); otherwise remove the
