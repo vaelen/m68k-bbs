@@ -1414,7 +1414,7 @@ on App.launch {
     if not ftnEnsureFolders() {
         log("FTN folders unavailable: " + lastError.message)
     }
-    modem.open(serial "modem:9600")
+    modem.open(serial "modem:57600")
 }
 
 on modem.opened {
