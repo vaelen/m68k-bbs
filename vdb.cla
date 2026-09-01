@@ -806,14 +806,56 @@ func dbRecordCount(db: Database): int {
 }
 
 // The next record ID this database will assign; -1 on error. IDs are
-// dense and never reused, so callers can enumerate all records by
-// probing dbFind over 1 .. dbNextRecordId-1 (deleted IDs miss).
-// TODO: replace with a real iteration/cursor API (docs/vdb-clarus.md).
+// dense and never reused. Prefer dbScanStart/dbScanNext for
+// enumeration; probing dbFind over 1 .. dbNextRecordId-1 stays valid.
 func dbNextRecordId(db: Database): int {
     var hdr: text
     if not dbIsOpen(db) { return -1 }
     if not dbReadHeader(db, hdr) { return -1 }
     return hdr.intAt(14)
+}
+
+// --- Scan cursors -----------------------------------------------------
+// Transient, caller-owned (see btree.cla): seed with dbScanStart,
+// drain with dbScanNext/dbScanSkip inside ONE event handler, drop it.
+// Never write to the database while one of its scans is live --
+// collect IDs first, then mutate.
+
+func dbScanStart(db: Database, cur: text, fromId: int, descending: bool): bool {
+    if not dbIsOpen(db) { return false }
+    return btScanStart(db.index, cur, fromId, descending)
+}
+
+// Advance to the next live record: fills rec with its bytes and
+// returns its ID; 0 when the scan is exhausted. An entry whose record
+// pages fail to read is logged and skipped.
+func dbScanNext(db: Database, cur: text, rec: text): int {
+    var hdr: text
+    var out: text
+    var id: int
+    btTextReset(rec)
+    if not dbIsOpen(db) { return 0 }
+    if not dbReadHeader(db, hdr) { return 0 }
+    while btScanNext(db.index, cur) {
+        id = btScanKey(cur)
+        out = dbReadRecordAt(db, btScanValue(cur), id, hdr.wordAt(8))
+        if out.length == hdr.wordAt(8) {
+            rec.append(out)
+            return id
+        }
+        log("dbScan: unreadable record " + string(id) + " in " + db.name)
+    }
+    return 0
+}
+
+// Skip n index entries (live records) without reading record pages;
+// returns the number actually skipped.
+func dbScanSkip(db: Database, cur: text, n: int): int {
+    var done: int = 0
+    while done < n and btScanNext(db.index, cur) {
+        done = done + 1
+    }
+    return done
 }
 
 // Header last_compacted: Mac-epoch seconds of the last dbCompact, 0 =

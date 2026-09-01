@@ -57,6 +57,11 @@ on App.startCLI(args: list of string) {
     var id2: int
     var id3: int
     var size: int
+    var cur: text
+    var sdb: Database
+    var sid: int
+    var srec: text
+    var got: int
 
     // 1. create: header + free list on disk, no records
     db = dbCreate("VDBT", 32, "68BB")
@@ -266,6 +271,42 @@ on App.startCLI(args: list of string) {
     r = dbFind(db, 3)
     expect(r[0, 4] == "cccc", "new record landed on the healed page")
     dbClose(db)
+
+    // --- scan cursors ------------------------------------------------
+    sdb = dbCreate("SCAN", 32, "68BB")
+    expect(dbIsOpen(sdb), "scan db created")
+    sid = 1
+    while sid <= 40 {
+        dbAdd(sdb, "rec" + string(sid))
+        sid = sid + 1
+    }
+    dbDelete(sdb, 7)
+    dbDelete(sdb, 8)
+    dbDelete(sdb, 40)
+
+    expect(dbScanStart(sdb, cur, 1, false), "asc scan starts")
+    got = 0
+    sid = dbScanNext(sdb, cur, srec)
+    while sid != 0 {
+        got = got + 1
+        sid = dbScanNext(sdb, cur, srec)
+    }
+    expect(got == 37, "asc scan visits the 37 live records")
+
+    expect(dbScanStart(sdb, cur, 1, false) and dbScanNext(sdb, cur, srec) == 1, "asc scan yields ID 1 first")
+    expect(srec.length == 32 and srec[0, 4] == "rec1", "scan fills the record bytes")
+
+    expect(dbScanStart(sdb, cur, 6, false), "asc scan from 6")
+    expect(dbScanNext(sdb, cur, srec) == 6 and dbScanNext(sdb, cur, srec) == 9, "asc scan skips deleted 7-8")
+
+    expect(dbScanStart(sdb, cur, dbNextRecordId(sdb) - 1, true), "desc scan from newest")
+    expect(dbScanNext(sdb, cur, srec) == 39, "desc scan starts at newest live (40 deleted)")
+    expect(dbScanNext(sdb, cur, srec) == 38, "desc scan walks downward")
+
+    expect(dbScanStart(sdb, cur, dbNextRecordId(sdb) - 1, true), "desc scan restarts")
+    expect(dbScanSkip(sdb, cur, 10) == 10, "skip 10 live entries")
+    expect(dbScanNext(sdb, cur, srec) == 29, "skip positions correctly (39..30 consumed)")
+    dbClose(sdb)
 
     if failures > 0 {
         log("vdb-test: FAILED")
