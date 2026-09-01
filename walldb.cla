@@ -74,15 +74,20 @@ func loadWallEntry(id: int): bool {
     return true
 }
 
-// The newest n entry IDs, newest first: probe down from the last
-// assigned ID (deleted IDs miss), the walk drawPostList uses.
+// The newest n entry IDs, newest first.
 func recentWallIds(n: int, ids: list of int) {
-    var id: int = dbNextRecordId(wallDb) - 1
+    var cur: text
     var rec: text
+    var id: int
     ids.clear()
-    while id >= 1 and ids.count < n {
-        rec = dbFind(wallDb, id)
-        if rec.length == wallRecordSize { ids.add(id) }
-        id = id - 1
+    if not dbScanStart(wallDb, cur, dbNextRecordId(wallDb) - 1, true) { return }
+    id = dbScanNext(wallDb, cur, rec)
+    while id != 0 and ids.count < n {
+        ids.add(id)
+        if ids.count < n {
+            id = dbScanNext(wallDb, cur, rec)
+        } else {
+            id = 0
+        }
     }
 }

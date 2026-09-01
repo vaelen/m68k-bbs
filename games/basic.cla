@@ -122,12 +122,15 @@ func basicEnv(name: string): string {
 // The enabled games from the Games database, in ID order, into
 // gameIds; the menu numbers them from 1.
 func loadGameIds() {
-    var id: int = 1
-    var nextId: int = gamesNextId()
+    var cur: text
+    var rec: text
+    var id: int
     gameIds.clear()
-    while id < nextId {
+    if not dbScanStart(gamesDb, cur, 1, false) { return }
+    id = dbScanNext(gamesDb, cur, rec)
+    while id != 0 {
         if loadGame(id) and game.enabled { gameIds.add(id) }
-        id = id + 1
+        id = dbScanNext(gamesDb, cur, rec)
     }
 }
 
