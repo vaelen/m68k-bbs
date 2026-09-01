@@ -452,6 +452,7 @@ func emsiDisconnected() {
         if not saveNetwork() { log("FTN: poll record save failed: " + lastError.message) }
         log(network.name + ": " + pollResultName(emResult) + "; received " + string(emFiles) + " file(s).")
     }
+    log("FTN: session finished.")
     ftnPolling = false
     ftnNetId = 0
     tossStart()                 // ticks from bbs.cla's timer; ftnNext once it ends

@@ -40,9 +40,17 @@ include "toolbox/osutils.cla"   // DateTimeRec / SecondsToDate (via --rtdir)
 include "toolbox/memory.cla"    // FreeMem, for the heap figures on log lines
 external func MaxBlock(): int = trap 0xA061 reg   // largest free block, no compaction
 
+// _ReadDateTime's VAR secs lands here; the call is for its side effect:
+// it re-reads the clock chip and rewrites the Time global now() reads,
+// which otherwise drifts (the one-second interrupt is not the chip).
+extern record TimeSecsBox {
+    secs: int
+}
+var timeBox: TimeSecsBox
+
 app BBS {
     name: "68kBBS"
-    version: "0.5"     // literal required here; keep equal to bbsVersion (user.cla)
+    version: "0.4"     // literal required here; keep equal to bbsVersion (user.cla)
     author: "Andrew C. Young"
     about: "A simple BBS for classic Macs."
     id: "68BB"
@@ -1201,8 +1209,9 @@ every 30 ticks {
         if not tossing { ftnNext() }
     }
     ftnSchedMinutes = ftnSchedMinutes + 1
-    if ftnSchedMinutes >= 120 {      // once a minute: the maintenance window, then interval polls
+    if ftnSchedMinutes >= 120 {      // once a minute: clock resync, the maintenance window, then interval polls
         ftnSchedMinutes = 0
+        ReadDateTime(timeBox)        // resync Time with the hardware clock (toolbox/osutils.cla)
         if not maintaining and not isConnected and not ftnPolling and not tossing and maintDueNow() { maintStart(false) }
         ftnSchedule()
         if ftnPolling { log("FTN: session in progress.") }

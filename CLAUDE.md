@@ -479,7 +479,8 @@ inputChar (bbs.cla) → processInput`.
   `xferDone`/`xferReceived`/`xferAcceptName` branch to the `emsi*`
   versions while `ftnPolling`. In `bbs.cla` the poll is screen
   `"ftn"` (`inputChar` → `emsiChar`), the 30-tick timer calls
-  `emsiTick` and `ftnSchedule` once a minute, `connected()`/
+  `emsiTick` and, once a minute, `ftnSchedule` plus a `ReadDateTime`
+  resync of the Time global `now()` reads, `connected()`/
   `disconnected()` branch on `ftnPolling`, and the `FidoNet > Poll
   All Networks` menu polls from the Mac; `ftnEnabled` (`ftnSetEnabled`;
   `FidoNet > Toggle FTN Polling`, Sysop > Networks `P`, status line

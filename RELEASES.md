@@ -40,6 +40,11 @@ Door games, custom welcome screens, and a modem the sysop controls:
   FidoNet polls no longer re-walk all tossed echomail (a multi-minute
   freeze per poll); the log window trims its oldest lines so long
   runs never hit the 32,000-byte TextEdit cap.
+- Hardware clock sync: `now()` reads the `Time` global for speed, and
+  a once-a-minute `ReadDateTime` re-syncs that global with the
+  battery-backed clock chip so it can no longer drift. FTN sessions
+  now close with an `FTN: session finished.` log line, even when
+  nothing was received.
 
 ## v0.3 — 2026-08-30
 
