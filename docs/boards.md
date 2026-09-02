@@ -112,16 +112,22 @@ them: `postsCompact` compacts the headers and rewrites the heap, and
 
 ### Enumeration
 
-Post IDs are dense and never reused, so "list this board's posts" is
-a probe loop over `1 .. postsNextId()-1` (deleted IDs simply miss),
-and "newest N" walks backward from `postsNextId()-1`. This leans on
-vDB's `dbNextRecordId`; a real cursor API is a tracked TODO in
-`docs/vdb-clarus.md`.
+The caller-facing post list walks the **Created index** newest-first
+(`postsByCreatedStart`/`Next`/`End` in postsdb.cla): echomail arrives
+in packet order, not date order, so ID order and date order differ.
+Same-second posts share one index key and come back in posting order
+(reversed when descending). ID-order enumeration is still there via
+the primary-index scan cursors (`dbScanStart`, `docs/vdb-clarus.md`)
+— the FTN export scan uses it, since `lastExported` is an ID
+high-water mark.
 
 ## API summary (`postsdb.cla`)
 
 One board open at a time; `postsOpen(boardId)` closes any previous
-board, creating the files (with the thread index) on first use.
+board, creating the files (with the Thread, MsgId and Created indexes)
+on first use, and backfills the Created index on a board that predates
+it (driven at launch by `postsEnsureCreatedIndexes`, so no caller pays
+for the one-time build).
 
 - `addPost(sender, threadId, subject, body): int` — new post ID or −1
 - `loadPost(id): bool` — header into the global `post`

@@ -204,14 +204,14 @@ func postListWidths(w: list of int) {
     w.add(17)
 }
 
-// One page of posts, newest (highest post ID) first, numbered from 1
-// on every page. Frame is 9 lines from the top rule down (top, title,
-// joint, header, joint, joint, footer, bottom, prompt) -- everything
-// above the table is expected to scroll off.
+// One page of posts, newest created date first (echomail arrives out
+// of date order, so this walks the Created index, not post IDs),
+// numbered from 1 on every page. Frame is 9 lines from the top rule
+// down (top, title, joint, header, joint, joint, footer, bottom,
+// prompt) -- everything above the table is expected to scroll off.
 func drawPostList() {
     var w: list of int
     var cells: list of string
-    var cur: text
     var id: int
     var pageRows: int = terminal.rows - 9
     var skip: int = 0
@@ -232,25 +232,32 @@ func drawPostList() {
         cells.add("Date")
     }
     sendTableHeader(board.name, cells, w)
-    if dbScanStart(postsDb, cur, postsNextId() - 1, true) {
-        dbScanSkip(postsDb, cur, skip)
-        id = dbScanNext(postsDb, cur, rec)
+    if postsByCreatedStart(true) {
+        id = postsByCreatedNext()
+        while id != 0 and skip > 0 {
+            skip = skip - 1
+            id = postsByCreatedNext()
+        }
         while id != 0 and postIds.count < pageRows {
-            postIds.add(id)
-            cells.clear()
-            cells.add(intStr(postIds.count))
-            cells.add(dbExtractString(rec, pOffSubject))
-            if terminal.columns >= minimumWideTerminalWidth {
-                cells.add(dbExtractString(rec, pOffSender))
-                cells.add(dateTimeStr(rec.intAt(pOffCreated)))
+            rec = dbFind(postsDb, id)
+            if rec.length == postRecordSize {
+                postIds.add(id)
+                cells.clear()
+                cells.add(intStr(postIds.count))
+                cells.add(dbExtractString(rec, pOffSubject))
+                if terminal.columns >= minimumWideTerminalWidth {
+                    cells.add(dbExtractString(rec, pOffSender))
+                    cells.add(dateTimeStr(rec.intAt(pOffCreated)))
+                }
+                sendLine(rowLine(cells, w))
             }
-            sendLine(rowLine(cells, w))
             if postIds.count < pageRows {
-                id = dbScanNext(postsDb, cur, rec)
+                id = postsByCreatedNext()
             } else {
                 id = 0
             }
         }
+        postsByCreatedEnd()
     }
     sendTableFooter("Page " + intStr(postPage) + " of " + intStr(postPages), w)
     if postIds.count == 0 {

@@ -12,10 +12,15 @@ Each board has `keepDays` (sysop board card, `E) Expire after`; 0 =
 never, the default). A post is expired when `created < now() -
 keepDays * 86400` — the post's own date, so for echomail the date it
 was written, not when it arrived. Seed a backlog with expiry 0.
-`expirePosts` (`postsdb.cla`) walks the board's dense ID range and
-`dbDelete`s expired headers; the toss (`ftntoss.cla`) counts an
-inbound message past the cutoff as *expired* and drops it before the
-dupe check. Threads are ignored: a reply outlives its starter.
+`expirePosts` (`postsdb.cla`) walks the board's **Created index**
+ascending and stops at the first date past the cutoff — O(expired),
+not O(board); a full header scan at the 68k's ~100 ms/record took a
+quarter hour on a big echomail board — then `dbDelete`s the collected
+IDs. The toss (`ftntoss.cla`) counts an inbound message past the
+cutoff as *expired* and drops it before the dupe check, and clamps a
+garbage (non-negative) parsed date to receipt time so it can't sort
+past every real date and become unexpirable. Threads are ignored: a
+reply outlives its starter.
 
 ## The window
 
@@ -38,6 +43,13 @@ window opened, so an interrupted run resumes where it stopped;
 `Maintenance > Run Database Maintenance` forces every database (it
 still needs the line idle to start). Each unit logs one line with
 before/after sizes; a failing unit is logged and the run continues.
+
+**The compaction phases (2-4) are disabled for now** (maintTick):
+even with field-only reads a big echomail board compacts for hours,
+`heapFixOffsets`'s journaled per-record updates dominating. Expiry
+still runs; orphaned heap bytes and B-tree slack accumulate until
+compaction is re-enabled. The Users stamp — the scheduling marker —
+is still written at the end of each run (`dbStampCompacted`).
 
 While a run is in progress the BBS is **closed**: `connected()` sends
 `THE BBS IS CLOSED FOR MAINTENANCE. PLEASE CALL BACK LATER.` and hangs

@@ -1507,6 +1507,7 @@ on App.launch {
     if boardsOpen() {
         log("Boards database open (" + intStr(boardCount()) + " boards).")
         boardsBackfillLastPost()
+        postsEnsureCreatedIndexes()
     } else {
         log("Boards database unavailable: " + lastError.message)
     }

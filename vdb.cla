@@ -286,6 +286,29 @@ func dbReadRecordAt(db: Database, firstPage: int, id: int, size: int): text {
     return out
 }
 
+// Read the i32 field at record offset `off` of the record whose page
+// run starts at `firstPage`, without materializing the record -- the
+// maintenance/scan fast path (a full record read pays the 68k
+// text-return cost; see docs/superpowers/bench-2026-09-01). The caller
+// trusts whatever index named the page. 0 on I/O error.
+func dbFieldIntAt(db: Database, firstPage: int, off: int): int {
+    var f: filehandle = db.data
+    var t: text
+    var rest: text
+    var page: int = firstPage + off / dbPageDataSize
+    var at: int = off mod dbPageDataSize
+    if at + 4 <= dbPageDataSize {
+        if not f.readAt(page * dbPageSize + 6 + at, 4, t) { return 0 }
+    } else {
+        // the field straddles a page boundary
+        if not f.readAt(page * dbPageSize + 6 + at, dbPageDataSize - at, t) { return 0 }
+        if not f.readAt((page + 1) * dbPageSize + 6, 4 - (dbPageDataSize - at), rest) { return 0 }
+        t.append(rest)
+    }
+    if t.length != 4 { return 0 }
+    return t.intAt(0)
+}
+
 // --- Secondary indexes ------------------------------------------------
 // Metadata lives in page 0's index list: 32-byte DBIndexInfo slots at
 // offset 32 + 32*slot -- field_name (Pascal, 28 bytes), field_offset
@@ -355,26 +378,38 @@ func dbFindIndexSlot(hdr: text, fieldName: string): int {
     return -1
 }
 
-// (Re)create one .I?? file and fill it from every active record.
+// (Re)create one .I?? file and fill it from every active record. Only
+// the key field is read from each record (a full dbReadRecordAt per
+// record made index rebuilds the slow part of compaction); the whole
+// record is materialized only when the field doesn't fit in the first
+// page.
 func dbBuildIndex(db: Database, number: int, itype: int, offset: int, size: int): bool {
     var f: filehandle = db.data
     var idx: filehandle
     var st: text
+    var fld: text
     var rec: text
     var pageCount: int
+    var width: int = 4
     var p: int = 2
     var ok: bool = true
+    if itype == itString { width = 64 }
     idx = btCreate(dbIndexPath(db.name, number), "VDBi", db.creator)
     if idx == nil { return false }
     pageCount = f.size() / dbPageSize
     while p < pageCount and ok {
         if not f.readAt(p * dbPageSize, 6, st) { ok = false }
         if ok and st.length >= 6 and int(st[4]) == psActive {
-            rec = dbReadRecordAt(db, p, st.intAt(0), size)
-            if rec.length == size {
-                ok = btInsert(idx, dbExtractKey(rec, offset, itype), st.intAt(0))
+            if offset + width <= dbPageDataSize {
+                ok = f.readAt(p * dbPageSize + 6 + offset, width, fld) and fld.length == width
+                if ok { ok = btInsert(idx, dbExtractKey(fld, 0, itype), st.intAt(0)) }
             } else {
-                ok = false
+                rec = dbReadRecordAt(db, p, st.intAt(0), size)
+                if rec.length == size {
+                    ok = btInsert(idx, dbExtractKey(rec, offset, itype), st.intAt(0))
+                } else {
+                    ok = false
+                }
             }
         }
         p = p + 1
@@ -884,6 +919,17 @@ func dbScanSkip(db: Database, cur: text, n: int): int {
     return done
 }
 
+// Write the last_compacted stamp without compacting. maint.cla uses
+// the Users stamp as its "run finished" scheduling marker, which must
+// still move while the compaction phases are disabled.
+func dbStampCompacted(db: Database): bool {
+    var hdr: text
+    if not dbIsOpen(db) { return false }
+    if not dbReadHeader(db, hdr) { return false }
+    hdr.setIntAt(18, now())
+    return dbWriteHeader(db, hdr)
+}
+
 // Header last_compacted: Mac-epoch seconds of the last dbCompact, 0 =
 // never. maint.cla uses it as each database's own "done" marker.
 func dbLastCompacted(db: Database): int {
@@ -1092,6 +1138,30 @@ func dbFindAllByInt(db: Database, fieldName: string, value: int, ids: list of in
         i = i + 1
     }
     return ids.count > 0
+}
+
+// True if an index on `fieldName` exists.
+func dbHasIndex(db: Database, fieldName: string): bool {
+    var hdr: text
+    if not dbIsOpen(db) { return false }
+    if not dbReadHeader(db, hdr) { return false }
+    return dbFindIndexSlot(hdr, fieldName) >= 0
+}
+
+// Open the index on `fieldName` for a key-ordered walk (btScanStart /
+// btScanNext / btScanKey; btFind for a key's full value list -- the
+// scan cursor surfaces only an entry's first value). nil if no such
+// index. The caller closes the handle before any write to the
+// database: writes reopen the same file per operation, and dbCompact
+// recreates it.
+func dbIndexOpenByName(db: Database, fieldName: string): filehandle {
+    var hdr: text
+    var slot: int
+    if not dbIsOpen(db) { return nil }
+    if not dbReadHeader(db, hdr) { return nil }
+    slot = dbFindIndexSlot(hdr, fieldName)
+    if slot < 0 { return nil }
+    return btOpen(dbIndexPath(db.name, int(hdr[32 + slot * 32 + 31])))
 }
 
 // Find the first record whose indexed i32 field equals `value`.

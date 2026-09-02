@@ -104,10 +104,15 @@ func networkForPacket(): int {
 
 // The message's own time in our local clock: its date is the sender's
 // local time; TZUTC (if any) takes it to UTC, our offset brings it here.
+// A non-negative result is garbage -- every real date is past the
+// 2^31-second Mac-epoch wrap (1972), so a positive value means a
+// mangled year (or one past 2040) that would sort as "newest" in the
+// signed Created index and never expire; clamp it to receipt time.
 func tossCreated(): int {
     var t: int = ftnDateParse(pktMsg.date)
     if t == 0 { return now() }
     if pktMsg.tzutc != "" { t = t - tzMinutes(pktMsg.tzutc) * 60 + network.utcOffset * 60 }
+    if t >= 0 { return now() }
     return t
 }
 

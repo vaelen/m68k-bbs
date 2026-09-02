@@ -270,8 +270,34 @@ Rules: a cursor lives inside **one event handler** — created, drained,
 dropped; what persists between events is a position (an ID), and the
 next draw re-seeks. **Never write to a database while one of its scans
 is live** — mutators collect IDs first, then act (see `expirePosts`).
-heap.cla's compactor deliberately stays on ID probing: it updates
-records mid-walk.
+heap.cla's `heapFixOffsets` deliberately stays on ID probing: it
+updates records mid-walk.
+
+## Named-index walks and field reads (2026-09-02)
+
+Secondary indexes can be walked in key order the same way (this is how
+`expirePosts` and the date-ordered post list work — see postsdb.cla's
+`postsByCreated*`):
+
+- `dbHasIndex(db, fieldName)` — header check only.
+- `dbIndexOpenByName(db, fieldName)` — `btOpen` the `.I??` file for a
+  walk with `btScanStart`/`btScanNext`/`btScanKey`; nil if absent.
+  The scan cursor surfaces only an entry's **first** value, so expand
+  a duplicate key's full value list with `btFind`. Close the handle
+  before any write to the database (writes reopen the file per
+  operation, and `dbCompact` recreates it — the Mac refuses while a
+  second handle is open). Keys compare **signed**, so Mac-epoch
+  timestamps (negative since 1972) order correctly and garbage
+  positive dates sort last.
+- `dbFieldIntAt(db, firstPage, off)` — read one i32 field of the
+  record whose page run starts at `firstPage` (a scan's `btScanValue`)
+  without materializing the record. A full `dbFind`/`dbScanNext`
+  costs ~100 ms per record on the 68k (the string/text function-return
+  overhead); the field read is a couple of positioned reads.
+  `heapLiveBytes` and `heapCompact`'s copy loop use this;
+  `dbBuildIndex` reads only the key field the same way, which is what
+  keeps index rebuilds (compaction, the one-time Created backfill)
+  tolerable.
 
 **Header cache.** Page 0 is cached in a module map keyed by `db.name`:
 `dbReadHeader` serves a copy from the cache (filling it on first

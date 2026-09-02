@@ -9,7 +9,9 @@
 // On-disk header record (160 bytes, vDB record ID = post ID):
 //   0    sender, 64-byte Pascal field (a name, not a user ID, so
 //        echomail senders need not be local users)
-//   64   created (i32, Mac-epoch seconds)
+//   64   created (i32, Mac-epoch seconds, indexed: echomail arrives
+//        out of date order, so date-ordered reads and expiry walk the
+//        Created index instead of scanning headers)
 //   68   thread ID (i32, indexed): 0 for a thread starter; the
 //        starter's post ID on replies
 //   72   subject, 64-byte Pascal field
@@ -64,6 +66,30 @@ func postsName(boardId: int): string {
     return "BRD" + char(int('0') + boardId / 10) + char(int('0') + boardId mod 10)
 }
 
+// One-time migration: add the Created index to a board that predates
+// it (new boards get it at create). The build reads only the key field
+// per record, so even a large board takes seconds -- but run it at
+// launch (postsEnsureCreatedIndexes), not on a caller's first open.
+func postsEnsureCreatedIndex(name: string) {
+    if dbHasIndex(postsDb, "Created") { return }
+    log("Posts: building Created index for " + name)
+    if not dbAddIndex(postsDb, "Created", itID, pOffCreated) {
+        log("Posts: Created index build failed for " + name + ": " + lastError.message)
+    }
+}
+
+// Launch migration driver: open every board once so postsOpen can add
+// the Created index where it's missing.
+func postsEnsureCreatedIndexes() {
+    var id: int = 1
+    var last: int = boardsNextId()
+    while id < last {
+        if loadBoard(id) { postsOpen(id) }
+        id = id + 1
+    }
+    postsClose()
+}
+
 // Open board `boardId`'s posts (closing any board already open),
 // creating its files on first use.
 func postsOpen(boardId: int): bool {
@@ -83,6 +109,12 @@ func postsOpen(boardId: int): bool {
             postsClose()
             return false
         }
+        if not dbAddIndex(postsDb, "Created", itID, pOffCreated) {
+            postsClose()
+            return false
+        }
+    } else {
+        postsEnsureCreatedIndex(name)
     }
     if not heapRecover(postsDb, name + ".MSG", pOffBodyOff, pOffBodyLen) {
         postsClose()
@@ -102,11 +134,80 @@ func postsOpen(boardId: int): bool {
 
 func postsClose() {
     var b: filehandle = postsBody
+    postsByCreatedEnd()
     if dbIsOpen(postsDb) { dbClose(postsDb) }
     postsDb = new Database
     if b != nil { b.close() }
     postsBody = nil
     postsBoardId = 0
+}
+
+// --- Created-order walks -----------------------------------------------
+// Transient walk over the open board's Created index in date order
+// (descending = newest first), yielding post IDs; same-second posts
+// come back in posting order, reversed when descending. Start, drain
+// and End inside ONE event handler, and never write to the board
+// mid-walk (the B-tree scan rule). The .I?? handle is open only while
+// a walk is live, so vDB's per-operation opens and dbCompact's
+// rebuilds are unaffected.
+
+var postsCreatedIdx: filehandle
+var postsCreatedCur: text
+var postsCreatedVals: list of int
+var postsCreatedAt: int = 0
+var postsCreatedDesc: bool = false
+
+func postsByCreatedStart(descending: bool): bool {
+    var from: int = -2147483647 - 1
+    postsByCreatedEnd()
+    if descending { from = 0x7FFFFFFF }
+    postsCreatedIdx = dbIndexOpenByName(postsDb, "Created")
+    if postsCreatedIdx == nil { return false }
+    postsCreatedDesc = descending
+    if not btScanStart(postsCreatedIdx, postsCreatedCur, from, descending) {
+        postsByCreatedEnd()
+        return false
+    }
+    return true
+}
+
+// The next post ID in date order; 0 when the walk is exhausted. The
+// scan yields one entry per distinct date; btFind expands each into
+// its full value list (an entry's spilled values live in the overflow
+// chain, which the cursor doesn't surface).
+func postsByCreatedNext(): int {
+    var f: filehandle = postsCreatedIdx
+    var i: int
+    var j: int
+    var t: int
+    if postsCreatedAt < postsCreatedVals.count {
+        postsCreatedAt = postsCreatedAt + 1
+        return postsCreatedVals[postsCreatedAt - 1]
+    }
+    if f == nil { return 0 }
+    if not btScanNext(f, postsCreatedCur) { return 0 }
+    if not btFind(f, btScanKey(postsCreatedCur), postsCreatedVals) { return 0 }
+    if postsCreatedDesc {
+        i = 0
+        j = postsCreatedVals.count - 1
+        while i < j {
+            t = postsCreatedVals[i]
+            postsCreatedVals[i] = postsCreatedVals[j]
+            postsCreatedVals[j] = t
+            i = i + 1
+            j = j - 1
+        }
+    }
+    postsCreatedAt = 1
+    return postsCreatedVals[0]
+}
+
+func postsByCreatedEnd() {
+    var f: filehandle = postsCreatedIdx
+    if f != nil { f.close() }
+    postsCreatedIdx = nil
+    postsCreatedVals.clear()
+    postsCreatedAt = 0
 }
 
 func postCount(): int {
@@ -224,27 +325,44 @@ func threadPosts(root: int, ids: list of int) {
 }
 
 // Delete every post created before `cutoff` (Mac-epoch seconds; the
-// caller computes now() - keepDays * 86400). Scans the headers once,
-// collecting doomed IDs first (a scan must not see deletes; 4 bytes
-// per ID is fine into the tens of thousands); each delete is
-// journaled. Bodies stay in the heap until heapCompact (heap.cla)
-// reclaims them. Returns the count, or -1 if the board can't be
-// opened; leaves the board open.
+// caller computes now() - keepDays * 86400). Walks the Created index
+// ascending and stops at the first date past the cutoff, so the cost
+// is O(expired), not O(board) -- a header scan at the 68k's
+// ~100 ms/record made big boards take a quarter hour each. Doomed IDs
+// are collected first and the index handle closed before the journaled
+// deletes (deletes rewrite that index). A bogus positive key (a date
+// before 1972, or past the 2040 wrap) sorts after every real
+// (negative) date and never expires; tossCreated clamps those at toss
+// time. Returns the count, or -1 if the board can't be opened; leaves
+// the board open.
 func expirePosts(boardId: int, cutoff: int): int {
+    var idx: filehandle
     var cur: text
-    var rec: text
+    var vals: list of int
     var doomed: list of int
-    var id: int
-    var i: int = 0
+    var going: bool = true
+    var i: int
     var n: int = 0
     if not postsOpen(boardId) { return -1 }
-    if dbScanStart(postsDb, cur, 1, false) {
-        id = dbScanNext(postsDb, cur, rec)
-        while id != 0 {
-            if rec.intAt(pOffCreated) < cutoff { doomed.add(id) }
-            id = dbScanNext(postsDb, cur, rec)
+    idx = dbIndexOpenByName(postsDb, "Created")
+    if idx == nil { return -1 }
+    if btScanStart(idx, cur, -2147483647 - 1, false) {
+        while going and btScanNext(idx, cur) {
+            if btScanKey(cur) < cutoff {
+                if btFind(idx, btScanKey(cur), vals) {
+                    i = 0
+                    while i < vals.count {
+                        doomed.add(vals[i])
+                        i = i + 1
+                    }
+                }
+            } else {
+                going = false
+            }
         }
     }
+    idx.close()
+    i = 0
     while i < doomed.count {
         if dbDelete(postsDb, doomed[i]) { n = n + 1 }
         i = i + 1

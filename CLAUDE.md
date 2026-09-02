@@ -199,8 +199,13 @@ inputChar (bbs.cla) → processInput`.
   by every `dbWriteHeader`, dropped on open/close), and the scan API
   every enumerating screen uses (`dbScanStart`/`dbScanNext`/
   `dbScanSkip`; cursors live inside one event handler, never write to
-  a database mid-scan — collect IDs first; heap.cla's compactor
-  deliberately still probes IDs). `usersdb.cla` — the "Users" vDB database
+  a database mid-scan — collect IDs first; heap.cla's `heapFixOffsets`
+  deliberately still probes IDs), plus named-index walks and
+  field-only reads (`dbHasIndex`/`dbIndexOpenByName` — btScan a
+  secondary in key order, `btFind` expands duplicate keys;
+  `dbFieldIntAt` — one i32 field without materializing the record,
+  which a 68k text-returning call makes ~100 ms; `dbBuildIndex` reads
+  only key fields the same way). `usersdb.cla` — the "Users" vDB database
   (160-byte records: username/hash/email/access flags (i32)/created/
   lastSeen; vDB record ID = user ID; username indexed
   case-insensitively).
@@ -213,9 +218,16 @@ inputChar (bbs.cla) → processInput`.
   boards that predate it — record ID = board ID; `boardNetworked()`). `postsdb.cla` — one board's posts at a time
   (`postsOpen(boardId)`): header records in `BRD<nn>.*` (sender/
   created/threadId/subject, thread ID indexed; 0 = thread starter,
-  else the starter's post ID; plus the FTN fields msgidCrc — indexed,
+  else the starter's post ID; created indexed — echomail arrives out
+  of date order, so the reader's list and `expirePosts` (O(expired),
+  stops at the cutoff) walk it via `postsByCreatedStart`/`Next`/`End`
+  (one event handler; same-second posts share a key), and
+  `postsEnsureCreatedIndexes` backfills it at launch for boards that
+  predate it; plus the FTN fields msgidCrc — indexed,
   `findPostByMsgId` — origin address and flags bit 0 = inbound;
-  `addPostFtn` takes them, `addPost` zeroes them) plus exact-fit
+  `addPostFtn` takes them, `addPost` zeroes them; `tossCreated` clamps
+  a garbage non-negative date to receipt time so it can't dodge
+  expiry) plus exact-fit
   bodies in an append-only `BRD<nn>.MSG` heap, written and flushed
   before the journaled header add so a crash only orphans heap bytes.
   `maildb.cla` — the "Mail" database (256-byte header records: from/to
@@ -397,7 +409,8 @@ inputChar (bbs.cla) → processInput`.
   board record's `lastPost` date) · Network (the
   network's name, `local` for none); its own `boardPickerWidths`, the
   sysop list keeps `boardListWidths`; `V`/digit → `Board ID:` prompt) → paged post
-  list (newest first, numbered from 1 per page, post IDs hidden,
+  list (newest created date first via the Created-index walk — not ID
+  order — numbered from 1 per page, post IDs hidden,
   `Page X of Y` footer; `V`/digit → `Post number:` prompt) → framed
   post view (subject title bar, From/Date meta, body wrapped by
   `wrapText` and paged). Keys: `+`/Enter next page, `-` previous,
@@ -541,11 +554,15 @@ inputChar (bbs.cla) → processInput`.
 - `heap.cla` — compactor for the append-only `.MSG` body heaps
   (`heapCompact`/`heapRecover`/`heapFixOffsets`: fresh-file rewrite in
   ID order with deterministic offsets, `.NEW`/`.OLD` crash recovery on
-  every open; a clean heap is skipped); `postsCompact`/`mailCompact`/
-  `filesCompact` wrap it. `maint.cla` — the daily run (`maintStart`/
+  every open; a clean heap is skipped — `heapLiveBytes` and the copy
+  loop use primary-index scans with `dbFieldIntAt` field reads, so the
+  no-op check costs seconds, not a `dbFind` per ID); `postsCompact`/
+  `mailCompact`/`filesCompact` wrap it. `maint.cla` — the daily run (`maintStart`/
   `maintTick`, one unit per 30-tick firing: expire boards with
-  `keepDays` via `expirePosts`, then compact every database, Users
-  last = the done marker via `dbLastCompacted`), the window rule
+  `keepDays` via `expirePosts`, then compact every database — ALL
+  compaction phases (2-4) currently disabled in maintTick, still hours
+  on a big echomail board; only the Users done marker is written
+  (`dbStampCompacted`, read via `dbLastCompacted`)), the window rule
   (`maintDueNow`, `config.maintenanceHour`), and the `rejectCallers`/
   `maintaining` flags `connected()` and `ftnSchedule` honour; the Mac
   `Maintenance` menu toggles/runs it (menu captions must not contain

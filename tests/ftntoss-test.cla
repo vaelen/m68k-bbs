@@ -102,6 +102,13 @@ func tossTests() {
     expect(message.subject == "Areafix reply: link information", "netmail subject")
     expect(message.created == ftnDateParse("15 Aug 25  18:50:54"), "no TZUTC: taken as local")
 
+    // a mangled year (2060 is past the 2040 Mac-epoch wrap, so it comes
+    // out non-negative) is clamped to receipt time, or it would sort as
+    // "newest" in the Created index and never expire
+    pktMsg.date = "15 Aug 60  12:00:00"
+    pktMsg.tzutc = ""
+    expect(tossCreated() < 0 and tossCreated() >= now() - 5, "garbage year clamps to receipt time")
+
     // expiry: a board keeping 30 days refuses the 2025 fixture outright
     expect(loadBoard(2), "load board 2 for expiry")
     board.keepDays = 30

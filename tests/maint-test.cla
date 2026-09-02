@@ -69,12 +69,14 @@ func runTests() {
     }
     expect(not maintaining, "run finished")
     expect(not rejectCallers, "manual flag restored")
-    expect(steps > 5 and steps < 200, "one unit per tick")
+    expect(steps > 2 and steps < 200, "one unit per tick")   // ~5 with phases 2-4 disabled
     expect(postsOpen(2) and postCount() == 1 and not loadPost(1) and loadPost(2), "40-day-old post expired, fresh one kept")
     postsClose()
     expect(postsOpen(1) and postCount() == 1, "board with keepDays 0 untouched")
     postsClose()
-    expect(dbLastCompacted(usersDb) != 0 and dbLastCompacted(boardsDb) != 0 and dbLastCompacted(mailDb) != 0, "databases stamped")
+    // with the compaction phases disabled only Users is stamped (the
+    // run-finished marker); assert boardsDb/mailDb again on re-enable
+    expect(dbLastCompacted(usersDb) != 0 and dbLastCompacted(boardsDb) == 0 and dbLastCompacted(mailDb) == 0, "only the Users run-finished marker is stamped")
     expect(not maintDueNow(), "not due right after a run")
     // a scheduled run right after a completed one skips everything already
     // stamped: orphan bytes left on board 1 stay put; a forced run reclaims them
@@ -94,7 +96,10 @@ func runTests() {
         maintTick()
         steps = steps + 1
     }
-    expect(not maintaining and file.info("BRD01.MSG").size < orphaned, "forced run compacts regardless of the stamp")
+    // board compaction is disabled for now (maintTick phase 2), so even
+    // a forced run leaves the orphan; assert `< orphaned` again when
+    // maintBoardStep is restored
+    expect(not maintaining and file.info("BRD01.MSG").size == orphaned, "forced run leaves heaps alone while board compaction is off")
 }
 
 on App.startCLI(args: list of string) {

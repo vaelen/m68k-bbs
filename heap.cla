@@ -6,10 +6,14 @@
 // bytes with an (offset, length) pair at fixed field positions, bodies
 // are exact-fit with no framing, and deletes orphan their bytes.
 //
-// Enumeration here deliberately stays on ID probing, not dbScan:
-// heapFixOffsets updates records while iterating, which the scan
-// cursor's no-writes rule forbids, and compaction runs only during
-// maintenance with callers rejected.
+// Enumeration: heapLiveBytes and heapCompact's copy loop walk the
+// primary index (ascending = ID order) reading only the offset/length
+// fields (dbFieldIntAt) -- a dbFind per ID cost ~130 ms each on the
+// 68k, which made the clean-heap no-op check alone take minutes on a
+// big board. heapFixOffsets deliberately stays on ID probing: it
+// updates records while iterating, which the scan cursor's no-writes
+// rule forbids, and it only runs when a heap was actually rewritten
+// (or on crash recovery).
 //
 // Fresh-file rewrite with deterministic offsets: walk records in ID
 // order appending each live body to <name>.NEW; a body's new offset is
@@ -36,16 +40,14 @@ func heapOldPath(path: string): string {
     return path[0, path.length - 4] + ".OLD"
 }
 
-// Sum of the live bodies' lengths, in ID order.
+// Sum of the live bodies' lengths (field-only reads via the primary
+// index; runs on every board during maintenance even when clean).
 func heapLiveBytes(db: Database, lenField: int): int {
-    var id: int = 1
-    var last: int = dbNextRecordId(db)
-    var rec: text
+    var cur: text
     var total: int = 0
-    while id < last {
-        rec = dbFind(db, id)
-        if rec.length > lenField + 3 { total = total + rec.intAt(lenField) }
-        id = id + 1
+    if not btScanStart(db.index, cur, 1, false) { return 0 }
+    while btScanNext(db.index, cur) {
+        total = total + dbFieldIntAt(db, btScanValue(cur), lenField)
     }
     return total
 }
@@ -78,9 +80,7 @@ func heapFixOffsets(db: Database, offField: int, lenField: int): bool {
 func heapCompact(db: Database, path: string, offField: int, lenField: int): bool {
     var src: filehandle
     var dst: filehandle
-    var id: int = 1
-    var last: int
-    var rec: text
+    var cur: text
     var body: text
     var len: int
     var ok: bool = true
@@ -97,18 +97,17 @@ func heapCompact(db: Database, path: string, offField: int, lenField: int): bool
         src.close()
         return false
     }
-    last = dbNextRecordId(db)
-    while ok and id < last {
-        rec = dbFind(db, id)
-        if rec.length > lenField + 3 {
-            len = rec.intAt(lenField)
+    // primary-index scan = ID order; only the dst file is written, so
+    // the no-writes-during-scan rule holds
+    if btScanStart(db.index, cur, 1, false) {
+        while ok and btScanNext(db.index, cur) {
+            len = dbFieldIntAt(db, btScanValue(cur), lenField)
             if len > 0 {
-                ok = src.readAt(rec.intAt(offField), len, body)
+                ok = src.readAt(dbFieldIntAt(db, btScanValue(cur), offField), len, body)
                 if ok { ok = body.length == len }
                 if ok { ok = dst.append(body) }
             }
         }
-        id = id + 1
     }
     if ok { ok = dst.flush() }
     dst.close()

@@ -10,6 +10,9 @@
 //   phase 2  compact one board per tick (postsCompact)
 //   phase 3  compact one file area per tick (filesCompact)
 //   phase 4  Mail, Wall, Areas, Networks, Boards, then Users LAST
+// Phases 2-4 are DISABLED for now (see maintTick): compaction still
+// runs for hours on a big echomail board. Only the Users "finished"
+// stamp is written.
 // Users' last_compacted stamp is the "run finished" marker; a scheduled
 // run skips any database already stamped since the window opened
 // (force ignores the stamps). rejectCallers is set for the duration and
@@ -253,9 +256,33 @@ func maintTick() {
     if not maintaining { return }
     switch maintPhase {
     case 1 { maintExpireStep() }
-    case 2 { maintBoardStep() }
-    case 3 { maintAreaStep() }
-    case 4 { maintRestStep() }
+    case 2 {
+        // Compaction (phases 2-4) is disabled for now: postsCompact on
+        // a big echomail board still runs for hours (heapFixOffsets
+        // does a journaled dbUpdate per record after the heap
+        // rewrite). Orphaned heap bytes and B-tree slack accumulate
+        // until it's re-enabled -- restore the three steps below.
+        // maintBoardStep()
+        postsClose()
+        maintPhase = 3
+        maintCursor = 1
+    }
+    case 3 {
+        // maintAreaStep()
+        filesClose()
+        maintPhase = 4
+        maintRest = 0
+    }
+    case 4 {
+        // maintRestStep()
+        // Users' stamp is the "run finished" marker maintDueNow
+        // schedules by; without it the run would restart every idle
+        // minute, so it is still written.
+        if not dbStampCompacted(usersDb) {
+            log("Maintenance: Users stamp failed: " + lastError.message)
+        }
+        maintEnd()
+    }
     else   { maintEnd() }
     }
 }
