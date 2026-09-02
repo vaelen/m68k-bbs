@@ -291,6 +291,7 @@ func inputChar(raw: char) {
     var single: string(1)
     var c: char = raw
     if not isConnected { return }
+    idleHalfSecs = 0
     if user.screen == "ftn" {
         emsiChar(c)
         return
@@ -543,7 +544,7 @@ func lineScreen(s: string): bool {
     case "banadd", "bandel" { return true }
     case "showuser", "showboard", "showarea", "showgame" { return true }
     case "edituserid", "editboardid", "editareaid", "editgameid" { return true }
-    case "edituserval", "editboardval", "editareaval", "editgameval", "useraccess", "confighour", "configname", "configmodem" { return true }
+    case "edituserval", "editboardval", "editareaval", "editgameval", "useraccess", "confighour", "configidle", "configname", "configmodem" { return true }
     case "deluserid", "delboardid", "delareaid", "delgameid" { return true }
     case "boardnum", "areanum", "postnum", "filenum", "mailnum" { return true }
     case "mailto", "mailaddr", "editsubject", "editbody", "delpostnum", "delfilenum" { return true }
@@ -643,6 +644,7 @@ func displayPrompt() {
     case "sysopbanned" { sendData("Sysop:Banned> ") }
     case "sysopconfig" { sendData("Sysop:Config> ") }
     case "confighour" { sendData("Maintenance hour (0-23) [" + intStr(config.maintenanceHour) + "]: ") }
+    case "configidle" { sendData("Idle timeout seconds, 0 = off [" + intStr(config.idleSeconds) + "]: ") }
     case "configname" { sendData("System name [" + config.systemName + "]: ") }
     case "configmodem" { sendData("Modem init string [" + config.modemInit + "]: ") }
     case "banadd"      { sendData("Name to ban (Enter = cancel): ") }
@@ -796,6 +798,7 @@ func processInput(input: string) {
     case "sysopgames"  { sysopGamesChoice(input) }
     case "sysopusers"  { sysopUsersChoice(input) }
     case "userlist"    { userListInput(input) }
+    case "sysoplog"    { logViewInput(input) }
     case "boardlist"   { boardListInput(input) }
     case "arealist"    { areaListInput(input) }
     case "gamelist"    { gameListInput(input) }
@@ -867,6 +870,7 @@ func processInput(input: string) {
     case "sysopbanned" { sysopBannedChoice(input) }
     case "sysopconfig" { sysopConfigChoice(input) }
     case "confighour" { configHourInput(input) }
+    case "configidle" { configIdleInput(input) }
     case "configname" { configNameInput(input) }
     case "configmodem" { configModemInput(input) }
     case "banadd"      { banAddInput(input) }
@@ -1175,6 +1179,7 @@ func mainChoice(input: string) {
 // once-a-second timer below.
 
 var hangupPhase: int = 0
+var idleHalfSecs: int = 0     // half-seconds since the caller's last byte (config.idleSeconds)
 var banCaller: bool = false   // hang up with AT+BAN;H: strike the caller's IP
 var modemInitPhase: int = 0   // countdown to sending config.modemInit, once the line is idle
 var telnetProbe: int = 0   // countdown to the end of the telnet probe
@@ -1276,6 +1281,24 @@ every 30 ticks {
         if ftnPolling { log("FTN: session in progress.") }
     }
     if user.screen == "xfer" { xferTick() }
+    if isConnected and not ftnPolling and hangupPhase == 0 and config.idleSeconds > 0 and user.screen != "xfer" {
+        // messages are caps-only (pre-terminal-pick callers) and avoid
+        // the capital-C byte (docs/file-transfers.md, "Text around a
+        // transfer")
+        idleHalfSecs = idleHalfSecs + 1
+        if config.idleSeconds > 60 and idleHalfSecs == (config.idleSeconds - 60) * 2 {
+            sendLine("")
+            sendLine("\x07YOU WILL BE LOGGED OFF IN ONE MINUTE UNLESS YOU PRESS A KEY.")
+        }
+        if idleHalfSecs >= config.idleSeconds * 2 {
+            idleHalfSecs = 0
+            log("Caller idle " + intStr(config.idleSeconds) + "s: hanging up.")
+            sendLine("")
+            sendLine("IDLE TIMEOUT. GOODBYE.")
+            user.screen = "probe"    // swallows input until the line drops
+            hangupPhase = 1
+        }
+    }
     if Main.front != nil {
         // a resized or freshly exposed window redraws even when clean
         if Main.front.LogView.width != logLastW or Main.front.LogView.height != logLastH { logRedraw() }
@@ -1318,6 +1341,7 @@ func connected() {
     telnetReset()
     telnetIntercept = true   // watch for negotiation during the probe
     hangupPhase = 0
+    idleHalfSecs = 0
     banCaller = false
     pendingId = 0
     pendingHash = 0

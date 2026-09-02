@@ -30,6 +30,7 @@ func drawSysopMenu() {
     sendLine("C) Configuration")
     sendLine("F) File Areas")
     sendLine("G) Games")
+    sendLine("L) Log")
     sendLine("M) Message of the Day")
     sendLine("N) Networks")
     sendLine("U) Users")
@@ -43,6 +44,7 @@ func drawSysopConfigMenu() {
     sendLine("")
     sendLine("A) New User Access (" + accessSummary(config.newUserAccess) + ")")
     sendLine("H) Maintenance hour (" + intStr(config.maintenanceHour) + ":00)")
+    sendLine("I) Idle timeout (" + idleSummary() + ")")
     sendLine("M) Modem init string (" + config.modemInit + ")")
     sendLine("N) System name (" + config.systemName + ")")
     sendLine("Q) Return to Sysop Menu")
@@ -78,6 +80,10 @@ func sysopConfigChoice(input: string) {
         user.screen = "confighour"
         displayPrompt()
     }
+    case "I" {
+        user.screen = "configidle"
+        displayPrompt()
+    }
     case "M" {
         user.screen = "configmodem"
         displayPrompt()
@@ -89,6 +95,33 @@ func sysopConfigChoice(input: string) {
     case "Q" { gotoScreen("sysop") }
     else     { displayPrompt() }
     }
+}
+
+func idleSummary(): string {
+    if config.idleSeconds == 0 { return "off" }
+    return intStr(config.idleSeconds) + "s"
+}
+
+// Empty input keeps the timeout; otherwise seconds, 0 = off, saved at
+// once.
+func configIdleInput(input: string) {
+    var n: int
+    if input != "" {
+        n = parseIntStr(input)
+        if input[0] < '0' or input[0] > '9' {
+            sendLine("Seconds, or 0 to disable.")
+            displayPrompt()
+            return
+        }
+        config.idleSeconds = n
+        idleHalfSecs = 0
+        if configSave() {
+            sendLine("Saved.")
+        } else {
+            sendLine("Save failed: " + lastError.message)
+        }
+    }
+    gotoScreen("sysopconfig")
 }
 
 // Empty input keeps the hour; otherwise 0-23, saved at once.
@@ -195,12 +228,55 @@ func sysopChoice(input: string) {
     case "C" { gotoScreen("sysopconfig") }
     case "F" { gotoScreen("sysopareas") }
     case "G" { gotoScreen("sysopgames") }
+    case "L" { startLogView() }
     case "M" { startMotdEditor() }
     case "N" { gotoScreen("sysopnets") }
     case "U" { gotoScreen("sysopusers") }
     case "X" { gotoScreen("sysopbanned") }
     case "Q" { gotoScreen("main") }
     else     { displayPrompt() }
+    }
+}
+
+// --- Log viewer --------------------------------------------------------
+// The log ring (bbs.cla's logLines, the same lines as the Mac-side log
+// window), newest first, a page at a time. Long lines are sent whole
+// and wrap on the caller's terminal.
+
+var logViewFrom: int = 0    // ring index of the next (older) line to show
+
+func startLogView() {
+    user.screen = "sysoplog"
+    logViewFrom = logLines.count - 1
+    drawLogPage()
+}
+
+// Enter (or anything but Q) shows the next page; Q returns to the menu.
+func logViewInput(input: string) {
+    if upperStr(input) == "Q" {
+        gotoScreen("sysop")
+    } else {
+        drawLogPage()
+    }
+}
+
+func drawLogPage() {
+    var pageRows: int = terminal.rows - 6
+    var shown: int = 0
+    sendTitleBox("Sysop - Log")
+    sendLine("")
+    if logLines.count == 0 { sendLine("The log is empty.") }
+    while logViewFrom >= 0 and shown < pageRows {
+        sendLine(logLines[logViewFrom])
+        logViewFrom = logViewFrom - 1
+        shown = shown + 1
+    }
+    sendLine("")
+    if logViewFrom >= 0 {
+        sendData("[Enter] More  [Q] Menu > ")
+    } else {
+        user.screen = "sysop"
+        displayPrompt()
     }
 }
 

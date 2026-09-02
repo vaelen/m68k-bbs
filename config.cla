@@ -21,6 +21,7 @@ record Config {
     modemInit: string = "AT&FE1Q0V1X4&C1&D2S0=0"   // Sent at startup and Modem > Initialize Modem; empty = none
     modemSpeed: int = 57600                // Serial port bps; a Modem-menu value (cosmetic under Snow; a real SE may drop upload bytes above 19200)
     modemPort: string = "modem"            // "modem" or "printer" -- which serial port the BBS answers
+    idleSeconds: int = 300                 // Hang up a caller idle this many seconds; 0 = never
 }
 
 // The speeds the Modem menu offers (a subset of the Serial Driver's
@@ -46,6 +47,7 @@ func configSave(): bool {
     data.append("modemInit=" + config.modemInit + "\n")
     data.append("modemSpeed=" + string(config.modemSpeed) + "\n")
     data.append("modemPort=" + config.modemPort + "\n")
+    data.append("idleSeconds=" + string(config.idleSeconds) + "\n")
     ok = f.writeAt(0, data)
     if ok { ok = f.flush() }
     f.close()
@@ -104,6 +106,10 @@ func configApply(line: string) {
     }
     case "modemPort" {
         if val == "modem" or val == "printer" { config.modemPort = val }
+    }
+    case "idleSeconds" {
+        n = configInt(val)
+        if n >= 0 { config.idleSeconds = n }
     }
     }
 }

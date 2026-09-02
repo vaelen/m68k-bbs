@@ -251,7 +251,7 @@ inputChar (bbs.cla) → processInput`.
   the file-area byte only. `config.cla` — `Config.txt` (`key=value`
   per CR line, `#` comments, unknown keys ignored, missing file/key =
   the compiled default, missing file written out at launch):
-  `config: Config` record (`newUserAccess`, default `accessDefault`),
+  `config: Config` record (`newUserAccess`, `idleSeconds`, ...),
   `configLoad`/`configSave`; Sysop menu `C` edits it (`docs/config.md`).
   `terminal.cla` — `Terminal` record (columns —
   stored as the physical width **minus one** via `setColumns`, so
@@ -348,7 +348,11 @@ inputChar (bbs.cla) → processInput`.
   prompt; the terminal menu redraws fully and defaults to color ANSI on
   empty input. Logoff paces `+++` / `ATH` through a `every 30 ticks`
   timer (`hangupPhase`) to honor the Hayes guard time; the resulting
-  NO CARRIER resets the session. `modemReset()` (startup via
+  NO CARRIER resets the session. An idle caller is hung up after
+  `config.idleSeconds` (default 300, 0 = off; Sysop Config `I`):
+  `idleHalfSecs` ticks in the 30-tick timer — paused during transfers,
+  FTN polls and hang-up — and resets on any received byte; a caps-only,
+  no-capital-C warning goes out a minute before. `modemReset()` (startup via
   `modem.opened`; `Modem > Initialize Modem`) runs that hang-up
   then sends `config.modemInit` (`modemInitPhase`); `Modem >
   Hang Up` (Cmd-H) is the hang-up alone; modem commands are logged as
@@ -384,6 +388,8 @@ inputChar (bbs.cla) → processInput`.
   the New Board wizard, folder-syntax help (`sendFolderHelp`) before
   both area folder prompts, and the same L/S/E/N/D tree over file areas
   (`Areas` database: name/description/folder/access; Sysop menu `F`).
+  Sysop menu `L` pages the log ring (`logLines`) newest first, long
+  lines wrapping on the caller's terminal (`startLogView`).
   `parseIntStr` (all-digits or 0) lets ID-or-name prompts
   disambiguate naturally.
 - `boards.cla` — the caller-facing reader: main-menu `B` → board
