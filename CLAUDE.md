@@ -685,8 +685,9 @@ The filesystem API the file-area follow-ups needed — `file.list`,
 `file.info`, `file.exists`, `file.delete`, `file.makeDir` (one level),
 `file.rename`, `file.move` — shipped in the 2026-08-26 pin and the
 FidoNet code uses it (`ftntoss.cla`, `emsi.cla`). The one gap left is
-arbitrary-file resource-fork bytes (MacBinary preservation). The full
-list, with what each unlocks, is `docs/language-gaps.md`.
+arbitrary-file resource-fork bytes (MacBinary preservation), tracked in
+Clarus's own `docs/TODO.md` (the former `docs/language-gaps.md` here
+was retired 2026-09-05 once everything else on it had shipped).
 
 ## Commits
 
@@ -733,7 +734,7 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
   (lrz over socat, raw and via `telnet-shim.py`), `ftn-e2e.sh` (a poll
   against `emsi-peer.py`), `basic.sh`/`basic-host.sh` (BASIC in the terminal / over TCP / exported)
 - `bin/`, `vendor/` — pinned compiler + runtime/toolbox snapshot
-- `docs/` — language reference + Snow how-to (symlinks), language-gaps.md,
+- `docs/` — language reference + Snow how-to (symlinks),
   telnet-negotiation-reference.md and vt100.codes.txt (protocol notes)
 - `snow/` — emulator, ROM, boot disk, workspace, hdd2.img (untracked)
 - `simple-modem-emulator/` — Hayes modem bridge (tracked in this repo)

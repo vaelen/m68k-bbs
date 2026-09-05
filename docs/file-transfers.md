@@ -127,10 +127,9 @@ backwards, in its own `rv*` state machine (the public
   its last segment, the name is vetted through `xferAcceptName`, and
   an all-NUL block 0 ends the batch (`xferDone(true)`).
 
-An aborted upload leaves the partial file on disk — there is no
-`file.delete` yet (`docs/language-gaps.md` §3) — but no database entry,
-so the same name can simply be uploaded again (`file.create`
-truncates).
+An aborted upload leaves the partial file on disk (the abort path
+doesn't `file.delete` it) but no database entry, so the same name can
+simply be uploaded again (`file.create` truncates).
 
 ## ZMODEM (`zmodem.cla`)
 
@@ -380,5 +379,6 @@ Each of these reuses the four hooks and two callbacks unchanged.
   `text.crc16` (CRC-16/KERMIT) fits as-is; adds control-character
   prefixing and the S/F/D/Z/B negotiation.
 - **MacBinary:** encode on download / decode on upload once
-  resource-fork access and `setInfo` exist (`docs/language-gaps.md`
-  §4–5); the file entry's reserved flag bits mark wrapped files.
+  resource-fork access exists (`setInfo` shipped; the fork-bytes ask is
+  in Clarus's `docs/TODO.md`); the file entry's reserved flag bits mark
+  wrapped files.
