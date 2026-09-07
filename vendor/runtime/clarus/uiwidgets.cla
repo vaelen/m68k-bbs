@@ -26,7 +26,14 @@
 // DrawControls). rt_ui_widget_set_int/get_int's popup SELECTED prop also
 // uses SetControlValue/GetControlValue -- in the produces list (rtUiWidget
 // SetInt/GetInt) even though no popup widget can be CREATED this slice.
-external func UiNewControl(owningWindow: ptr, boundsRect: ptr, controlTitle: ptr, initiallyVisible: bool, initialValue: word, minimumValue: word, maximumValue: word, procId: word, controlReference: int): ptr = trap 0xA954
+external func UiNewControlRaw(owningWindow: ptr, boundsRect: ptr, controlTitle: ptr, initiallyVisible: bool, initialValue: word, minimumValue: word, maximumValue: word, procId: word, controlReference: int): ptr = trap 0xA954
+
+// UiNewControl: allocation-waist wrapper, see ui.cla's UiNewPtr.
+func UiNewControl(owningWindow: ptr, boundsRect: ptr, controlTitle: ptr, initiallyVisible: bool, initialValue: int, minimumValue: int, maximumValue: int, procId: int, controlReference: int): ptr {
+    rtUiJiggleTick()
+    return UiNewControlRaw(owningWindow, boundsRect, controlTitle, initiallyVisible, initialValue, minimumValue, maximumValue, procId, controlReference)
+}
+
 external func UiMoveControl(theControl: ptr, h: word, v: word) = trap 0xA959
 external func UiSizeControl(theControl: ptr, w: word, h: word) = trap 0xA95C
 external func UiHiliteControl(theControl: ptr, hiliteState: word) = trap 0xA95D
@@ -78,7 +85,14 @@ external func UiPenNormal() = trap 0xA89E
 external func UiFrameRoundRect(r: ptr, ovalWidth: word, ovalHeight: word) = trap 0xA8B0
 external func UiDrawString(s: ptr) = trap 0xA884
 external func UiCopyBits(srcBits: ptr, dstBits: ptr, srcRect: ptr, dstRect: ptr, mode: word, maskRgn: ptr) = trap 0xA8EC
-external func UiNewRgn(): ptr = trap 0xA8D8
+external func UiNewRgnRaw(): ptr = trap 0xA8D8
+
+// UiNewRgn: allocation-waist wrapper, see ui.cla's UiNewPtr.
+func UiNewRgn(): ptr {
+    rtUiJiggleTick()
+    return UiNewRgnRaw()
+}
+
 external func UiDisposeRgn(rgn: ptr) = trap 0xA8D9
 external func UiClipRect(r: ptr) = trap 0xA87B
 external func UiSetClip(rgn: ptr) = trap 0xA879
@@ -245,6 +259,18 @@ func rtUiLabelAt(w: RtUiWinst, i: int): ptr {
 
 func rtUiCanvasBufAt(w: RtUiWinst, i: int): ptr {
     return w.canvases + i * rtUiCanvasBufSize
+}
+
+// rtUiCanvasMarkDirty (language-runtime-cleanup, spec 2.1): every drawing
+// op calls this so rtUiFlushBufferedCanvases only blits canvases that
+// changed since their last blit.
+func rtUiCanvasMarkDirty(instV: ptr, wIdx: int) {
+    var buf: RtUiCanvasBuf
+
+    buf = RtUiCanvasBuf(rtUiCanvasBufAt(RtUiWinst(instV), wIdx))
+    if buf.port != ptr(0) {
+        buf.dirty = 1
+    }
 }
 
 // rtUiTeAt/rtUiSetTeAt/rtUiHbarAt/rtUiSetHbarAt (Task 8): same
@@ -441,7 +467,6 @@ func rtUiLayout(inst: ptr) {
     var flushR: bool
     var flushB: bool
     var ctrl: ptr
-    var ctrlMp: ptr
 
     w = RtUiWinst(inst)
     winIdx = w.winIdx
@@ -565,7 +590,6 @@ func rtUiLayout(inst: ptr) {
         } else {
             ctrl = rtUiCtrlAt(w, i)
             if ctrl != ptr(0) {
-                ctrlMp = UiHandleDeref(ctrl)
                 UiMoveControl(ctrl, x, y)
                 UiSizeControl(ctrl, ww, hh)
             }
@@ -818,6 +842,7 @@ func rtUiWidgetSetStr(instV: ptr, wIdx: int, prop: int, s: ptr) {
     var ctrl: ptr
     var te: ptr
     var len: int
+    var hstate: int
 
     w = RtUiWinst(instV)
     winIdx = w.winIdx
@@ -850,7 +875,16 @@ func rtUiWidgetSetStr(instV: ptr, wIdx: int, prop: int, s: ptr) {
         }
         UiTESetText(s + 1, len, te)
         UiTECalText(te)
+        // compiler-cleanup: InvalRect allocates (update-region growth) with
+        // the TERec's master pointer already evaluated as its argument, so
+        // the relocation window is INSIDE the trap -- lock te across the
+        // call. TECalText (which CAN resize the TERec, growing its
+        // lineStarts array) stays OUTSIDE the lock, deliberately. Prior
+        // state restored, not a bare HUnlock.
+        hstate = UiHGetState(te)
+        UiHLock(te)
         UiInvalRect(UiHandleDeref(te) + rtUiTeViewRect)
+        UiHSetState(te, hstate)
         rtUiTeMutated(instV, wIdx, false) // PROGRAMMATIC set -- no trace/event
     }
     UiSetPort(savedPort)
@@ -931,6 +965,7 @@ func rtUiWidgetSetText(instV: ptr, wIdx: int, t: ptr) {
     var viewTop: int
     var viewBottom: int
     var eraseRect: ptr
+    var hstate: int
 
     w = RtUiWinst(instV)
     kind = uidWidgetKind(w.winIdx, wIdx)
@@ -952,6 +987,20 @@ func rtUiWidgetSetText(instV: ptr, wIdx: int, t: ptr) {
     UiTESetText(buf, copied, te)
     UiDisposePtr(buf)
     UiTECalText(te)
+    // compiler-cleanup: te's master pointer is handed INTO InvalRect here
+    // and, after rtUiTeMutated's own clamp/scroll sync, into TEUpdate and
+    // ValidRect below (teMp) -- every one of those allocates with the
+    // pointer already evaluated as an argument, the shape a re-derive
+    // before the call cannot fix. Lock the TERec for the whole region.
+    // Safe: the TERec is resized only when its lineStarts array grows, and
+    // the sole recalc in reach is rtUiTeClamp's TESetText, which cannot
+    // fire here (a textview's cap IS rtUiTeMax and rtTextToBytes above
+    // already clamped to it, so the clamp returns early). TECalText -- the
+    // one call that really does recalc -- is deliberately left ABOVE the
+    // lock. TextEdit's text lives in its own hText handle, so TEUpdate is
+    // unaffected. Prior state restored, not a bare HUnlock.
+    hstate = UiHGetState(te)
+    UiHLock(te)
     UiInvalRect(UiHandleDeref(te) + rtUiTeViewRect)
     rtUiTeMutated(instV, wIdx, false) // PROGRAMMATIC set -- no trace/event
     // Live paint (live-log phase): draw the fresh content NOW. The
@@ -982,13 +1031,14 @@ func rtUiWidgetSetText(instV: ptr, wIdx: int, t: ptr) {
     }
     if contentBottom < viewBottom {
         eraseRect = UiNewPtr(rtUiRectSize)
-        teMp = UiHandleDeref(te) // AFTER the NewPtr -- it can relocate te
+        teMp = UiHandleDeref(te) // re-derived for the read-after-alloc habit; te is locked above (UiHLock) and cannot move here
         UiSetRect(eraseRect, peekw(teMp + rtUiTeViewRect + 2), contentBottom, peekw(teMp + rtUiTeViewRect + 6), viewBottom)
         UiEraseRect(eraseRect)
         UiDisposePtr(eraseRect)
     }
     UiTEUpdate(teMp + rtUiTeViewRect, te)
     UiValidRect(teMp + rtUiTeViewRect)
+    UiHSetState(te, hstate) // compiler-cleanup: end of the locked region
     UiSetPort(savedPort)
 }
 
@@ -1042,6 +1092,12 @@ func rtUiWidgetScrollToEnd(instV: ptr, wIdx: int) {
     maxScroll = contentH - viewH
     if maxScroll < 0 {
         maxScroll = 0
+    }
+    // compiler-cleanup: same 16-bit ceiling as rtUiTeScrollSync's own
+    // clamp (uitext.cla) -- this function re-derives maxScroll itself
+    // instead of reading the synced value, so it needs its own copy.
+    if maxScroll > 32767 {
+        maxScroll = 32767
     }
     offset = rtUiPeekSw(teMp + rtUiTeViewRect + 0) - rtUiPeekSw(teMp + rtUiTeDestRect + 0)
     if offset < maxScroll {
@@ -1109,6 +1165,7 @@ func rtUiWidgetSetInt(instV: ptr, wIdx: int, prop: int, v: int) {
     var count: int
     var sel: int
     var lh: ptr
+    var hstate: int
     var tableOff: int
     var rowsIdx: int
     var rowsAddr: ptr
@@ -1152,7 +1209,14 @@ func rtUiWidgetSetInt(instV: ptr, wIdx: int, prop: int, v: int) {
             row = count - 1
         }
         rtUiTableSelectExclusive(lh, row)
+        // compiler-cleanup: InvalRect allocates (update-region growth) with
+        // the ListRec master pointer already evaluated as its argument --
+        // the relocation window is INSIDE the trap. Lock lh across the
+        // call; prior state restored, not a bare HUnlock.
+        hstate = UiHGetState(lh)
+        UiHLock(lh)
         UiInvalRect(UiHandleDeref(lh) + rtUiListRView)
+        UiHSetState(lh, hstate)
         rtUiTraceSetInt(uidWinName(winIdx), uidWidgetName(winIdx, wIdx), prop, row)
     }
     UiSetPort(savedPort)
@@ -1295,6 +1359,10 @@ func rtUiCanvasMake(cb: ptr, ww: int, hh: int) {
     UiSetPortBits(bm)
     UiPortSize(w2, h2)
     UiSetOrigin(0, 0)
+    // language-runtime-cleanup: a fresh canvas must blit once so the
+    // window shows its cleared content even if nothing draws into it.
+    buf.dirty = 1
+    buf.blits = 0
 }
 
 func rtUiCanvasReallocAll(inst: ptr) {
@@ -1322,11 +1390,20 @@ func rtUiCanvasReallocAll(inst: ptr) {
     }
 }
 
-// rtUiFlushBufferedCanvases (rt_ui.c:2172-2187): blits every buffered
-// canvas's offscreen content to its window, once per rtUiRun iteration
-// (Ch11's "single copy when the current handler or timer returns to the
-// event loop") and also covers redrawing after an updateEvt.
-func rtUiFlushBufferedCanvases(inst: ptr) {
+// rtUiFlushBufferedCanvases (heritage: rt_ui.c:2172-2187): blits every
+// buffered canvas's offscreen content to its window, once per rtUiRun
+// iteration (Ch11's "single copy when the current handler or timer
+// returns to the event loop") and also covers redrawing after an
+// updateEvt.
+//
+// language-runtime-cleanup (spec 2.1): the blit is now DIRTY-GATED --
+// only a canvas some drawing op touched since its last blit is copied.
+// `force` overrides that for the updateEvt path (ui.cla's
+// rtUiHandleUpdate), where the window's own pixels were just erased by
+// the Window Manager and every canvas must repaint whether or not the
+// program drew into it. The per-pass caller (rtUiFlushAllBuffered)
+// passes false, so a static canvas costs nothing per event-loop pass.
+func rtUiFlushBufferedCanvases(inst: ptr, force: bool) {
     var w: RtUiWinst
     var winIdx: int
     var n: int
@@ -1343,7 +1420,7 @@ func rtUiFlushBufferedCanvases(inst: ptr) {
     i = 0
     while i < n {
         buf = RtUiCanvasBuf(rtUiCanvasBufAt(w, i))
-        if buf.port != ptr(0) {
+        if buf.port != ptr(0) and (force or buf.dirty != 0) {
             UiSetPort(w.wp)
             bm = rtUiBitMapFill(buf)
             // dstBits = &((GrafPtr)wp)->portBits -- portBits is GrafPort's
@@ -1353,6 +1430,8 @@ func rtUiFlushBufferedCanvases(inst: ptr) {
             // srcRect = &cb->bits.bounds = the scratch BitMap's own
             // bounds sub-field, offset 6 within its 14-byte layout.
             UiCopyBits(bm, w.wp + 2, bm + 6, rtUiRectAt(w, i), 0, ptr(0))
+            buf.dirty = 0
+            buf.blits = buf.blits + 1
         }
         i = i + 1
     }
@@ -1489,11 +1568,17 @@ func rtUiGrayPatsGet(): ptr {
     return p
 }
 
+// rtUiCanvasPattern marks the canvas dirty even though setting the fill
+// level changes no pixels by itself: the dirty flag is a "may differ from
+// what is on screen" flag, and over-blitting is the safe direction (a
+// missed blit shows stale pixels; a spare one costs one CopyBits). One
+// extra blit per pattern() call, deliberately.
 func rtUiCanvasPattern(instV: ptr, wIdx: int, level: int) {
     var w: RtUiWinst
     var buf: RtUiCanvasBuf
     var lv: int
 
+    rtUiCanvasMarkDirty(instV, wIdx)
     lv = level
     if lv < 0 {
         lv = 0
@@ -1512,6 +1597,7 @@ func rtUiCanvasClear(instV: ptr, wIdx: int) {
     var buf: RtUiCanvasBuf
     var scratch: ptr
 
+    rtUiCanvasMarkDirty(instV, wIdx)
     w = RtUiWinst(instV)
     t = rtUiCanvasBegin(instV, wIdx)
     buf = RtUiCanvasBuf(rtUiCanvasBufAt(w, wIdx))
@@ -1529,6 +1615,7 @@ func rtUiCanvasClear(instV: ptr, wIdx: int) {
 func rtUiCanvasLine(instV: ptr, wIdx: int, x0: int, y0: int, x1: int, y1: int) {
     var t: RtUiCanvasTarget
 
+    rtUiCanvasMarkDirty(instV, wIdx)
     t = rtUiCanvasBegin(instV, wIdx)
     UiMoveTo(x0 + t.dx, y0 + t.dy)
     UiLineTo(x1 + t.dx, y1 + t.dy)
@@ -1542,6 +1629,7 @@ func rtUiCanvasRect(instV: ptr, wIdx: int, x: int, y: int, ww: int, hh: int, fil
     var r: ptr
     var pats: ptr
 
+    rtUiCanvasMarkDirty(instV, wIdx)
     t = rtUiCanvasBegin(instV, wIdx)
     w = RtUiWinst(instV)
     r = UiNewPtr(rtUiRectSize)
@@ -1564,6 +1652,7 @@ func rtUiCanvasFillCircle(instV: ptr, wIdx: int, x: int, y: int, radius: int) {
     var box: ptr
     var pats: ptr
 
+    rtUiCanvasMarkDirty(instV, wIdx)
     t = rtUiCanvasBegin(instV, wIdx)
     w = RtUiWinst(instV)
     box = UiNewPtr(rtUiRectSize)
@@ -1579,6 +1668,7 @@ func rtUiCanvasCircle(instV: ptr, wIdx: int, x: int, y: int, radius: int) {
     var t: RtUiCanvasTarget
     var box: ptr
 
+    rtUiCanvasMarkDirty(instV, wIdx)
     t = rtUiCanvasBegin(instV, wIdx)
     box = UiNewPtr(rtUiRectSize)
     UiSetRect(box, x + t.dx - radius, y + t.dy - radius, x + t.dx + radius, y + t.dy + radius)
@@ -1590,6 +1680,7 @@ func rtUiCanvasCircle(instV: ptr, wIdx: int, x: int, y: int, radius: int) {
 func rtUiCanvasDrawText(instV: ptr, wIdx: int, x: int, y: int, s: ptr) {
     var t: RtUiCanvasTarget
 
+    rtUiCanvasMarkDirty(instV, wIdx)
     t = rtUiCanvasBegin(instV, wIdx)
     UiMoveTo(x + t.dx, y + t.dy)
     UiDrawString(s)

@@ -374,16 +374,73 @@ int32_t rt_ext_TickCount(void) {
     return (int32_t)(uint32_t)((uint32_t)ts.tv_sec * 60u + (uint32_t)(ts.tv_nsec / 16666667L));
 }
 
+/* rt_ext_EveryDue: the host lane's `every N ticks` arming clock (AppleTalk
+ * phase Task 5), called once per idx per pass of cpEmitMain's pump loop by
+ * lowering's synthesized clar_every_pump(). Returns 1 exactly on the
+ * passes where timer idx has come due, re-arming it for the next period.
+ *
+ * The first call for an idx only ARMS it (returns 0), so a timer's first
+ * fire is one full period after the program reaches the pump loop -- the
+ * Mac lane's own behavior (rt_ui_every_desc[]'s deadline is likewise set
+ * at startup, not fired at it).
+ *
+ * The deadline compare is the Toolbox's own signed-difference idiom, done
+ * through uint32_t exactly the way rt_ext_TickCount above builds its
+ * result: unsigned subtraction wraps by definition, so the comparison
+ * stays correct across the 2^32-tick (~2.3 year) wrap. The two ARMINGS
+ * go through uint32_t for the same reason -- `now + periodTicks` as
+ * signed int32_t is undefined behaviour within periodTicks ticks of the
+ * wrap, and the wrapped value is exactly what the compare below wants.
+ * A missed period is dropped, not caught up: the next deadline is measured
+ * from now, so a slow handler cannot build a backlog of instant refires.
+ *
+ * 16 slots, a deliberate ceiling: `every` blocks are top-level
+ * declarations and no plausible program writes more than a handful, so a
+ * fixed array beats any allocation here. A program past the ceiling gets
+ * no timer for the extra slots (the range guard returns 0) rather than
+ * corrupting memory -- raise RT_EVERY_MAX if one ever needs 17. */
+#define RT_EVERY_MAX 16
+
+int32_t rt_ext_EveryDue(int32_t idx, int32_t periodTicks) {
+    static int32_t due[RT_EVERY_MAX];
+    static unsigned char armed[RT_EVERY_MAX];
+    int32_t now;
+
+    if (idx < 0 || idx >= RT_EVERY_MAX) {
+        return 0;
+    }
+    if (periodTicks < 1) {
+        periodTicks = 1;
+    }
+    now = rt_ext_TickCount();
+    if (!armed[idx]) {
+        armed[idx] = 1;
+        due[idx] = (int32_t)((uint32_t)now + (uint32_t)periodTicks);
+        return 0;
+    }
+    if ((int32_t)((uint32_t)now - (uint32_t)due[idx]) >= 0) {
+        due[idx] = (int32_t)((uint32_t)now + (uint32_t)periodTicks);
+        return 1;
+    }
+    return 0;
+}
+
 /* Mac epoch (1904-01-01 00:00:00 LOCAL) vs Unix epoch (1970-01-01 UTC):
  * 24,107 days. The Mac clock stores local-time seconds, so the host's
  * current UTC offset (tm_gmtoff) is applied. */
 #define RT_MAC_EPOCH_DELTA 2082844800UL
 
-static uint32_t rt_dt_now_mac(void) {
-    time_t now = time(NULL);
+/* rt_unix_to_mac_secs: Unix seconds -> Mac-epoch LOCAL seconds (the Mac
+ * clock is local time). Shared by rt_dt_now_mac ("now") and rt_fileh.inc's
+ * rt_fh_mac_time (a file's stat times). */
+static uint32_t rt_unix_to_mac_secs(time_t t) {
     struct tm tmv;
-    localtime_r(&now, &tmv);
-    return (uint32_t)((unsigned long)now + (unsigned long)tmv.tm_gmtoff + RT_MAC_EPOCH_DELTA);
+    localtime_r(&t, &tmv);
+    return (uint32_t)((unsigned long)t + (unsigned long)tmv.tm_gmtoff + RT_MAC_EPOCH_DELTA);
+}
+
+static uint32_t rt_dt_now_mac(void) {
+    return rt_unix_to_mac_secs(time(NULL));
 }
 
 /* rt_ext_DtReadDateTime: C-lane twin of _ReadDateTime (0xA039) -- writes

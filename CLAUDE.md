@@ -6,8 +6,9 @@ callers over the Mac's modem serial port.
 ## Language: Clarus
 
 Clarus is a small, compiled, event-driven language for native System 6/7
-Mac apps. The normative spec is `docs/clarus-language-reference.md`
-(symlink into the compiler repo, `clarus-src/` → `~/repos/clarus`).
+Mac apps. The normative spec is `docs/clarus-language-reference.md`, a pinned
+copy of the compiler repo's (`clarus-src/` → `~/repos/clarus`) matching
+the pinned toolchain below.
 
 Key points:
 
@@ -48,8 +49,10 @@ while the compiler repo is mid-change:
   runtime `.cla` sources, host C runtime, and toolbox catalog
 
 Refresh the pin deliberately (all pieces together — a pinned binary with
-a newer runtime can mismatch):
-`cp clarus-src/build-run/clarusc bin/clarusc && cp clarus-src/runtime/clarus/*.cla vendor/runtime/clarus/ && cp clarus-src/runtime/host/rt* vendor/runtime/host/ && cp clarus-src/toolbox/*.cla vendor/toolbox/`
+a newer runtime can mismatch). `build-run/clarusc` is a cached bootstrap
+that can lag `clarusc/clarusc.c` (symptom: `undefined: rt...` in a
+vendored runtime file), so rebuild it first:
+`(cd clarus-src && cc -O1 -Iruntime/host -o build-run/clarusc clarusc/clarusc.c runtime/host/rt.c) && cp clarus-src/build-run/clarusc bin/clarusc && cp clarus-src/runtime/clarus/*.cla vendor/runtime/clarus/ && cp clarus-src/runtime/host/rt* vendor/runtime/host/ && cp clarus-src/toolbox/*.cla vendor/toolbox/ && cp clarus-src/docs/clarus-language-reference.md docs/`
 
 ```sh
 bin/clarusc --rtdir vendor/runtime/clarus/ bbs.cla   # check only

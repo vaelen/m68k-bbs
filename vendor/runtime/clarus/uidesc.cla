@@ -33,9 +33,11 @@
 // accessors, needed by uitable.cla's table/popup code:
 //   Header (11 int32 @ 0,4,..,40): magic, version, nWins, winsOff, nMenus,
 //     menusOff, nMenuHandlers, mhOff, nEvery, everyOff, appOff.
-//   Window (12 int32, 48 bytes, base = winsOff + winIdx*48): nameOff,
+//   Window (13 int32, 52 bytes, base = winsOff + winIdx*52): nameOff,
 //     titleOff, w, h, resizable, minW, minH, nWidgets, widgetsOff,
-//     stateSize, handlerMask, formOff (-1 if the window has no `form for T`).
+//     stateSize, handlerMask, formOff (-1 if the window has no `form for T`),
+//     menuMask (bit i = declared menu i is claimed by this window type via
+//     `menus:`; 0 for a window with no such clause).
 //   Widget (13 int32, 52 bytes, base = widgetsOff + widgetIdx*52): kind,
 //     nameOff, captionOff, atKind, x, yIsBottom, y, widthIsFill, width,
 //     fillBoth, flags, eventMask, tableOff (-1 unless kind == table).
@@ -227,7 +229,7 @@
 // doubles as the C reference's own "is this canvas buffered and
 // allocated" flag (`ptr(0)` for every non-canvas widget and every
 // unbuffered canvas) -- same convention, ported as-is. `rtUiCanvasBufSize`
-// (36 bytes = 9 fields x 4, see above for why int/ptr fields are exactly 4
+// (44 bytes = 11 fields x 4, see above for why int/ptr fields are exactly 4
 // bytes each) is a STRIDE for indexing `canvases[i]`, not an allocation
 // safety margin like rtUiWinstBoxSize -- it must stay EXACT (no slack),
 // or every `canvases + i*rtUiCanvasBufSize` computation later steps make
@@ -302,11 +304,11 @@ func uidAppOff(): int {
 }
 
 // ================================================================
-// Window (12 int32, 48 bytes/entry, base = winsOff + winIdx*48)
+// Window (13 int32, 52 bytes/entry, base = winsOff + winIdx*52)
 // ================================================================
 
 func uidWinBase(winIdx: int): ptr {
-    return UiProgDesc() + uidWinsOff() + winIdx * 48
+    return UiProgDesc() + uidWinsOff() + winIdx * 52
 }
 
 func uidWinNameOff(winIdx: int): int {
@@ -363,6 +365,14 @@ func uidWinHandlerMask(winIdx: int): int {
 
 func uidWinFormOff(winIdx: int): int {
     return uidI32(uidWinBase(winIdx) + 44)
+}
+
+// uidWinMenuMask (language-runtime-cleanup, spec 5.3): the set of menus
+// this window TYPE claims via `menus:`, as a bitmask over whole-program
+// menu declaration indices. rtUiSyncMenuBar ORs the front window's mask
+// onto the app-scope set.
+func uidWinMenuMask(winIdx: int): int {
+    return uidI32(uidWinBase(winIdx) + 48)
 }
 
 // ================================================================
@@ -868,13 +878,15 @@ overlay record RtUiCanvasBuf {
     bitsBoundsRight: int
     pixels: ptr                  // the offscreen pixel data block
     patLevel: int                  // gray-pattern animation level
+    dirty: int                     // language-runtime-cleanup: 1 = drawn since last blit
+    blits: int                     // language-runtime-cleanup: blit counter (UiTestCanvasBlits)
 }
 
 // rtUiCanvasBufSize is the per-element STRIDE for indexing an
 // RtUiWinst.canvases array (`canvases + i*rtUiCanvasBufSize`) -- unlike
-// rtUiWinstBoxSize above, this MUST stay exact (9 fields x 4 = 36, no
+// rtUiWinstBoxSize above, this MUST stay exact (11 fields x 4 = 44, no
 // slack): padding it would misalign every element after the first.
-const rtUiCanvasBufSize: int = 36
+const rtUiCanvasBufSize: int = 44
 
 // rtUiRectSize is the per-element stride for an RtUiWinst.rects array (a
 // real Toolbox Rect, 8 bytes: top/left/bottom/right, each a 16-bit SHORT

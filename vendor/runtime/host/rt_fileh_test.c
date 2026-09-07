@@ -26,11 +26,13 @@
 #include "rt.h"
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
 
 extern int32_t rt_ext_FhHOpen(const uint8_t *path);
+extern int32_t rt_ext_FhHOpenRF(const uint8_t *path);
 extern int32_t rt_ext_FhHCreate(const uint8_t *path);
 extern int32_t rt_ext_FhHReadAt(int32_t h, int32_t pos, void *p, int32_t n);
 extern int32_t rt_ext_FhHWriteAt(int32_t h, int32_t pos, void *p, int32_t n);
@@ -356,6 +358,140 @@ static void test_set_times(void) {
     unlink((const char *)(path + 1));
 }
 
+/* test_long_names: the over-long-name guards (language-runtime-cleanup
+ * Task 4). Only FhHListNext's is reachable through the public API -- a
+ * Pascal Str255 argument caps `path` and `newName` at 255 bytes each, and
+ * FhHRename/FhHMove's target[512] holds 255 + '/' + 255 + NUL exactly, so
+ * their snprintf guards can never fire from here and are defensive only.
+ * readdir() by contrast hands back whatever the filesystem stored: APFS
+ * counts its 255-name limit in CHARACTERS, so 150 two-byte UTF-8 glyphs
+ * make a legal 300-BYTE dirent that cannot fit a Str255. On a filesystem
+ * that counts bytes (ext4, HFS+) the setup fopen() fails and this case
+ * reports itself skipped instead of failing. */
+static void test_long_names(void) {
+    uint8_t dir[256], buf[256];
+    char name[512];
+    char path[1024];
+    FILE *f;
+    int i;
+    int32_t got;
+
+    mkpath(dir, "fileh_test_longname");
+    CHECK(rt_ext_FhHMakeDir(dir) == 0, "makeDir(longname dir) should succeed");
+
+    for (i = 0; i < 150; i++) {          /* U+0416, 2 bytes, no NFD form */
+        name[i * 2] = (char)0xD0;
+        name[i * 2 + 1] = (char)0x96;
+    }
+    name[300] = '\0';
+    snprintf(path, sizeof path, "fileh_test_longname/%s", name);
+
+    f = fopen(path, "w");
+    if (!f) {
+        fprintf(stderr, "SKIP: this filesystem rejects a 300-byte name (%s)\n", strerror(errno));
+        rmdir("fileh_test_longname");
+        return;
+    }
+    fclose(f);
+
+    CHECK(rt_ext_FhHListBegin(dir) == 0, "listBegin(longname dir) should succeed");
+    got = rt_ext_FhHListNext(buf);
+    CHECK(got == -1, "listNext should fail on an entry too long for a Str255");
+    CHECK(rt_ext_FhHErrno() == ENAMETOOLONG, "FhHErrno should report ENAMETOOLONG for an over-long entry");
+    rt_ext_FhHListEnd();
+
+    unlink(path);
+    rmdir("fileh_test_longname");
+}
+
+/* test_openrf: a data-fork file gets a resource fork written, reopened,
+ * and read back; the data fork is untouched. Runs twice on macOS -- once
+ * through the native fork, once forced onto the AppleDouble sidecar -- and
+ * once elsewhere. */
+static void test_openrf_once(const char *label) {
+    uint8_t path[256]; int32_t h; unsigned char rs[4] = "RSRC", buf[8]; int32_t got;
+    mkpath(path, "fileh_test_rf.dat");
+    h = rt_ext_FhHCreate(path);
+    CHECK(h != 0, label);
+    CHECK(rt_ext_FhHWriteAt(h, 0, (void *)"data!", 5) == 0, label);
+    rt_ext_FhHClose(h);
+    h = rt_ext_FhHOpenRF(path);
+    CHECK(h != 0, label);
+    CHECK(rt_ext_FhHWriteAt(h, 0, rs, 4) == 0, label);
+    CHECK(rt_ext_FhHFlush(h) == 0, label);
+    rt_ext_FhHClose(h);
+    h = rt_ext_FhHOpenRF(path);
+    CHECK(h != 0, label);
+    CHECK(rt_ext_FhHSize(h) == 4, label);
+    memset(buf, 0, sizeof buf);
+    got = rt_ext_FhHReadAt(h, 0, buf, 4);
+    CHECK(got == 4 && memcmp(buf, rs, 4) == 0, label);
+    rt_ext_FhHClose(h);
+    h = rt_ext_FhHOpen(path);
+    CHECK(h != 0 && rt_ext_FhHSize(h) == 5, label);
+    rt_ext_FhHClose(h);
+    CHECK(rt_ext_FhHOpenRF((const uint8_t *)"\x07no.such") == 0, "openRF on a missing file fails");
+    unlink("fileh_test_rf.dat"); unlink("._fileh_test_rf.dat");
+}
+static void test_openrf(void) {
+    test_openrf_once("openRF native");
+    setenv("CLARUS_FORCE_APPLEDOUBLE", "1", 1);
+    test_openrf_once("openRF sidecar");
+    { FILE *f; unsigned char m[4]; uint8_t path[256]; int32_t h;
+      mkpath(path, "fileh_test_rf.dat"); h = rt_ext_FhHCreate(path); rt_ext_FhHClose(h);
+      h = rt_ext_FhHOpenRF(path); rt_ext_FhHWriteAt(h, 0, (void *)"x", 1); rt_ext_FhHClose(h);
+      f = fopen("._fileh_test_rf.dat", "rb"); CHECK(f != NULL, "sidecar written");
+      if (f) { CHECK(fread(m, 1, 4, f) == 4 && m[0] == 0 && m[1] == 5 && m[2] == 0x16 && m[3] == 7, "AppleDouble magic"); fclose(f); }
+      unlink("fileh_test_rf.dat"); unlink("._fileh_test_rf.dat"); }
+    /* spec %6 (native-array-return-and-fileh-guards): TMPDIR is honoured
+     * for the unlinked temp that backs a sidecar fork. The temp is
+     * unlinked the moment it is created, so its location is observable
+     * only through the failure a missing directory causes. */
+    { const char *old = getenv("TMPDIR"); char saved[1024]; int hadOld = old != NULL;
+      uint8_t path[256]; int32_t h; FILE *f; unsigned char m[4]; long sz;
+      if (hadOld) { strncpy(saved, old, sizeof saved - 1); saved[sizeof saved - 1] = 0; }
+      mkpath(path, "fileh_test_rf.dat"); h = rt_ext_FhHCreate(path); rt_ext_FhHClose(h);
+      setenv("TMPDIR", "./no-such-tmpdir-for-clarus", 1);
+      h = rt_ext_FhHOpenRF(path);
+      CHECK(h == 0 && rt_ext_FhHErrno() == ENOENT, "TMPDIR honoured: missing dir fails with ENOENT");
+      if (h) rt_ext_FhHClose(h);
+      setenv("TMPDIR", ".", 1);
+      h = rt_ext_FhHOpenRF(path);
+      CHECK(h != 0, "TMPDIR honoured: cwd works");
+      /* flush is the durability barrier: the sidecar is complete on disk
+       * BEFORE close, and its size is header (82) + fork (4). */
+      CHECK(rt_ext_FhHWriteAt(h, 0, (void *)"FLSH", 4) == 0, "flush barrier: write");
+      CHECK(rt_ext_FhHFlush(h) == 0, "flush barrier: flush");
+      f = fopen("._fileh_test_rf.dat", "rb");
+      CHECK(f != NULL, "flush barrier: sidecar exists before close");
+      if (f) { fseek(f, 0, SEEK_END); sz = ftell(f); fseek(f, 0, SEEK_SET);
+               CHECK(sz == 86, "flush barrier: sidecar size 82+4 before close");
+               CHECK(fread(m, 1, 4, f) == 4 && m[0] == 0 && m[1] == 5 && m[2] == 0x16 && m[3] == 7, "flush barrier: AppleDouble magic before close");
+               fclose(f); }
+      rt_ext_FhHClose(h);
+      /* A failed write-back at close is recorded in rt_fh_errno: make the
+       * sidecar's directory unwritable between open and close (runs as an
+       * ordinary user, so fopen("wb") fails with EACCES). */
+      { uint8_t sub[256]; int32_t h2;
+        mkdir("rf_ro_dir", 0755);
+        mkpath(sub, "rf_ro_dir/f.dat"); h2 = rt_ext_FhHCreate(sub); rt_ext_FhHClose(h2);
+        h2 = rt_ext_FhHOpenRF(sub);
+        CHECK(h2 != 0, "close errno: openRF");
+        CHECK(rt_ext_FhHWriteAt(h2, 0, (void *)"Z", 1) == 0, "close errno: write");
+        if (geteuid() != 0) {
+          CHECK(chmod("rf_ro_dir", 0555) == 0, "close errno: chmod ro");
+          rt_ext_FhHClose(h2);
+          CHECK(rt_ext_FhHErrno() == EACCES, "close errno: EACCES recorded after a failed write-back");
+          chmod("rf_ro_dir", 0755);
+        } else {
+          rt_ext_FhHClose(h2);
+        }
+        unlink("rf_ro_dir/f.dat"); unlink("rf_ro_dir/._f.dat"); rmdir("rf_ro_dir"); }
+      if (hadOld) setenv("TMPDIR", saved, 1); else unsetenv("TMPDIR");
+      unlink("fileh_test_rf.dat"); unlink("._fileh_test_rf.dat"); }
+    unsetenv("CLARUS_FORCE_APPLEDOUBLE");
+}
+
 int main(void) {
     test_round_trip();
     test_open_failure();
@@ -366,6 +502,8 @@ int main(void) {
     test_rename_move();
     test_delete_dir();
     test_set_times();
+    test_long_names();
+    test_openrf();
     if (failed) {
         fprintf(stderr, "FAILED\n");
         return 1;

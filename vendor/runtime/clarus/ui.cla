@@ -197,8 +197,23 @@ func UiNewPtr(size: int): ptr {
     return UiNewPtrRaw(size)
 }
 
-external func UiNewPtrClear(size: int): ptr = trap 0xA31E reg
-external func UiNewHandleClear(size: int): ptr = trap 0xA322 reg
+external func UiNewPtrClearRaw(size: int): ptr = trap 0xA31E reg
+
+// UiNewPtrClear/UiNewHandleClear: same allocation-waist wrapper shape as
+// UiNewPtr above (language-runtime-cleanup Task 2 widened the waist from
+// UiNewPtr alone to every allocating Toolbox wrapper in the runtime).
+func UiNewPtrClear(size: int): ptr {
+    rtUiJiggleTick()
+    return UiNewPtrClearRaw(size)
+}
+
+external func UiNewHandleClearRaw(size: int): ptr = trap 0xA322 reg
+
+func UiNewHandleClear(size: int): ptr {
+    rtUiJiggleTick()
+    return UiNewHandleClearRaw(size)
+}
+
 external func UiDisposeHandle(h: ptr) = trap 0xA023 reg
 external func UiDisposePtr(p: ptr) = trap 0xA01F reg
 external func UiHLock(h: ptr) = trap 0xA029 reg
@@ -225,7 +240,14 @@ external func UiSetPort(port: ptr) = trap 0xA873
 // lane and rt_ui_script_click (:2760-2782, 4102-4173, DrawGrowIcon/
 // FindWindow).
 external func UiFrontWindow(): ptr = trap 0xA924
-external func UiNewWindow(wStorage: ptr, boundsRect: ptr, title: ptr, visible: bool, procId: word, behind: ptr, goAwayFlag: bool, refCon: int): ptr = trap 0xA913
+external func UiNewWindowRaw(wStorage: ptr, boundsRect: ptr, title: ptr, visible: bool, procId: word, behind: ptr, goAwayFlag: bool, refCon: int): ptr = trap 0xA913
+
+// UiNewWindow: allocation-waist wrapper, see UiNewPtr above.
+func UiNewWindow(wStorage: ptr, boundsRect: ptr, title: ptr, visible: bool, procId: int, behind: ptr, goAwayFlag: bool, refCon: int): ptr {
+    rtUiJiggleTick()
+    return UiNewWindowRaw(wStorage, boundsRect, title, visible, procId, behind, goAwayFlag, refCon)
+}
+
 external func UiShowWindow(theWindow: ptr) = trap 0xA915
 external func UiDisposeWindow(theWindow: ptr) = trap 0xA914
 external func UiSetWRefCon(theWindow: ptr, data: int) = trap 0xA918
@@ -254,7 +276,14 @@ external func UiFindWindow(pt: int, wpOut: ptr): word = trap 0xA92C
 // popup KIND itself being out of scope), rt_ui_table_draw_field/friends'
 // CountMItems use is out of scope (table kind), but rt_ui_widget_get_int's
 // popup SELECTED-count use (:5339-5723, in the produces list) needs it.
-external func UiNewMenu(menuId: word, menuTitle: ptr): ptr = trap 0xA931
+external func UiNewMenuRaw(menuId: word, menuTitle: ptr): ptr = trap 0xA931
+
+// UiNewMenu: allocation-waist wrapper, see UiNewPtr above.
+func UiNewMenu(menuId: int, menuTitle: ptr): ptr {
+    rtUiJiggleTick()
+    return UiNewMenuRaw(menuId, menuTitle)
+}
+
 external func UiDisposeMenu(theMenu: ptr) = trap 0xA932
 external func UiAppendMenu(theMenu: ptr, data: ptr) = trap 0xA933
 external func UiInsertMenu(theMenu: ptr, beforeId: word) = trap 0xA935
@@ -576,6 +605,15 @@ const rtUiTitlebarH: int = 19
 // ----
 var rtUiMenuHandlesArr: ptr = ptr(0)
 var rtUiNMenusVal: int = 0
+// rtUiClaimedMask/rtUiBarMask (language-runtime-cleanup, spec 5.2): the
+// set of menus some window type claims via `menus:` (OR of every window
+// descriptor's own menuMask, computed once in rtUiBuildMenus), and the
+// set currently INSERTED in the bar. Both are bitmasks over whole-program
+// menu declaration indices; a program with no `menus:` clause anywhere
+// leaves rtUiClaimedMask 0 and rtUiBarMask "every menu", exactly today's
+// bar.
+var rtUiClaimedMask: int = 0
+var rtUiBarMask: int = 0
 var rtUiAppleMenuHandle: ptr = ptr(0)
 var rtUiStdEditMenuIdx: int = -1
 var rtUiSys7: bool = false
@@ -1137,7 +1175,6 @@ func rtUiLoWord(v: int): int {
 // with blob-sourced name bytes) still need the manual `ptr`+pokeb/
 // BlockMoveData approach -- see rtUiBuildAppleMenu.
 // ================================================================
-external func UiNewMenuStr(menuId: word, menuTitle: string): ptr = trap 0xA931
 external func UiAppendMenuStr(theMenu: ptr, data: string) = trap 0xA933
 
 func rtUiAboutPrefixPtr(): ptr {
@@ -1206,7 +1243,7 @@ func rtUiBuildAppleMenu() {
     UiInsertMenu(rtUiAppleMenuHandle, 0)
 }
 
-// rtUiAboutParam (new). Substitutes the cached empty Pascal string for
+// rtUiAboutParam. Substitutes the cached empty Pascal string for
 // an absent `uidApp*` property (each getter returns `ptr(0)` when the
 // `app` section omits that field) so UiParamText always gets a real
 // Pascal-string pointer.
@@ -1217,7 +1254,7 @@ func rtUiAboutParam(p: ptr): ptr {
     return p
 }
 
-// rtUiAboutAlert (new). Real About display for an app-declared program:
+// rtUiAboutAlert. Real About display for an app-declared program:
 // ALRT/DITL 129's ParamText slots are ^0=name, ^1=version, ^2=author,
 // ^3=about (see clarusc/cg68k.cla:12386-12393 / scripts/build-mac.sh:103-110
 // for where 129 is emitted on each lane).
@@ -1258,6 +1295,7 @@ func rtUiAppleSelect(itemNum: int) {
 // rtUiBuildMenus (rt_ui.c:2308-2373).
 func rtUiBuildMenus() {
     var nMenus: int
+    var nWins: int
     var i: int
     var j: int
     var mh: ptr
@@ -1272,6 +1310,19 @@ func rtUiBuildMenus() {
         rtUiMenuHandlesArr = UiNewPtrClear(nMenus * 4)
     } else {
         rtUiMenuHandlesArr = ptr(0)
+    }
+    // Claimed set first (spec 5.2): a menu some window type names in its
+    // `menus:` clause is created here like any other, but is NOT inserted
+    // into the bar -- rtUiSyncMenuBar puts it there while a claiming
+    // window is frontmost. With no `menus:` clause anywhere the mask is 0
+    // and every menu is inserted, exactly as before.
+    rtUiClaimedMask = 0
+    rtUiBarMask = 0
+    nWins = uidNWins()
+    i = 0
+    while i < nWins {
+        rtUiClaimedMask = rtUiClaimedMask | uidWinMenuMask(i)
+        i = i + 1
     }
     i = 0
     while i < nMenus {
@@ -1309,10 +1360,70 @@ func rtUiBuildMenus() {
                 j = j + 1
             }
         }
-        UiInsertMenu(mh, 0)
+        if (rtUiClaimedMask & (1 << i)) == 0 {
+            UiInsertMenu(mh, 0)
+            rtUiBarMask = rtUiBarMask | (1 << i)
+        }
         pokel(rtUiMenuHandlesArr + i * 4, int(mh))
         i = i + 1
     }
+    UiDrawMenuBar()
+}
+
+// rtUiSyncMenuBar (language-runtime-cleanup, spec 5.2): the bar shows
+// Apple + the app-scope menus (unclaimed by any window) + the FRONT
+// window's own `menus:` set, in declaration order. Unchanged set -> one
+// mask compare and out, so ordinary activation stays free.
+//
+// On the change path EVERY claimed menu currently in the bar is deleted
+// and the target's claimed set is re-inserted in index order (InsertMenu
+// beforeID 0 = append), not just the ones leaving/arriving: a RETAINED
+// menu would otherwise keep the bar slot it got last time, so
+// `WinA{M2,M4}` -> `WinB{M3,M4}` would leave M4 sitting ahead of M3 and
+// break the declaration-order promise (fix round 1). App-scope menus are
+// never touched -- they are in the bar for the whole run, ahead of every
+// claimed one, and the unclaimed half of `target` is a constant. Still
+// one DrawMenuBar. Every MenuHandle lives for the whole run; only bar
+// membership changes.
+func rtUiSyncMenuBar() {
+    var inst: ptr
+    var target: int
+    var i: int
+    var bit: int
+    var mh: ptr
+
+    if rtUiMenuHandlesArr == ptr(0) or rtUiClaimedMask == 0 {
+        return
+    }
+    // The `0x7FFFFFFF ^` term also clears bit 31, so the `1 <<
+    // rtUiNMenusVal` at the checker's 31-menu ceiling (which is the sign
+    // bit, minus 1 -> 0x7FFFFFFF) stays a plain positive mask.
+    target = ((1 << rtUiNMenusVal) - 1) & (0x7FFFFFFF ^ rtUiClaimedMask)
+    inst = rtUiWinstOf(UiFrontWindow())
+    if inst != ptr(0) {
+        target = target | uidWinMenuMask(RtUiWinst(inst).winIdx)
+    }
+    if target == rtUiBarMask {
+        return
+    }
+    i = 0
+    while i < rtUiNMenusVal {
+        bit = 1 << i
+        if (rtUiBarMask & bit) != 0 and (rtUiClaimedMask & bit) != 0 {
+            UiDeleteMenu(rtUiMenuIdBase + i)
+        }
+        i = i + 1
+    }
+    i = 0
+    while i < rtUiNMenusVal {
+        bit = 1 << i
+        if (target & bit) != 0 and (rtUiClaimedMask & bit) != 0 {
+            mh = ptr(peekl(rtUiMenuHandlesArr + i * 4))
+            UiInsertMenu(mh, 0)
+        }
+        i = i + 1
+    }
+    rtUiBarMask = target
     UiDrawMenuBar()
 }
 
@@ -1368,6 +1479,7 @@ func rtUiMenuRecomputeDim() {
 }
 
 func rtUiAfterFrontChange() {
+    rtUiSyncMenuBar()
     rtUiMenuRecomputeDim()
     rtUiTraceFrontCheck()
 }
@@ -1632,7 +1744,7 @@ func rtUiFlushAllBuffered() {
     wp = UiFrontWindow()
     while wp != ptr(0) {
         if peekw(wp + 108) == rtUiWindowKind {
-            rtUiFlushBufferedCanvases(ptr(UiGetWRefCon(wp)))
+            rtUiFlushBufferedCanvases(ptr(UiGetWRefCon(wp)), false)
         }
         wp = ptr(peekl(wp + 144))
     }
@@ -1846,7 +1958,7 @@ func rtUiHandleUpdate(wp: ptr) {
             }
             i = i + 1
         }
-        rtUiFlushBufferedCanvases(inst)
+        rtUiFlushBufferedCanvases(inst, true)
     }
     UiEndUpdate(wp)
 }
