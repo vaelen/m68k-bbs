@@ -598,6 +598,8 @@ func rtLsnRegister(h: int, name: string, typ: string) {
 }
 
 // rtLsnStop: remove the name and the listener. Idempotent (spec %4.2).
+// Shared with TCP listeners (MacTCP phase, spec %4.2's own `l.stop()`),
+// which dispatch to tcp.cla's rtTcpLsnStop below.
 func rtLsnStop(h: int) {
     var slot: int
 
@@ -608,8 +610,14 @@ func rtLsnStop(h: int) {
     if rtLsnState[slot] != rtAtActive {
         return
     }
-    rtAtDevRemove(rtLsnName[slot], rtLsnType[slot])
-    rtLsnDevRemove(slot)
+    if rtLsnSlotTransport[slot] == rtConnTransportTcp {
+        // MacTCP phase, Task 6: a TCP listener has no NBP name and no
+        // ADSP device slot -- tcp.cla owns its whole teardown.
+        rtTcpLsnStop(slot)
+    } else {
+        rtAtDevRemove(rtLsnName[slot], rtLsnType[slot])
+        rtLsnDevRemove(slot)
+    }
     rtLsnState[slot] = rtAtIdle
     rtLsnName[slot] = ""
     rtLsnType[slot] = ""
@@ -809,6 +817,42 @@ func rtAtalkPump() {
     var j: int
     var e: int
 
+    // MacTCP phase, Task 6 (spec %5.6): the TCP listeners, whose whole
+    // state machine is tcp.cla's. They ride THIS pump rather than
+    // rtConnPump because this is the one gated on irUsesAtalk, which any
+    // `listener` var sets -- rtConnPump's own gate (irUsesConn) can be
+    // false in a listening program, and rtTcpPump reaches
+    // clar_lsn_fire_accepted, which only exists when usesAtalk anyway.
+    // ABOVE the rtAtUp guard on purpose: a TCP listener needs no
+    // AppleTalk stack, so nothing here may wait for one.
+    rtTcpPump()
+
+    // ...and the listener FAILED drain, hoisted here with it (MacTCP
+    // phase, Task 6, fix round 1). It used to live inside the listener
+    // loop below, under the rtAtUp guard -- and rtAtUp is set only by
+    // rtAtEnsureUp, which no TCP path calls (rtLsnListen brings TCP up
+    // through rtTcpEnsureUp instead). A pure-TCP server therefore staged
+    // "port in use", "invalid port", "TCP unavailable", "listener
+    // already registered", "listener failed" and "could not accept
+    // connection" and then discarded every one of them: `on l.failed`
+    // never ran. The drain sits immediately AFTER rtTcpPump() and ahead
+    // of the AppleTalk device pump and listener loop, so a failure
+    // rtTcpPump stages is still fired in the SAME pass that staged it,
+    // and an AppleTalk failure keeps this file's own stated ordering (a
+    // failure always precedes whatever the device does next) -- it costs
+    // an AppleTalk program nothing but firing the same event one section
+    // earlier in the pass.
+    i = 0
+    while i < rtLsnMax {
+        if rtLsnPendFailedCode[i] != 0 {
+            code = rtLsnPendFailedCode[i]
+            rtLsnPendFailedCode[i] = 0
+            clar_lsn_fire_failed(i, code, rtLsnPendFailedMsg[i])
+            rtLsnPendFailedMsg[i] = ""
+        }
+        i = i + 1
+    }
+
     if not rtAtUp {
         return
     }
@@ -904,13 +948,12 @@ func rtAtalkPump() {
     // ---- listeners ----
     i = 0
     while i < rtLsnMax {
-        if rtLsnPendFailedCode[i] != 0 {
-            code = rtLsnPendFailedCode[i]
-            rtLsnPendFailedCode[i] = 0
-            clar_lsn_fire_failed(i, code, rtLsnPendFailedMsg[i])
-            rtLsnPendFailedMsg[i] = ""
-        }
-        if rtLsnState[i] == rtAtActive {
+        // The pend-failed drain for these slots ran at the top of the
+        // function, above the rtAtUp guard (see its comment there).
+        // MacTCP phase, Task 6: a TCP listener shares this slot table but
+        // is polled by tcp.cla's own rtTcpPump -- the ADSP device waist
+        // below knows nothing about it.
+        if rtLsnState[i] == rtAtActive and rtLsnSlotTransport[i] != rtConnTransportTcp {
             pr = rtLsnDevPoll(i)
             if pr < 0 {
                 // The listen request itself failed. The re-arm below
@@ -934,7 +977,16 @@ func rtAtalkPump() {
                 free = -1
                 j = 0
                 while j < rtConnMax {
-                    if free < 0 and rtConnState[j] == stClosed and rtAdspPhase[j] == rtAdspNone {
+                    // rtTcpFree(j) (MacTCP phase, Task 6, fix round 1):
+                    // rtConnClose leaves a LINGERING TCP slot at
+                    // stClosed with its transport tag still set, so
+                    // stClosed alone no longer means "nobody owns this".
+                    // Without this an ADSP accept in the same program
+                    // would overwrite the tag and phase, strand
+                    // rtTcpPhase at Closing, and rtTcpAlive() would stay
+                    // true forever (the CLI loop never exits). Mirrors
+                    // rtTcpPump's own scan, which already asks.
+                    if free < 0 and rtConnState[j] == stClosed and rtAdspPhase[j] == rtAdspNone and rtTcpFree(j) {
                         free = j
                     }
                     j = j + 1
