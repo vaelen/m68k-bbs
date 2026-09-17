@@ -26,10 +26,11 @@ make
 ## Run
 
 ```sh
-./modem [listen_port [connect_port [dial.conf]]]     # defaults: 2323 1234 (none)
+./modem [listen_port [[connect_host:]connect_port [dial.conf]]]     # defaults: 2323 localhost:1234 (none)
 ```
 
-The modem connects to `localhost:connect_port` at start and stays
+The modem connects to `connect_host:connect_port` (host defaults to
+`localhost`; a name or IPv4 address) at start and stays
 connected. If that fails or the connection drops (the emulator quit), it
 retries every 10 s, silently; a call in progress at the time is dropped.
 It logs to stderr, one timestamped line each: serial port connected/lost,

@@ -37,7 +37,8 @@
 enum { IDLE, DIALING, ONLINE, ONLINE_CMD };   // on-hook, dial in progress, data mode, after +++
 static int state = IDLE;
 static int local = -1;                  // the "serial port"
-static int cport;                       // its TCP port
+static const char *chost = "localhost"; // its TCP host
+static const char *cport = "1234";      //   and port
 static long local_retry_ms = 0;         // when to try connecting it again
 static int rin = -1, rout = -1;         // the remote: one socket for now
 static pid_t child = 0;                 // an exec: target's pid, 0 for a socket
@@ -161,20 +162,29 @@ static void closefd(int *fd) {
     *fd = -1;
 }
 
-static int connect_local(int port) {
-    struct sockaddr_in a;
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return -1;
-    fcntl(fd, F_SETFD, FD_CLOEXEC);
-    memset(&a, 0, sizeof a);
-    a.sin_family = AF_INET;
-    a.sin_port = htons((unsigned short)port);
-    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (connect(fd, (struct sockaddr *)&a, sizeof a) < 0) {
-        close(fd);
-        return -1;
+// ponytail: blocking resolve + connect (capped at 3 s); only runs while the
+// serial port is down, when no call can be served anyway. Go async if a slow
+// resolver ever matters.
+static int connect_local(void) {
+    struct addrinfo hints, *ai;
+    struct timeval tv = { 3, 0 };
+    int fd;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET;          // ponytail: v4 only, as dial_tcp
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(chost, cport, &hints, &ai) != 0) return -1;
+    fd = socket(ai->ai_family, ai->ai_socktype, 0);
+    if (fd >= 0) {
+        fcntl(fd, F_SETFD, FD_CLOEXEC);
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);   // bounds connect()
+        if (connect(fd, ai->ai_addr, ai->ai_addrlen) < 0) {
+            close(fd);
+            fd = -1;
+        } else {
+            fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+        }
     }
-    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+    freeaddrinfo(ai);
     return fd;
 }
 
@@ -200,7 +210,7 @@ static int listen_on(int port) {
 static void serial_try(void) {
     long t = now_ms();
     if (local >= 0 || t < local_retry_ms) return;
-    local = connect_local(cport);
+    local = connect_local();
     if (local >= 0) logts("serial port connected");
     else local_retry_ms = t + RECONNECT_MS;   // quiet: logged once, on loss
 }
@@ -505,10 +515,19 @@ int main(int argc, char **argv) {
     int lsock;
     char buf[4096];
 
-    cport = argc > 2 ? atoi(argv[2]) : 1234;
+    if (argc > 2) {                     // [host:]port
+        char *colon = strrchr(argv[2], ':');
+        if (colon) {
+            *colon = 0;
+            chost = argv[2];
+            cport = colon + 1;
+        } else {
+            cport = argv[2];
+        }
+    }
     dialconf = argc > 3 ? argv[3] : NULL;
-    if (lport <= 0 || cport <= 0) {
-        fprintf(stderr, "usage: %s [listen_port [connect_port [dial.conf]]]\n", argv[0]);
+    if (lport <= 0 || atoi(cport) <= 0 || !*chost) {
+        fprintf(stderr, "usage: %s [listen_port [[connect_host:]connect_port [dial.conf]]]\n", argv[0]);
         return 2;
     }
     signal(SIGPIPE, SIG_IGN);
@@ -518,7 +537,7 @@ int main(int argc, char **argv) {
         perror("listen");
         return 1;
     }
-    logts("listening on %d, serial port at localhost:%d", lport, cport);
+    logts("listening on %d, serial port at %s:%s", lport, chost, cport);
 
     for (;;) {
         fd_set r, w;
