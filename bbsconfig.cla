@@ -1,0 +1,121 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// 68kBBS Config: edits Config.txt while the BBS is not running (the
+// BBS opens the modem port at launch, so a bad speed or port can hang
+// it before its own menus are usable). Put it in the BBS's folder.
+// Reads and writes through config.cla, so keys it doesn't show keep
+// their values.
+
+include "user.cla"
+include "config.cla"
+
+app BBSConfig {
+    name: "68kBBS Config"
+    version: "0.5b"
+    author: "Andrew C. Young"
+    about: "Edits the 68kBBS settings while the BBS is not running."
+    id: "68BC"
+}
+
+// The popup order must match modemSpeedValid (config.cla).
+enum Speed {
+    S300 "300 bps"
+    S1200 "1200 bps"
+    S2400 "2400 bps"
+    S4800 "4800 bps"
+    S9600 "9600 bps"
+    S19200 "19200 bps"
+    S57600 "57600 bps"
+}
+
+enum Port {
+    PModem "Modem Port"
+    PPrinter "Printer Port"
+}
+
+record Settings {
+    speed: Speed
+    port: Port
+    init: string(255)
+    systemName: string(50)
+    idleSeconds: int
+    maintenanceHour: int
+}
+
+window ConfigForm {
+    title: "68kBBS Settings"
+    form for Settings
+
+    popup SpeedP { binds: speed; label: "Speed:" }
+    popup PortP  { binds: port; label: "Port:" }
+    field Init   { binds: init; label: "Modem init:"; width: 260 }
+    field Name   { binds: systemName; label: "BBS name:"; width: 260 }
+    field Idle   { binds: idleSeconds; label: "Idle secs:"; width: 60 }
+    field Hour   { binds: maintenanceHour; label: "Maint. hour:"; width: 60 }
+
+    button OK     { caption: "Save"; default }
+    button Cancel { cancel }
+}
+
+menu File {
+    item Quit "Quit" key "Q"
+}
+
+menu Edit { standard edit }
+
+var settings: Settings
+
+func speedBps(s: Speed): int {
+    switch s {
+    case S300 { return 300 }
+    case S1200 { return 1200 }
+    case S2400 { return 2400 }
+    case S4800 { return 4800 }
+    case S9600 { return 9600 }
+    case S19200 { return 19200 }
+    }
+    return 57600
+}
+
+on App.startEmpty {
+    var i: int = 0
+    if not configLoad() { alert("Could not read or create Config.txt.") }
+    settings = new Settings
+    while i < 7 {
+        if speedBps(Speed(i)) == config.modemSpeed { settings.speed = Speed(i) }
+        i = i + 1
+    }
+    if config.modemPort == "printer" { settings.port = PPrinter }
+    settings.init = config.modemInit
+    settings.systemName = config.systemName
+    settings.idleSeconds = config.idleSeconds
+    settings.maintenanceHour = config.maintenanceHour
+    edit ConfigForm, settings
+}
+
+extend File {
+    on Quit.select { quit }
+}
+
+extend ConfigForm {
+    on accepted(s: Settings) {
+        if s.maintenanceHour > 23 {
+            alert("Maintenance hour must be 0-23.")
+            edit ConfigForm, settings
+            return
+        }
+        config.modemSpeed = speedBps(s.speed)
+        config.modemPort = "modem"
+        if s.port == PPrinter { config.modemPort = "printer" }
+        config.modemInit = s.init
+        if s.systemName != "" { config.systemName = s.systemName }
+        if s.idleSeconds >= 0 { config.idleSeconds = s.idleSeconds }
+        if s.maintenanceHour >= 0 { config.maintenanceHour = s.maintenanceHour }
+        if configSave() { quit }
+        alert("Could not write Config.txt.")
+        edit ConfigForm, settings
+    }
+
+    on cancelled { quit }
+}

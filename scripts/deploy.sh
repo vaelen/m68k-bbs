@@ -21,6 +21,8 @@ mkdir -p "$HOME"
 hmount "$ROOT/snow/hdd2.img"
 hdel :68kBBS 2>/dev/null || true
 hcopy -m "$ROOT/build/68kBBS.bin" :
+hdel ":68kBBS Config" 2>/dev/null || true
+hcopy -m "$ROOT/build/68kBBSConfig.bin" :
 humount
 
 cd "$ROOT/snow"

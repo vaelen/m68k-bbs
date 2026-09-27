@@ -51,6 +51,9 @@ func configSave(): bool {
     ok = f.writeAt(0, data)
     if ok { ok = f.flush() }
     f.close()
+    // create only stamps a fresh file; fix one copied in from a host
+    // (hcopy leaves TEXT/UNIX, which TeachText won't open).
+    if ok { file.setInfo(configFileName, "TEXT", "ttxt", 0, 0) }
     return ok
 }
 

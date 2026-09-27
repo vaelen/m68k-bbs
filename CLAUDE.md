@@ -721,6 +721,9 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
 - `loginlog.cla` — fixed-width text login log + newest-N reader
 - `banned.cla` — banned-username list (`Banned.txt`), sysop-editable
 - `config.cla` — `Config.txt` settings with compiled defaults
+- `bbsconfig.cla` — "68kBBS Config", a standalone Mac app (one form
+  over `config.cla`) for editing modem port/speed/init and a few
+  other settings while the BBS isn't running; lives in the BBS folder
 - `walldb.cla`, `wall.cla` — wall database and screens
 - `gamesdb.cla` — Games database (menu entries: type/name/file);
   `gamedata.cla` — the `:GameData:<game>:<user>` sandbox games save into
