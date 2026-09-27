@@ -38,6 +38,7 @@ include "emsi.cla"
 include "maint.cla"
 include "toolbox/osutils.cla"   // DateTimeRec / SecondsToDate (via --rtdir)
 include "toolbox/memory.cla"    // FreeMem, for the heap figures on log lines
+include "toolbox/devices.cla"   // PBControlSync: serial handshake off (modemNoHandshake)
 external func MaxBlock(): int = trap 0xA061 reg   // largest free block, no compaction
 
 // _ReadDateTime's VAR secs lands here; the call is for its side effect:
@@ -47,6 +48,32 @@ extern record TimeSecsBox {
     secs: int
 }
 var timeBox: TimeSecsBox
+
+// Serial Driver Control csCode 10 (SerHShake) param block, padded to
+// CntrlParam's 50 bytes. The runtime never sets handshaking, so the
+// driver keeps whatever it had; on a real SE that held the first write
+// forever (0 bytes out, app hung in PBWriteSync).
+extern record SerShkPB {
+    qLink: ptr
+    qType: word
+    ioTrap: word
+    ioCmdAddr: ptr
+    ioCompletion: ptr
+    ioResult: word
+    ioNamePtr: ptr
+    ioVRefNum: word
+    ioCRefNum: word
+    csCode: word
+    fXOn: byte
+    fCTS: byte
+    xOn: byte
+    xOff: byte
+    errs: byte
+    evts: byte
+    fInX: byte
+    fDTR: byte
+    pad[14]
+}
 
 app BBS {
     name: "68kBBS"
@@ -1662,8 +1689,30 @@ func benchLog() {
     log("bench ruleLine wide x1000: " + intStr(TickCount() - t0))
 }
 
+// The open port's fixed driver refNums (Serial.h: .AIn -6, .AOut -7,
+// .BIn -8, .BOut -9).
+func modemOutRef(): int {
+    if config.modemPort == "printer" { return -9 }
+    return -7
+}
+
+// All flow control off, both drivers: the BBS never pauses output for
+// the modem, and a held transmitter blocks the app's synchronous writes.
+func modemNoHandshake() {
+    var pb: SerShkPB
+    var err: int
+    pb.ioCRefNum = modemOutRef()
+    pb.csCode = 10
+    err = PBControlSync(pb)
+    if err != 0 { log("SerHShake out failed: " + intStr(err)) }
+    pb.ioCRefNum = modemOutRef() + 1
+    err = PBControlSync(pb)
+    if err != 0 { log("SerHShake in failed: " + intStr(err)) }
+}
+
 on modem.opened {
     log("Modem port open.")
+    modemNoHandshake()
     modemReset()             // hang up any stale call, then the init string
 }
 

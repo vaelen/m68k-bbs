@@ -368,7 +368,9 @@ inputChar (bbs.cla) → processInput`.
   `idleHalfSecs` ticks in the 30-tick timer — paused during transfers,
   FTN polls and hang-up — and resets on any received byte; a caps-only,
   no-capital-C warning goes out a minute before. `modemReset()` (startup via
-  `modem.opened`; `Modem > Initialize Modem`) runs that hang-up
+  `modem.opened`, which first turns all serial flow control off --
+  `modemNoHandshake`; the runtime never sets it and a real SE's driver
+  held the first write forever; `Modem > Initialize Modem`) runs that hang-up
   then sends `config.modemInit` (`modemInitPhase`); `Modem >
   Hang Up` (Cmd-H) is the hang-up alone; modem commands are logged as
   sent. The Modem menu (flat -- Clarus menus have no submenus or

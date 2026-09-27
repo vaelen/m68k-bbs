@@ -3,6 +3,29 @@
 Deferred work, with enough detail to pick up cold. Nothing here is
 blocked on a language feature unless it says so.
 
+## Serial handshaking setting
+
+`modemNoHandshake()` (bbs.cla, `on modem.opened`) forces all flow
+control off: the Clarus runtime never calls SerHShake, and on a real SE
+the driver's leftover setting held the first `PBWriteSync` forever
+(0 bytes out). Make it a setting instead of a hardcoded choice:
+
+- `Config.txt`: `modemHandshake=none|cts|xonxoff` (default `none`) —
+  a field on `Config`, a case in `configApply`, a line in `configSave`.
+- Modem menu: three flat items with the active one dimmed, like the
+  speed/port items (`modemMenuSync`); a change saves and reapplies
+  SerHShake on the open port (no reopen needed).
+- 68kBBS Config (`bbsconfig.cla`): a `Handshake` popup (enum) on the
+  form.
+- `modemNoHandshake` becomes `modemApplyHandshake`, setting `fCTS` or
+  `fXOn` (xOn `\x11`, xOff `\x13`) on the output driver.
+
+Caveat: synchronous writes (runtime `rtConnDevWrite` → `PBWriteSync`)
+still block the whole app while the modem holds CTS or has sent XOFF,
+so `cts`/`xonxoff` are only safe once the runtime's writes time out or
+go async. The proper home for the default-off SerHShake is the runtime's
+`rtConnDevOpen` (then re-pin and drop the bbs.cla workaround).
+
 ## Multi-file downloads (tag-and-download)
 
 Batch download: the caller tags several files on the list and downloads
