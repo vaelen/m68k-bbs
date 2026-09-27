@@ -66,6 +66,12 @@ menu Edit { standard edit }
 
 var settings: Settings
 
+// The form's handlers run while it is still modal, so quitting or
+// reopening it there recurses (quit cancels the open form, which fires
+// cancelled again). They set these; the timer acts once it has closed.
+var quitNow: bool = false
+var reopen: bool = false
+
 func speedBps(s: Speed): int {
     switch s {
     case S300 { return 300 }
@@ -94,6 +100,14 @@ on App.startEmpty {
     edit ConfigForm, settings
 }
 
+every 6 ticks {
+    if quitNow { quit }
+    if reopen {
+        reopen = false
+        edit ConfigForm, settings
+    }
+}
+
 extend File {
     on Quit.select { quit }
 }
@@ -102,7 +116,7 @@ extend ConfigForm {
     on accepted(s: Settings) {
         if s.maintenanceHour > 23 {
             alert("Maintenance hour must be 0-23.")
-            edit ConfigForm, settings
+            reopen = true
             return
         }
         config.modemSpeed = speedBps(s.speed)
@@ -112,10 +126,13 @@ extend ConfigForm {
         if s.systemName != "" { config.systemName = s.systemName }
         if s.idleSeconds >= 0 { config.idleSeconds = s.idleSeconds }
         if s.maintenanceHour >= 0 { config.maintenanceHour = s.maintenanceHour }
-        if configSave() { quit }
+        if configSave() {
+            quitNow = true
+            return
+        }
         alert("Could not write Config.txt.")
-        edit ConfigForm, settings
+        reopen = true
     }
 
-    on cancelled { quit }
+    on cancelled { quitNow = true }
 }
