@@ -18,7 +18,7 @@
 //   msStart    pick the item, log "Starting"
 //   msOpen     open it; boards with keepDays > 0 open the Created index
 //   msCollect  one Created-index key per unit: collect the expired IDs
-//   msDelete   one dbDelete per unit
+//   msDelete   maintDeleteBatch deletes per unit, one transaction
 //   msHeap     one heap-job record per unit (heap.cla: check, and when
 //              worth it, copy + offset fix)
 //   msDone     log "Done", close the item, next
@@ -52,6 +52,7 @@ include "toolbox/events.cla"
 const maintDay: int = 86400
 const maintTickBudget: int = 5          // ticks of work per maintTick
 const maintProgressTicks: int = 3600    // a progress line a minute
+const maintDeleteBatch: int = 5         // expiry deletes per transaction (~4 s a unit on the SE)
 
 // per-item steps
 const msStart: int = 0
@@ -307,13 +308,21 @@ func maintCollectUnit() {
     }
 }
 
-// msDelete: one journaled delete (its own transaction, so a reboot
-// just leaves the rest for the next run).
+// msDelete: up to maintDeleteBatch posts in one transaction
+// (dbDeleteMany: the journal flush, commit and index opens are paid
+// once per batch -- ~600 ms each on the SE). A reboot loses at most the
+// batch in flight; the rest waits for the next run.
 func maintDeleteUnit() {
+    var batch: list of int
+    var r: int
     if maintDoomedAt < maintDoomed.count {
-        if dbDelete(postsDb, maintDoomed[maintDoomedAt]) { maintExpired = maintExpired + 1 }
-        maintDoomedAt = maintDoomedAt + 1
-        maintProgCount = maintProgCount + 1
+        while batch.count < maintDeleteBatch and maintDoomedAt < maintDoomed.count {
+            batch.add(maintDoomed[maintDoomedAt])
+            maintDoomedAt = maintDoomedAt + 1
+        }
+        r = dbDeleteMany(postsDb, batch)
+        if r > 0 { maintExpired = maintExpired + r }
+        maintProgCount = maintProgCount + batch.count
         return
     }
     maintHeapBegin()

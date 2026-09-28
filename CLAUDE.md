@@ -209,7 +209,11 @@ inputChar (bbs.cla) → processInput`.
   secondary in key order, `btFind` expands duplicate keys;
   `dbFieldIntAt` — one i32 field without materializing the record,
   which a 68k text-returning call makes ~100 ms; `dbBuildIndex` reads
-  only key fields the same way). `dbCreate` refuses a name whose `.DAT`
+  only key fields the same way). `dbDeleteMany(db, ids)` deletes a batch
+  in ONE transaction -- one journal flush, free-list update, commit and
+  index open each, roots read once via `btFindFrom`/`btRemoveFrom`
+  (deletes never move a root) -- used by expiry (`maintDeleteBatch`,
+  `expirePosts`). `dbCreate` refuses a name whose `.DAT`
   exists (logs "exists but did not open"): every owner's open falls
   back to it when `dbOpen` fails, which once recreated boards empty
   over their data. `usersdb.cla` — the "Users" vDB database
@@ -747,8 +751,10 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
 - `config.cla` — `Config.txt` settings with compiled defaults
 - `bench.cla` — "68kBBS Bench" (Mac file `68kBBSBench`), a standalone
   Mac app: `Bench > Run Benchmarks` runs the string/table micro-
-  benchmarks and a post-delete benchmark (scratch `BENCH.*` database,
-  per-phase ms via vdb.cla's `dbTiming`/`dbTimes`), one per 2-tick
+  benchmarks, raw 512-byte file I/O (readAt/writeAt/flush/open+close
+  on a scratch `BENCHIO`), and post adds/deletes (scratch `BENCH.*`
+  database: single `dbDelete` vs `dbDeleteMany` by 5 and 10, per-phase
+  ms via vdb.cla's `dbTiming`/`dbTimes`), one per 2-tick
   timer step; results go to its window and are appended to `Bench.txt`
   in its folder. Put it in the BBS folder.
 - `bbsconfig.cla` — "68kBBS Config", a standalone Mac app (one form

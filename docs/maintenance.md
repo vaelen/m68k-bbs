@@ -60,8 +60,10 @@ Maint: Board 2 (Name): Done - 1234 expired
    the cutoff. Its progress line has no percentage (the total isn't
    known until the cutoff is reached): `Collecting - 5513 found, through
    03-14-25` — the date the walk has reached.
-2. **Delete** — one `dbDelete` per unit. Each is its own transaction,
-   so an interrupted board just finishes on the next run.
+2. **Delete** — `maintDeleteBatch` (5) posts per unit in one
+   transaction (`dbDeleteMany`: one journal flush, commit and set of
+   index opens per batch). An interrupted board loses at most the batch
+   in flight and finishes on the next run.
 3. **Check** — the heap job's first pass (`heap.cla`, one record per
    unit) sums the live lengths. Less than a quarter orphaned: done.
 4. **Pack** (only when the check says so; no line of its own, just the

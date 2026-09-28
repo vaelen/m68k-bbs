@@ -204,7 +204,13 @@ func btChildFor(page: text, key: int): int {
 // the page numbers visited (root first, leaf last) and leaves the
 // leaf's content in `page`.
 func btDescend(f: filehandle, key: int, path: list of int, page: text): bool {
-    var p: int = btRootPage(f)
+    return btDescendFrom(f, btRootPage(f), key, path, page)
+}
+
+// btDescend from a root page the caller already knows -- a batch of
+// deletes reads it once (deletes never move the root: no merges).
+func btDescendFrom(f: filehandle, root: int, key: int, path: list of int, page: text): bool {
+    var p: int = root
     path.clear()
     if p < 0 { return false }
     while path.count < btMaxDepth {
@@ -528,6 +534,10 @@ func btInsert(f: filehandle, key: int, value: int): bool {
 // Find all values for a key; fills `values` (cleared first).
 // Returns true if the key exists.
 func btFind(f: filehandle, key: int, values: list of int): bool {
+    return btFindFrom(f, btRootPage(f), key, values)
+}
+
+func btFindFrom(f: filehandle, root: int, key: int, values: list of int): bool {
     var page: text
     var path: list of int
     var n: int
@@ -537,7 +547,7 @@ func btFind(f: filehandle, key: int, values: list of int): bool {
     var vc: int
     var j: int
     values.clear()
-    if not btDescend(f, key, path, page) { return false }
+    if not btDescendFrom(f, root, key, path, page) { return false }
     n = page.wordAt(1)
     off = btLeafHeaderSize
     while i < n {
@@ -795,6 +805,10 @@ func btScanNext(f: filehandle, cur: text): bool {
 // (dropping the entry if it was the last value); otherwise remove the
 // whole entry. Returns false if nothing matched.
 func btRemove(f: filehandle, key: int, value: int, valueOnly: bool): bool {
+    return btRemoveFrom(f, btRootPage(f), key, value, valueOnly)
+}
+
+func btRemoveFrom(f: filehandle, root: int, key: int, value: int, valueOnly: bool): bool {
     var page: text
     var out: text
     var path: list of int
@@ -810,7 +824,7 @@ func btRemove(f: filehandle, key: int, value: int, valueOnly: bool): bool {
     var at: int
     var endOff: int
     var drops: int = 0
-    if not btDescend(f, key, path, page) { return false }
+    if not btDescendFrom(f, root, key, path, page) { return false }
     leaf = path[path.count - 1]
     n = page.wordAt(1)
     // Find the key's entry and the end of the entries, reading fields

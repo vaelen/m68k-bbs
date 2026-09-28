@@ -95,7 +95,7 @@ func runTests() {
     expect(reported, "progress line logged and counters reset")
     expect(not maintaining, "run finished")
     expect(not rejectCallers, "manual flag restored")
-    expect(deleting == 31, "one delete per unit (plus the unit that moves on)")
+    expect(deleting == (30 + maintDeleteBatch - 1) / maintDeleteBatch + 1, "one batch per unit (plus the unit that moves on)")
     expect(postsOpen(2) and postCount() == 1 and not loadPost(1) and loadPost(31), "40-day-old posts expired, fresh one kept")
     postsClose()
     expect(file.info("BRD02.MSG").size == 10, "board 2 heap compacted to the fresh body")

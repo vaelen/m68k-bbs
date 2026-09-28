@@ -81,6 +81,41 @@ func unopenableTests() {
     postsClose()
 }
 
+// dbDeleteMany: one transaction, every index updated, unknown IDs
+// skipped, the journal left empty, the result persistent.
+func deleteManyTests() {
+    var none: FtnAddress
+    var ids: list of int
+    var v: list of int
+    var i: int = 1
+    var n: int = 0
+    var idx: filehandle
+    expect(postsOpen(6), "board 6")
+    while i <= 10 {
+        addPostFtn("a", now() - 1000 + i, 0, "s", "body", 5000 + i, none, 0)
+        i = i + 1
+    }
+    ids.add(2)
+    ids.add(4)
+    ids.add(6)
+    ids.add(99)
+    expect(dbDeleteMany(postsDb, ids) == 3, "three deleted, the unknown ID skipped")
+    expect(postCount() == 7 and not loadPost(4) and loadPost(5), "record count and records")
+    expect(findPostByMsgId(5004) < 1 and findPostByMsgId(5005) == 5, "MsgId index updated")
+    idx = dbIndexOpenByName(postsDb, "Thread")
+    expect(idx != nil and not btFind(idx, 6, v) and btFind(idx, 7, v), "Thread index updated")
+    idx.close()
+    if postsByCreatedStart(false) {
+        while postsByCreatedNext() > 0 { n = n + 1 }
+    }
+    postsByCreatedEnd()
+    expect(n == 7, "Created index updated")
+    expect(postsDb.journal.size() == 0, "journal truncated at commit")
+    postsClose()
+    expect(postsOpen(6) and postCount() == 7 and not loadPost(2) and postBody(10) == "body", "persists across reopen")
+    postsClose()
+}
+
 on App.startCLI(args: list of string) {
     var id1: int
     var id2: int
@@ -203,6 +238,7 @@ on App.startCLI(args: list of string) {
     postsClose()
     legacyThreadTests()
     unopenableTests()
+    deleteManyTests()
 
     if failures > 0 {
         log("postsdb-test: FAILED")

@@ -100,9 +100,16 @@ func benchRun(n: int): bool {
     case 7 { benchIntStr() }
     case 8 { benchRowLine() }
     case 9 { benchRuleLine() }
-    case 10 { benchDeleteSetup() }
-    case 11 { benchDbFind() }
-    case 12 { benchDeletes() }
+    case 10 { benchFileRead() }
+    case 11 { benchFileWrite() }
+    case 12 { benchFileFlush() }
+    case 13 { benchFileOpen() }
+    case 14 { benchDeleteSetup() }
+    case 15 { benchDbFind() }
+    case 16 { benchDeletes() }
+    case 17 { benchDeleteBatches(5) }
+    case 18 { benchDeleteBatches(10) }
+    case 19 { benchDeleteDone() }
     else { return false }
     }
     return true
@@ -245,14 +252,106 @@ func benchRuleLine() {
     log("ruleLine wide x1000: " + since(t0))
 }
 
+// --- Raw file I/O --------------------------------------------------------
+// What one 512-byte page costs through the Clarus runtime and the File
+// Manager -- the unit every B-tree and record access is built from.
+// BENCHIO is a scratch file of benchIoPages pages, deleted afterwards.
+
+const benchIoPages: int = 64
+
+func benchIoFile(): filehandle {
+    var f: filehandle
+    var page: text
+    var i: int = 0
+    if file.exists("BENCHIO") { file.delete("BENCHIO") }
+    f = file.create("BENCHIO", "BINA", "68BK")
+    if f == nil { return nil }
+    btZeroFill(page)
+    while i < benchIoPages {
+        f.append(page)
+        i = i + 1
+    }
+    f.flush()
+    return f
+}
+
+func benchFileRead() {
+    var f: filehandle = benchIoFile()
+    var page: text
+    var t0: int
+    var i: int = 0
+    if f == nil {
+        log("readAt: cannot create BENCHIO")
+        return
+    }
+    t0 = TickCount()
+    while i < 200 {
+        f.readAt((i * 37 mod benchIoPages) * 512, 512, page)
+        i = i + 1
+    }
+    log("readAt 512 x200: " + msEach(TickCount() - t0, 200) + " each")
+    f.close()
+}
+
+func benchFileWrite() {
+    var f: filehandle = benchIoFile()
+    var page: text
+    var t0: int
+    var i: int = 0
+    if f == nil { return }
+    btZeroFill(page)
+    t0 = TickCount()
+    while i < 200 {
+        f.writeAt((i * 37 mod benchIoPages) * 512, page)
+        i = i + 1
+    }
+    log("writeAt 512 x200: " + msEach(TickCount() - t0, 200) + " each")
+    f.close()
+}
+
+func benchFileFlush() {
+    var f: filehandle = benchIoFile()
+    var page: text
+    var t0: int
+    var i: int = 0
+    if f == nil { return }
+    btZeroFill(page)
+    t0 = TickCount()
+    while i < 50 {
+        f.writeAt((i * 37 mod benchIoPages) * 512, page)
+        f.flush()
+        i = i + 1
+    }
+    log("writeAt 512 + flush x50: " + msEach(TickCount() - t0, 50) + " each")
+    f.close()
+}
+
+func benchFileOpen() {
+    var f: filehandle = benchIoFile()
+    var t0: int
+    var i: int = 0
+    if f == nil { return }
+    f.close()
+    t0 = TickCount()
+    while i < 50 {
+        f = file.open("BENCHIO")
+        if f != nil { f.close() }
+        i = i + 1
+    }
+    log("file.open + close x50: " + msEach(TickCount() - t0, 50) + " each")
+    file.delete("BENCHIO")
+}
+
 // --- Post deletes ------------------------------------------------------
 // Where a post delete's time goes: a scratch board-shaped database
 // (BENCH.*: the three post indexes), benchDelN posts (thread starters,
-// the way new posts are stored), then benchDelM timed dbDeletes,
+// the way new posts are stored), then benchDelM single dbDeletes and
+// the rest in dbDeleteMany batches of 5 and of 10 (benchDelB each),
 // logged per phase as ms per delete (vdb.cla's dbTiming/dbTimes).
 
-const benchDelN: int = 40
-const benchDelM: int = 30
+const benchDelN: int = 60
+const benchDelM: int = 20
+const benchDelB: int = 20
 
 func benchDeleteCleanup() {
     var i: int = 0
@@ -276,6 +375,7 @@ func benchDeleteSetup() {
     var t0: int
     var i: int = 0
     benchDeleteCleanup()                // a cut-short earlier run's files
+    benchNextId = 1
     benchDb = dbCreate("BENCH", postRecordSize, "68BB")
     if not dbIsOpen(benchDb) {
         log("delete: cannot create BENCH: " + lastError.message)
@@ -308,24 +408,17 @@ func benchDbFind() {
     log("dbFind x200: " + since(t0))
 }
 
-func benchDeletes() {
-    var t0: int
+func benchResetTimes() {
     var i: int = 0
-    var names: list of string
-    if not dbIsOpen(benchDb) { return }
     while i < dtCount {
         dbTimes[i] = 0
         i = i + 1
     }
-    dbTiming = true
-    t0 = TickCount()
-    i = 1
-    while i <= benchDelM {
-        dbDelete(benchDb, i)
-        i = i + 1
-    }
-    t0 = TickCount() - t0
-    dbTiming = false
+}
+
+func benchLogPhases(label: string, ticks: int, n: int) {
+    var names: list of string
+    var i: int = 0
     names.add("lookup")
     names.add("journal")
     names.add("free pages")
@@ -333,12 +426,58 @@ func benchDeletes() {
     names.add("index open/close")
     names.add("index deletes")
     names.add("commit")
-    log("dbDelete x" + string(benchDelM) + ": " + msEach(t0, benchDelM) + " each")
-    i = 0
+    log(label + ": " + msEach(ticks, n) + " each")
     while i < dtCount {
-        log("  " + names[i] + ": " + msEach(dbTimes[i], benchDelM))
+        log("  " + names[i] + ": " + msEach(dbTimes[i], n))
         i = i + 1
     }
-    dbClose(benchDb)
+}
+
+var benchNextId: int = 1        // the next post ID to delete
+
+func benchDeletes() {
+    var t0: int
+    var i: int = 0
+    if not dbIsOpen(benchDb) { return }
+    benchResetTimes()
+    dbTiming = true
+    t0 = TickCount()
+    while i < benchDelM {
+        dbDelete(benchDb, benchNextId)
+        benchNextId = benchNextId + 1
+        i = i + 1
+    }
+    t0 = TickCount() - t0
+    dbTiming = false
+    benchLogPhases("dbDelete x" + string(benchDelM), t0, benchDelM)
+}
+
+func benchDeleteBatches(size: int) {
+    var ids: list of int
+    var t0: int
+    var i: int = 0
+    if not dbIsOpen(benchDb) { return }
+    benchResetTimes()
+    dbTiming = true
+    t0 = TickCount()
+    while i < benchDelB {
+        ids.add(benchNextId)
+        benchNextId = benchNextId + 1
+        i = i + 1
+        if ids.count == size or i == benchDelB {
+            dbDeleteMany(benchDb, ids)
+            ids.clear()
+        }
+    }
+    t0 = TickCount() - t0
+    dbTiming = false
+    benchLogPhases("dbDeleteMany by " + string(size) + " x" + string(benchDelB), t0, benchDelB)
+}
+
+func benchDeleteDone() {
+    if dbIsOpen(benchDb) {
+        log("posts left: " + string(dbRecordCount(benchDb)))
+        dbClose(benchDb)
+    }
     benchDeleteCleanup()
 }

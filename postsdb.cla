@@ -358,12 +358,19 @@ func threadPosts(root: int, ids: list of int) {
 // the board open.
 func expirePosts(boardId: int, cutoff: int): int {
     var doomed: list of int
+    var batch: list of int
     var i: int = 0
     var n: int = 0
+    var r: int
     if not expireCollect(boardId, cutoff, doomed) { return -1 }
     while i < doomed.count {
-        if dbDelete(postsDb, doomed[i]) { n = n + 1 }
+        batch.add(doomed[i])
         i = i + 1
+        if batch.count == 50 or i == doomed.count {
+            r = dbDeleteMany(postsDb, batch)     // one transaction per batch
+            if r > 0 { n = n + r }
+            batch.clear()
+        }
     }
     return n
 }
