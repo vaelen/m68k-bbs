@@ -35,6 +35,77 @@ func hasValue(f: filehandle, key: int, value: int): bool {
     return false
 }
 
+// Randomized inserts and value deletes against a model (parallel lists
+// of key/value pairs): every key's values must match in order, and a
+// scan must visit keys ascending. Covers the three-slice leaf rebuilds
+// in btInsert/btRemove -- middle, first and last entries, splits, and
+// keys spilling into overflow pages (key 7 gets far more than 32).
+func fuzzTests() {
+    var f: filehandle = btCreate("BTF.IDX", "VDBi", "68BB")
+    var mk: list of int
+    var mv: list of int
+    var got: list of int
+    var want: list of int
+    var cur: text
+    var seed: int = 12345
+    var step: int = 0
+    var key: int
+    var i: int
+    var j: int
+    var ok: bool = true
+    var prev: int
+    var nextValue: int = 1
+    while step < 4000 and ok {
+        seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+        key = (seed / 65536) mod 60
+        if (seed / 7) mod 3 == 0 { key = 7 }
+        if mv.count > 0 and (seed / 131) mod 4 == 0 {
+            // delete a random existing pair
+            i = (seed / 4096) mod mv.count
+            if not btDeleteValue(f, mk[i], mv[i]) { ok = false }
+            mk.remove(i)
+            mv.remove(i)
+        } else {
+            if not btInsert(f, key, nextValue) { ok = false }
+            mk.add(key)
+            mv.add(nextValue)
+            nextValue = nextValue + 1
+        }
+        step = step + 1
+    }
+    expect(ok, "fuzz: every insert and delete succeeded")
+    key = 0
+    while key < 60 and ok {
+        want.clear()
+        i = 0
+        while i < mk.count {
+            if mk[i] == key { want.add(mv[i]) }
+            i = i + 1
+        }
+        got.clear()
+        if not btFind(f, key, got) { got.clear() }
+        if got.count != want.count { ok = false }
+        j = 0
+        while ok and j < got.count {
+            if got[j] != want[j] { ok = false }
+            j = j + 1
+        }
+        if not ok { log("fuzz mismatch at key " + string(key) + ": " + string(got.count) + " vs " + string(want.count)) }
+        key = key + 1
+    }
+    expect(ok, "fuzz: every key's values match the model, in order")
+    ok = true
+    prev = 0 - 1
+    if btScanStart(f, cur, 0 - 1, false) {
+        while btScanNext(f, cur) {
+            if btScanKey(cur) <= prev { ok = false }
+            prev = btScanKey(cur)
+        }
+    }
+    expect(ok, "fuzz: scan visits keys ascending")
+    f.close()
+}
+
 on App.startCLI(args: list of string) {
     var f: filehandle
     var v: list of int
@@ -205,6 +276,8 @@ on App.startCLI(args: list of string) {
     expect(not (btScanStart(f2, cur, 1, false) and btScanNext(f2, cur)), "empty tree asc scan is empty")
     expect(not (btScanStart(f2, cur, 1, true) and btScanNext(f2, cur)), "empty tree desc scan is empty")
     f2.close()
+
+    fuzzTests()
 
     if failures > 0 {
         log("btree-test: FAILED")

@@ -1,0 +1,344 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// 68kBBS Bench: the micro-benchmarks, as their own app so they run
+// with nothing else competing for the Mac. Put it in the BBS's folder
+// (the delete benchmark works on the same disk the BBS uses) and pick
+// Bench > Run Benchmarks. Each benchmark is one timer step, so its
+// line shows as soon as it finishes; every line also goes to Bench.txt
+// in the app's folder, to pull off the disk afterwards (hcopy).
+// Results are ticks (1/60 s) unless a line says ms.
+
+include "terminal.cla"
+include "postsdb.cla"
+include "toolbox/events.cla"
+
+app BBSBench {
+    name: "68kBBS Bench"
+    version: "0.5b"
+    author: "Andrew C. Young"
+    about: "Micro-benchmarks for 68kBBS."
+    id: "68BK"
+}
+
+window Results {
+    title: "68kBBS Bench"
+    size: 440, 280
+    resizable: min(250, 120)
+
+    textview Body { fill: both; scrollbar: vertical }
+}
+
+menu File {
+    item Quit "Quit" key "Q"
+}
+
+menu Edit { standard edit }
+
+menu Bench {
+    item Run "Run Benchmarks" key "R"
+}
+
+var logText: text
+var benchStep: int = 0          // next step, 0 = idle
+var benchDb: Database
+
+on App.log(line: string) {
+    var r: Results = Results.front
+    var f: filehandle
+    logText.append(line + "\n")
+    if r != nil {
+        r.Body.text = logText
+        r.Body.scrollToEnd()
+    }
+    f = file.open("Bench.txt")
+    if f == nil { f = file.create("Bench.txt", "TEXT", "ttxt") }
+    if f != nil {
+        f.append(line + "\n")
+        f.close()
+    }
+}
+
+on App.launch {
+    open Results
+    log("68kBBS Bench " + dateTimeStr(now()) + ". Bench > Run Benchmarks.")
+}
+
+extend File {
+    on Quit.select { quit }
+}
+
+extend Bench {
+    on Run.select {
+        if benchStep == 0 {
+            log("--- run " + dateTimeStr(now()))
+            benchStep = 1
+        }
+    }
+}
+
+every 2 ticks {
+    if benchStep > 0 {
+        if benchRun(benchStep) {
+            benchStep = benchStep + 1
+        } else {
+            benchStep = 0
+            log("--- done")
+        }
+    }
+}
+
+// Step n; false when there is no step n.
+func benchRun(n: int): bool {
+    switch n {
+    case 1 { benchConcat() }
+    case 2 { benchAppendChars() }
+    case 3 { benchTrackOutput() }
+    case 4 { benchTranslateOut() }
+    case 5 { benchAppendBulk() }
+    case 6 { benchDateTimeStr() }
+    case 7 { benchIntStr() }
+    case 8 { benchRowLine() }
+    case 9 { benchRuleLine() }
+    case 10 { benchDeleteSetup() }
+    case 11 { benchDbFind() }
+    case 12 { benchDeletes() }
+    else { return false }
+    }
+    return true
+}
+
+func since(t0: int): string {
+    return string(TickCount() - t0)
+}
+
+func benchConcat() {
+    var t0: int = TickCount()
+    var i: int = 0
+    var n: int
+    var s: string
+    while i < 1000 {
+        s = ""
+        n = 0
+        while n < 10 {
+            s = s + "xxxxxxxx"
+            n = n + 1
+        }
+        i = i + 1
+    }
+    log("concat 10x8 x1000: " + since(t0))
+}
+
+func benchAppendChars() {
+    var t0: int = TickCount()
+    var i: int = 0
+    var n: int
+    var t: text
+    while i < 1000 {
+        t = ""
+        n = 0
+        while n < 80 {
+            t.append('x')
+            n = n + 1
+        }
+        i = i + 1
+    }
+    log("text append 80ch x1000: " + since(t0))
+}
+
+func benchTrackOutput() {
+    var s80: string = pad("x", 80)
+    var t0: int = TickCount()
+    var i: int = 0
+    while i < 1000 {
+        trackOutput(s80)
+        i = i + 1
+    }
+    log("trackOutput 80 x1000: " + since(t0))
+}
+
+func benchTranslateOut() {
+    var s80: string = pad("x", 80)
+    var t0: int = TickCount()
+    var i: int = 0
+    while i < 1000 {
+        translateOut(s80)
+        i = i + 1
+    }
+    log("translateOut ANSI 80 x1000: " + since(t0))
+}
+
+func benchAppendBulk() {
+    var s80: string = pad("x", 80)
+    var t0: int = TickCount()
+    var i: int = 0
+    var t: text
+    while i < 1000 {
+        t = ""
+        t.append(s80)
+        i = i + 1
+    }
+    log("text bulk append 80 x1000: " + since(t0))
+}
+
+func benchDateTimeStr() {
+    var t0: int = TickCount()
+    var i: int = 0
+    var s: string
+    while i < 1000 {
+        s = dateTimeStr(now())
+        i = i + 1
+    }
+    log("dateTimeStr x1000: " + since(t0))
+}
+
+func benchIntStr() {
+    var t0: int = TickCount()
+    var i: int = 0
+    var s: string
+    while i < 1000 {
+        s = string(1234567)
+        i = i + 1
+    }
+    log("string(int) x1000: " + since(t0))
+}
+
+func benchWidths(w: list of int) {
+    w.add(3)
+    w.add(11)
+    w.add(31)
+    w.add(8)
+    w.add(10)
+}
+
+func benchRowLine() {
+    var cells: list of string
+    var w: list of int
+    var t0: int
+    var i: int = 0
+    var s: string
+    cells.add("1")
+    cells.add("General")
+    cells.add("A test description")
+    cells.add("09-01-26")
+    cells.add("fsxNet")
+    benchWidths(w)
+    t0 = TickCount()
+    while i < 1000 {
+        s = rowLine(cells, w)
+        i = i + 1
+    }
+    log("rowLine wide x1000: " + since(t0))
+}
+
+func benchRuleLine() {
+    var w: list of int
+    var t0: int
+    var i: int = 0
+    var s: string
+    benchWidths(w)
+    t0 = TickCount()
+    while i < 1000 {
+        s = ruleLine(TopLeft, TopCenter, TopRight, w)
+        i = i + 1
+    }
+    log("ruleLine wide x1000: " + since(t0))
+}
+
+// --- Post deletes ------------------------------------------------------
+// Where a post delete's time goes: a scratch board-shaped database
+// (BENCH.*: the three post indexes), benchDelN posts (thread starters,
+// the way new posts are stored), then benchDelM timed dbDeletes,
+// logged per phase as ms per delete (vdb.cla's dbTiming/dbTimes).
+
+const benchDelN: int = 40
+const benchDelM: int = 30
+
+func benchDeleteCleanup() {
+    var i: int = 0
+    var p: string
+    if file.exists("BENCH.DAT") { file.delete("BENCH.DAT") }
+    if file.exists("BENCH.IDX") { file.delete("BENCH.IDX") }
+    if file.exists("BENCH.JNL") { file.delete("BENCH.JNL") }
+    while i < 4 {
+        p = dbIndexPath("BENCH", i)
+        if file.exists(p) { file.delete(p) }
+        i = i + 1
+    }
+}
+
+func msEach(ticks: int, n: int): string {
+    return string(ticks * 1000 / 60 / n) + " ms"
+}
+
+func benchDeleteSetup() {
+    var none: FtnAddress
+    var t0: int
+    var i: int = 0
+    benchDeleteCleanup()                // a cut-short earlier run's files
+    benchDb = dbCreate("BENCH", postRecordSize, "68BB")
+    if not dbIsOpen(benchDb) {
+        log("delete: cannot create BENCH: " + lastError.message)
+        return
+    }
+    if not dbAddIndex(benchDb, "Thread", itID, pOffThread) or not dbAddIndex(benchDb, "MsgId", itID, pOffMsgId) or not dbAddIndex(benchDb, "Created", itID, pOffCreated) {
+        log("delete: cannot add indexes: " + lastError.message)
+        dbClose(benchDb)
+        benchDeleteCleanup()
+        return
+    }
+    t0 = TickCount()
+    while i < benchDelN {
+        dbAdd(benchDb, packPost("bench", now() - 86400 + i, i + 1, "bench", 0, 0, 1000 + i, none, 0))
+        i = i + 1
+    }
+    log("dbAdd (post, 3 indexes) x" + string(benchDelN) + ": " + msEach(TickCount() - t0, benchDelN) + " each")
+}
+
+func benchDbFind() {
+    var t0: int
+    var i: int = 0
+    var rec: text
+    if not dbIsOpen(benchDb) { return }
+    t0 = TickCount()
+    while i < 200 {
+        rec = dbFind(benchDb, 1 + i mod benchDelN)
+        i = i + 1
+    }
+    log("dbFind x200: " + since(t0))
+}
+
+func benchDeletes() {
+    var t0: int
+    var i: int = 0
+    var names: list of string
+    if not dbIsOpen(benchDb) { return }
+    while i < dtCount {
+        dbTimes[i] = 0
+        i = i + 1
+    }
+    dbTiming = true
+    t0 = TickCount()
+    i = 1
+    while i <= benchDelM {
+        dbDelete(benchDb, i)
+        i = i + 1
+    }
+    t0 = TickCount() - t0
+    dbTiming = false
+    names.add("lookup")
+    names.add("journal")
+    names.add("free pages")
+    names.add("primary index")
+    names.add("index open/close")
+    names.add("index deletes")
+    names.add("commit")
+    log("dbDelete x" + string(benchDelM) + ": " + msEach(t0, benchDelM) + " each")
+    i = 0
+    while i < dtCount {
+        log("  " + names[i] + ": " + msEach(dbTimes[i], benchDelM))
+        i = i + 1
+    }
+    dbClose(benchDb)
+    benchDeleteCleanup()
+}

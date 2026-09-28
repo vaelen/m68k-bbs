@@ -346,9 +346,7 @@ func dbCanonRecord(data: text, size: int): text {
     var n: int = data.length
     if n > size { n = size }
     if n > 0 { t.append(data.textAt(0, n)) }
-    while t.length < size {
-        t.append(char(0))
-    }
+    btPadTo(t, size)
     return t
 }
 
@@ -518,9 +516,7 @@ func dbJournalEntry(op: int, pageNum: int, id: int, status: int, data: text, off
     btAppendInt(e, pageNum)
     btAppendInt(e, id)
     if n > 0 { e.append(data.textAt(off, n)) }
-    while e.length < 515 {
-        e.append(char(0))
-    }
+    btPadTo(e, 515)
     e.append(char(status))
     btAppendWord(e, e.crc16(0, 0, 516))
     return e
@@ -850,7 +846,7 @@ func dbUpdate(db: Database, id: int, data: text): bool {
     return dbCommit(db, hdr)
 }
 
-// Per-phase timing of dbDelete for Maintenance > Run Benchmarks: while
+// Per-phase timing of dbDelete for the 68kBBS Bench app: while
 // dbTiming is set each phase's ticks accumulate in dbTimes (index =
 // the dt* phase). Off, it costs one bool test per phase.
 const dtLookup: int = 0      // header, primary lookup, record read

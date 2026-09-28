@@ -385,10 +385,8 @@ inputChar (bbs.cla) → processInput`.
   checkmarks, so the active choice is dimmed via `modemMenuSync`) also
   picks the port speed (300..57600) and port (modem/printer), saved as
   `modemSpeed`/`modemPort` in Config.txt; a change closes and reopens
-  the port (`modemReopen`, dropping any caller). `Maintenance > Run
-  Benchmarks` logs the string/DB micro-benchmarks (`benchLog`), ending
-  with `benchDelete` — per-phase ms of a post `dbDelete` on a scratch
-  `BENCH.*` database (vdb.cla's `dbTiming`/`dbTimes`).
+  the port (`modemReopen`, dropping any caller). The micro-benchmarks
+  live in their own app, `bench.cla` (below).
   Sessions reset in `connected()`
   (`new User` / `new Terminal`). bbs.cla also owns the shared
   connection-facing table senders (`sendRule`, `sendTableTitle`,
@@ -747,6 +745,12 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
 - `loginlog.cla` — fixed-width text login log + newest-N reader
 - `banned.cla` — banned-username list (`Banned.txt`), sysop-editable
 - `config.cla` — `Config.txt` settings with compiled defaults
+- `bench.cla` — "68kBBS Bench" (Mac file `68kBBSBench`), a standalone
+  Mac app: `Bench > Run Benchmarks` runs the string/table micro-
+  benchmarks and a post-delete benchmark (scratch `BENCH.*` database,
+  per-phase ms via vdb.cla's `dbTiming`/`dbTimes`), one per 2-tick
+  timer step; results go to its window and are appended to `Bench.txt`
+  in its folder. Put it in the BBS folder.
 - `bbsconfig.cla` — "68kBBS Config", a standalone Mac app (one form
   over `config.cla`) for editing modem port/speed/init and a few
   other settings while the BBS isn't running; lives in the BBS folder

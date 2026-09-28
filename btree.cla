@@ -43,10 +43,25 @@ const btOverflowHeader: int = 7    // page_type(1) + value_count(2) + next(4)
 
 // --- Page construction helpers ---------------------------------------
 
-func btZeroFill(t: text) {
-    while t.length < btPageSize {
-        t.append(char(0))
+// Zero padding in slices of one prebuilt block: on the 68k a one-byte
+// append costs ~0.3 ms, so padding a page byte by byte cost up to
+// ~150 ms per page write (bench app, 2026-09-28).
+var btZeroBlock: text
+
+func btPadTo(t: text, size: int) {
+    var n: int
+    if btZeroBlock.length == 0 {
+        while btZeroBlock.length < btPageSize { btZeroBlock.append(char(0)) }
     }
+    while t.length < size {
+        n = size - t.length
+        if n > btZeroBlock.length { n = btZeroBlock.length }
+        t.append(btZeroBlock.textAt(0, n))
+    }
+}
+
+func btZeroFill(t: text) {
+    btPadTo(t, btPageSize)
 }
 
 func btAppendInt(t: text, v: int) {
@@ -431,46 +446,56 @@ func btInsert(f: filehandle, key: int, value: int): bool {
     var newOvf: int
     var added: bool = false
     var merged: bool = false
+    var at: int
+    var endOff: int
     if not btDescend(f, key, path, page) { return false }
     leaf = path[path.count - 1]
     n = page.wordAt(1)
+    // Find where `key` goes (its entry, or the first larger key) and
+    // where the entries end, reading fields only; then the new entry
+    // region is three slices -- before, the changed entry, after --
+    // instead of one text copy per entry (~290 ms a leaf on the 68k).
     off = btLeafHeaderSize
+    at = 0 - 1
     while i < n {
         k = page.intAt(off)
         vc = page.wordAt(off + 4)
-        esz = 10 + vc * 4
-        if not added and not merged and key < k {
-            btAppendNewEntry(out, key, value)
-            added = true
+        if at < 0 and k >= key {
+            at = off
+            merged = k == key
         }
-        if k == key {
-            ovf = page.intAt(off + 6 + vc * 4)
-            if vc < btMaxInline and ovf == 0 {
-                // room inline: copy the entry with the value appended
-                epos = out.length
-                out.append(page.textAt(off, 6 + vc * 4))
-                out.setWordAt(epos + 4, vc + 1)
-                btAppendInt(out, value)
-                btAppendInt(out, ovf)
-            } else {
-                // inline full (or a chain already exists): spill to overflow
-                newOvf = btOverflowAppend(f, ovf, value)
-                if newOvf < 0 { return false }
-                epos = out.length
-                out.append(page.textAt(off, 10 + vc * 4))
-                out.setIntAt(epos + 6 + vc * 4, newOvf)
-            }
-            merged = true
-        } else {
-            out.append(page.textAt(off, esz))
-        }
-        off = off + esz
+        off = off + 10 + vc * 4
         i = i + 1
     }
-    if not added and not merged {
+    endOff = off
+    if at < 0 { at = endOff }
+    if at > btLeafHeaderSize { out.append(page.textAt(btLeafHeaderSize, at - btLeafHeaderSize)) }
+    if merged {
+        vc = page.wordAt(at + 4)
+        esz = 10 + vc * 4
+        ovf = page.intAt(at + 6 + vc * 4)
+        if vc < btMaxInline and ovf == 0 {
+            // room inline: copy the entry with the value appended
+            epos = out.length
+            out.append(page.textAt(at, 6 + vc * 4))
+            out.setWordAt(epos + 4, vc + 1)
+            btAppendInt(out, value)
+            btAppendInt(out, ovf)
+        } else {
+            // inline full (or a chain already exists): spill to overflow
+            newOvf = btOverflowAppend(f, ovf, value)
+            if newOvf < 0 { return false }
+            if newOvf == ovf { return true }    // chain grew; the leaf is unchanged
+            epos = out.length
+            out.append(page.textAt(at, esz))
+            out.setIntAt(epos + 6 + vc * 4, newOvf)
+        }
+        at = at + esz
+    } else {
         btAppendNewEntry(out, key, value)
         added = true
     }
+    if endOff > at { out.append(page.textAt(at, endOff - at)) }
     if added { n = n + 1 }
     if out.length <= btLeafBudget {
         return btWriteLeaf(f, leaf, page, out, n)
@@ -706,7 +731,7 @@ func btScanStart(f: filehandle, cur: text, fromKey: int, descending: bool): bool
     var k: int
     var found: int = 0 - 1
     btTextReset(cur)
-    while cur.length < btScanHdrSize { cur.append(char(0)) }
+    btPadTo(cur, btScanHdrSize)
     cur[0] = char(btScanDone)
     if not btDescend(f, fromKey, path, page) { return false }
     if descending { cur[1] = char(1) }
@@ -777,61 +802,56 @@ func btRemove(f: filehandle, key: int, value: int, valueOnly: bool): bool {
     var n: int
     var off: int
     var i: int = 0
-    var k: int
     var vc: int
     var esz: int
     var j: int
     var hit: int
     var ovf: int
+    var at: int
+    var endOff: int
     var drops: int = 0
-    var found: bool = false
     if not btDescend(f, key, path, page) { return false }
     leaf = path[path.count - 1]
     n = page.wordAt(1)
+    // Find the key's entry and the end of the entries, reading fields
+    // only; the new region is then three slices (before, the entry
+    // minus the value or nothing, after) -- see btInsert.
     off = btLeafHeaderSize
+    at = 0 - 1
     while i < n {
-        k = page.intAt(off)
-        vc = page.wordAt(off + 4)
-        esz = 10 + vc * 4
-        if k != key {
-            out.append(page.textAt(off, esz))
-        } else {
-            if not valueOnly {
-                found = true
-                drops = drops + 1
-            } else {
-                ovf = page.intAt(off + 6 + vc * 4)
-                hit = -1
-                j = 0
-                while j < vc {
-                    if hit < 0 and page.intAt(off + 6 + j * 4) == value { hit = j }
-                    j = j + 1
-                }
-                if hit < 0 {
-                    // not inline: try the overflow chain; the entry is unchanged
-                    if ovf != 0 and btOverflowRemoveFirst(f, ovf, value) { found = true }
-                    out.append(page.textAt(off, esz))
-                } else if vc == 1 and ovf == 0 {
-                    found = true
-                    drops = drops + 1
-                } else {
-                    // drop the hit value; keep the rest inline and the chain ptr
-                    found = true
-                    btAppendInt(out, k)
-                    btAppendWord(out, vc - 1)
-                    j = 0
-                    while j < vc {
-                        if j != hit { btAppendInt(out, page.intAt(off + 6 + j * 4)) }
-                        j = j + 1
-                    }
-                    btAppendInt(out, ovf)
-                }
-            }
-        }
-        off = off + esz
+        if at < 0 and page.intAt(off) == key { at = off }
+        off = off + 10 + page.wordAt(off + 4) * 4
         i = i + 1
     }
-    if not found { return false }
+    endOff = off
+    if at < 0 { return false }
+    vc = page.wordAt(at + 4)
+    esz = 10 + vc * 4
+    ovf = page.intAt(at + 6 + vc * 4)
+    hit = 0 - 1
+    if valueOnly {
+        j = 0
+        while j < vc and hit < 0 {
+            if page.intAt(at + 6 + j * 4) == value { hit = j }
+            j = j + 1
+        }
+        if hit < 0 {
+            // not inline: the overflow chain; the leaf is unchanged
+            return ovf != 0 and btOverflowRemoveFirst(f, ovf, value)
+        }
+    }
+    if at > btLeafHeaderSize { out.append(page.textAt(btLeafHeaderSize, at - btLeafHeaderSize)) }
+    if not valueOnly or (vc == 1 and ovf == 0) {
+        drops = 1                           // the whole entry goes
+    } else {
+        // the entry minus value `hit`: key, count, values before it,
+        // then the values after it and the overflow pointer
+        j = out.length
+        out.append(page.textAt(at, 6 + hit * 4))
+        out.setWordAt(j + 4, vc - 1)
+        out.append(page.textAt(at + 10 + hit * 4, (vc - hit - 1) * 4 + 4))
+    }
+    if endOff > at + esz { out.append(page.textAt(at + esz, endOff - at - esz)) }
     return btWriteLeaf(f, leaf, page, out, n - drops)
 }
 
