@@ -368,7 +368,8 @@ func expirePosts(boardId: int, cutoff: int): int {
         i = i + 1
         if batch.count == 50 or i == doomed.count {
             r = dbDeleteMany(postsDb, batch)     // one transaction per batch
-            if r > 0 { n = n + r }
+            if r < 0 { return -1 }              // left pending: close it, the next open rebuilds
+            n = n + r
             batch.clear()
         }
     }

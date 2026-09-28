@@ -389,7 +389,9 @@ func benchDeleteSetup() {
     }
     t0 = TickCount()
     while i < benchDelN {
-        dbAdd(benchDb, packPost("bench", now() - 86400 + i, i + 1, "bench", 0, 0, 1000 + i, none, 0))
+        // MsgIds scattered like real echomail's (CRCs), so the MsgId
+        // index gets no locality the others have
+        dbAdd(benchDb, packPost("bench", now() - 86400 + i, i + 1, "bench", 0, 0, ((i + 1) * 40503 * 65537) & 0x7FFFFFFF, none, 0))
         i = i + 1
     }
     log("dbAdd (post, 3 indexes) x" + string(benchDelN) + ": " + msEach(TickCount() - t0, benchDelN) + " each")
@@ -420,7 +422,7 @@ func benchLogPhases(label: string, ticks: int, n: int) {
     var names: list of string
     var i: int = 0
     names.add("lookup")
-    names.add("journal")
+    names.add("journal (batch: pending flag)")
     names.add("free pages")
     names.add("primary index")
     names.add("index open/close")

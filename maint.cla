@@ -52,7 +52,7 @@ include "toolbox/events.cla"
 const maintDay: int = 86400
 const maintTickBudget: int = 5          // ticks of work per maintTick
 const maintProgressTicks: int = 3600    // a progress line a minute
-const maintDeleteBatch: int = 5         // expiry deletes per transaction (~4 s a unit on the SE)
+const maintDeleteBatch: int = 10        // expiry deletes per transaction (~3.5 s a unit on the SE)
 
 // per-item steps
 const msStart: int = 0
@@ -321,7 +321,15 @@ func maintDeleteUnit() {
             maintDoomedAt = maintDoomedAt + 1
         }
         r = dbDeleteMany(postsDb, batch)
-        if r > 0 { maintExpired = maintExpired + r }
+        if r < 0 {
+            // left pending on purpose: close it untouched (msDone) --
+            // its next open rebuilds the indexes
+            maintItemLog("Deleting failed: " + lastError.message + "; the board is rebuilt when next opened")
+            maintDoomedAt = maintDoomed.count
+            maintStep = msDone
+            return
+        }
+        maintExpired = maintExpired + r
         maintProgCount = maintProgCount + batch.count
         return
     }

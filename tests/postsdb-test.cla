@@ -90,6 +90,9 @@ func deleteManyTests() {
     var i: int = 1
     var n: int = 0
     var idx: filehandle
+    var hdr: text
+    var rec: bool
+    var firsts: list of int
     expect(postsOpen(6), "board 6")
     while i <= 10 {
         addPostFtn("a", now() - 1000 + i, 0, "s", "body", 5000 + i, none, 0)
@@ -113,6 +116,23 @@ func deleteManyTests() {
     expect(postsDb.journal.size() == 0, "journal truncated at commit")
     postsClose()
     expect(postsOpen(6) and postCount() == 7 and not loadPost(2) and postBody(10) == "body", "persists across reopen")
+    // a crash part-way through a batch: pending set, one record's pages
+    // freed, no index touched, no journal -- the next open's rebuild
+    // must leave a consistent board without it
+    rec = dbReadHeader(postsDb, hdr)
+    expect(dbSetPending(postsDb, hdr, true), "crash: pending set")
+    firsts.add(dbFirstPage(postsDb, 8))
+    expect(dbFreePagesMany(postsDb, firsts, 1), "crash: post 8's page freed, indexes untouched")
+    postsClose()
+    expect(postsOpen(6), "reopen after the crash rebuilds")
+    expect(postCount() == 6 and not loadPost(8) and loadPost(9), "post 8 gone, the rest intact")
+    expect(findPostByMsgId(5008) < 1 and findPostByMsgId(5009) == 9, "MsgId index rebuilt without it")
+    n = 0
+    if postsByCreatedStart(false) {
+        while postsByCreatedNext() > 0 { n = n + 1 }
+    }
+    postsByCreatedEnd()
+    expect(n == 6, "Created index rebuilt without it")
     postsClose()
 }
 

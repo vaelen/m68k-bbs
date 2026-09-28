@@ -74,7 +74,28 @@ func fuzzTests() {
         step = step + 1
     }
     expect(ok, "fuzz: every insert and delete succeeded")
-    key = 0
+    expect(fuzzCheck(f, mk, mv), "fuzz: every key's values match the model, in order")
+    fuzzBatches(f, mk, mv, seed)
+    ok = true
+    prev = 0 - 1
+    if btScanStart(f, cur, 0 - 1, false) {
+        while btScanNext(f, cur) {
+            if btScanKey(cur) <= prev { ok = false }
+            prev = btScanKey(cur)
+        }
+    }
+    expect(ok, "fuzz: scan visits keys ascending")
+    f.close()
+}
+
+// Every model key's values, in order, are exactly what the tree holds.
+func fuzzCheck(f: filehandle, mk: list of int, mv: list of int): bool {
+    var got: list of int
+    var want: list of int
+    var key: int = 0
+    var i: int
+    var j: int
+    var ok: bool = true
     while key < 60 and ok {
         want.clear()
         i = 0
@@ -93,17 +114,59 @@ func fuzzTests() {
         if not ok { log("fuzz mismatch at key " + string(key) + ": " + string(got.count) + " vs " + string(want.count)) }
         key = key + 1
     }
-    expect(ok, "fuzz: every key's values match the model, in order")
-    ok = true
-    prev = 0 - 1
-    if btScanStart(f, cur, 0 - 1, false) {
-        while btScanNext(f, cur) {
-            if btScanKey(cur) <= prev { ok = false }
-            prev = btScanKey(cur)
+    return ok
+}
+
+// btRemoveMany in rounds: random pairs from anywhere in the tree, a run
+// of neighbouring keys, and pairs that don't exist. After each round
+// every pair left in the model must still be there, in order -- a
+// batch must never take a neighbour on its page with it.
+func fuzzBatches(f: filehandle, mk: list of int, mv: list of int, seed0: int) {
+    var bk: list of int
+    var bv: list of int
+    var seed: int = seed0
+    var round: int = 0
+    var i: int
+    var want: int
+    var r: int
+    var ok: bool = true
+    while round < 30 and ok and mk.count > 0 {
+        bk.clear()
+        bv.clear()
+        seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+        if round mod 3 == 0 {
+            // neighbours: a run of keys from one point in model order
+            i = (seed / 4096) mod mk.count
+            while bk.count < 12 and i < mk.count {
+                bk.add(mk[i])
+                bv.add(mv[i])
+                mk.remove(i)
+                mv.remove(i)
+            }
+        } else {
+            while bk.count < 15 and mk.count > 0 {
+                seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+                i = (seed / 4096) mod mk.count
+                bk.add(mk[i])
+                bv.add(mv[i])
+                mk.remove(i)
+                mv.remove(i)
+            }
         }
+        want = bk.count
+        bk.add(33)                          // absent pairs: skipped, nothing else touched
+        bv.add(999999)
+        bk.add(61)
+        bv.add(1)
+        r = btRemoveMany(f, btRootPage(f), bk, bv)
+        if r != want {
+            log("fuzz batch round " + string(round) + ": removed " + string(r) + " of " + string(want))
+            ok = false
+        }
+        if ok and not fuzzCheck(f, mk, mv) { ok = false }
+        round = round + 1
     }
-    expect(ok, "fuzz: scan visits keys ascending")
-    f.close()
+    expect(ok, "fuzz: btRemoveMany removes exactly its pairs, neighbours kept")
 }
 
 on App.startCLI(args: list of string) {

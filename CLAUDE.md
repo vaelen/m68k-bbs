@@ -210,10 +210,15 @@ inputChar (bbs.cla) → processInput`.
   `dbFieldIntAt` — one i32 field without materializing the record,
   which a 68k text-returning call makes ~100 ms; `dbBuildIndex` reads
   only key fields the same way). `dbDeleteMany(db, ids)` deletes a batch
-  in ONE transaction -- one journal flush, free-list update, commit and
-  index open each, roots read once via `btFindFrom`/`btRemoveFrom`
-  (deletes never move a root) -- used by expiry (`maintDeleteBatch`,
-  `expirePosts`). `dbCreate` refuses a name whose `.DAT`
+  in ONE transaction with ~1 disk write per record (writes are ~73 ms
+  on the SE, reads ~6): no journal entries -- the pending flag alone
+  is crash-safe, since a pending open rebuilds every index and recounts
+  records (`dbCountPrimary`) -- one free-list update per batch
+  (`dbFreePagesMany`), each index updated leaf by leaf (`btRemoveMany`:
+  a leaf read once, only the batch's exact key/record pairs removed via
+  `btEntryRemove`, written once), roots read once (deletes never move a
+  root); on error it leaves the db pending for the caller to close.
+  Used by expiry (`maintDeleteBatch`, `expirePosts`). `dbCreate` refuses a name whose `.DAT`
   exists (logs "exists but did not open"): every owner's open falls
   back to it when `dbOpen` fails, which once recreated boards empty
   over their data. `usersdb.cla` — the "Users" vDB database

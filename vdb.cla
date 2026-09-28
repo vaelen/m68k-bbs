@@ -217,8 +217,11 @@ func dbFreePages(db: Database, firstPage: int, count: int): bool {
     return dbFreePagesMany(db, firsts, count)
 }
 
-// Free `count` pages at each run start in `firsts`: mark them empty,
-// then one free-list read and write for the lot.
+// Free `count` pages at each run start in `firsts`: a 1-byte status
+// mark per page, then one free-list read and write for the lot. (Not
+// whole-stretch page rewrites: on the SE a write costs about the same
+// per sector however many there are, so rewriting 512-byte pages was
+// slower than 1-byte marks -- bench, 2026-09-28.)
 func dbFreePagesMany(db: Database, firsts: list of int, count: int): bool {
     var f: filehandle = db.data
     var fl: text
@@ -571,6 +574,7 @@ func dbSetPending(db: Database, hdr: text, pending: bool): bool {
 func dbCommit(db: Database, hdr: text): bool {
     var j: filehandle = db.journal
     if not dbSetPending(db, hdr, false) { return false }
+    if j.size() == 0 { return true }        // dbDeleteMany journals nothing
     return j.setSize(0)
 }
 
@@ -584,6 +588,19 @@ func dbRollback(db: Database, hdr: text) {
 // up twice (a crash between a compaction move and the old copy's
 // clearing), the first copy -- the lower page, i.e. the moved-to one
 // -- wins and later copies are marked empty.
+// Entries in the primary index file (a key scan), 0 if it won't open.
+func dbCountPrimary(name: string): int {
+    var idx: filehandle = btOpen(name + ".IDX")
+    var cur: text
+    var n: int = 0
+    if idx == nil { return 0 }
+    if btScanStart(idx, cur, 0 - 2147483647 - 1, false) {
+        while btScanNext(idx, cur) { n = n + 1 }
+    }
+    idx.close()
+    return n
+}
+
 func dbRebuildPrimary(db: Database, pages: int): bool {
     var f: filehandle = db.data
     var idx: filehandle
@@ -646,6 +663,9 @@ func dbReplayJournal(db: Database): bool {
     }
     if not dbReadHeader(db, hdr) { return false }
     if not dbRebuildPrimary(db, dbPagesNeeded(hdr.wordAt(8))) { return false }
+    // recount: an interrupted delete may have freed pages the header
+    // still counts
+    hdr.setIntAt(10, dbCountPrimary(db.name))
     // rebuild every secondary index the same way
     i = 0
     while i < int(hdr[23]) {
@@ -937,23 +957,36 @@ func dbDelete(db: Database, id: int): bool {
 }
 
 // Active-record count, from the header; -1 on error.
-// Delete several records in ONE transaction: one journal append and
-// flush, one free-list update, each index file opened once with its
-// root read once (deletes never move a root), one commit -- the
-// per-delete overhead that made up ~600 of dbDelete's ~1460 ms on the
-// SE. IDs not found are skipped; `ids` must not repeat. Returns the
-// number deleted, or -1 on error (rolled back like dbDelete). Phase
-// timing (dbTiming) sums over the batch.
+// Delete several records in ONE transaction, with as few writes as
+// the batch allows (writes are ~73 ms on the SE, reads ~6):
+//   - no journal entries. The pending flag alone makes it crash-safe:
+//     a pending database's next open rebuilds the primary and every
+//     secondary index from the data pages (dbReplayJournal), which is
+//     consistent whether a record's page was freed yet or not -- a
+//     crash just leaves part of the batch undeleted, and expiry
+//     deletes it next run. (Journaling a delete only finished it.)
+//   - one free-list update, neighbouring pages marked together
+//     (dbFreePagesMany)
+//   - each index updated leaf by leaf (btRemoveMany: every leaf read
+//     once, only this batch's exact key/record pairs removed from it,
+//     written once), each index file opened and its root read once
+//     (deletes never move a root)
+//   - one commit.
+// IDs not found are skipped; `ids` must not repeat. Returns the number
+// deleted, or -1 on an error -- which leaves the database PENDING on
+// purpose: part of the batch may be applied, and only the rebuild at
+// the next open makes it consistent again, so the caller should close
+// it (dbClose) and not write to it again this session. Phase timing
+// (dbTiming) sums over the batch; "journal" is now just the pending
+// flag.
 func dbDeleteMany(db: Database, ids: list of int): int {
     var hdr: text
     var rec: text
-    var jnl: text
-    var none: text
     var v: list of int
     var found: list of int          // ids found
     var firsts: list of int         // their first pages
     var keys: list of int           // [record * nIdx + slot]
-    var j: filehandle
+    var slotKeys: list of int
     var idx: filehandle
     var size: int
     var nIdx: int
@@ -987,47 +1020,30 @@ func dbDeleteMany(db: Database, ids: list of int): int {
     if found.count == 0 { return 0 }
     dbTime(dtLookup)
     if not dbSetPending(db, hdr, true) { return 0 - 1 }
-    i = 0
-    while i < found.count {
-        jnl.append(dbJournalEntry(joDelete, firsts[i], found[i], psEmpty, none, 0))
-        i = i + 1
-    }
-    j = db.journal
-    if not j.append(jnl) or not j.flush() {
-        dbRollback(db, hdr)
-        return 0 - 1
-    }
     dbTime(dtJournal)
-    if not dbFreePagesMany(db, firsts, dbPagesNeeded(size)) {
-        dbRollback(db, hdr)
-        return 0 - 1
-    }
+    if not dbFreePagesMany(db, firsts, dbPagesNeeded(size)) { return 0 - 1 }
     dbTime(dtFree)
-    i = 0
-    while i < found.count {
-        if not btRemoveFrom(db.index, root, found[i], firsts[i], true) {
-            dbRollback(db, hdr)
-            return 0 - 1
-        }
-        i = i + 1
-    }
+    if btRemoveMany(db.index, root, found, firsts) < 0 { return 0 - 1 }
     dbTime(dtPrimary)
     s = 0
     while s < nIdx {
         base = 32 + s * 32
         idx = btOpen(dbIndexPath(db.name, int(hdr[base + 31])))
         dbTime(dtIdxOpen)
-        if idx != nil {
-            root = btRootPage(idx)
-            i = 0
-            while i < found.count {
-                btRemoveFrom(idx, root, keys[i * nIdx + s], found[i], true)
-                i = i + 1
-            }
-            dbTime(dtIdxDelete)
-            idx.close()
-            dbTime(dtIdxOpen)
+        if idx == nil { return 0 - 1 }
+        slotKeys.clear()
+        i = 0
+        while i < found.count {
+            slotKeys.add(keys[i * nIdx + s])
+            i = i + 1
         }
+        if btRemoveMany(idx, btRootPage(idx), slotKeys, found) < 0 {
+            idx.close()
+            return 0 - 1
+        }
+        dbTime(dtIdxDelete)
+        idx.close()
+        dbTime(dtIdxOpen)
         s = s + 1
     }
     hdr.setIntAt(10, hdr.intAt(10) - found.count)    // record_count

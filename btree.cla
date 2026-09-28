@@ -810,63 +810,147 @@ func btRemove(f: filehandle, key: int, value: int, valueOnly: bool): bool {
 
 func btRemoveFrom(f: filehandle, root: int, key: int, value: int, valueOnly: bool): bool {
     var page: text
-    var out: text
+    var ent: text
     var path: list of int
-    var leaf: int
     var n: int
-    var off: int
-    var i: int = 0
-    var vc: int
-    var esz: int
-    var j: int
-    var hit: int
-    var ovf: int
-    var at: int
-    var endOff: int
-    var drops: int = 0
+    var r: int
     if not btDescendFrom(f, root, key, path, page) { return false }
-    leaf = path[path.count - 1]
     n = page.wordAt(1)
-    // Find the key's entry and the end of the entries, reading fields
-    // only; the new region is then three slices (before, the entry
-    // minus the value or nothing, after) -- see btInsert.
-    off = btLeafHeaderSize
-    at = 0 - 1
+    btLeafEntries(page, ent)
+    r = btEntryRemove(f, ent, n, key, value, valueOnly)
+    if r < 0 { return false }
+    if r == 0 { return true }               // removed from the overflow chain; leaf unchanged
+    if r == 2 { n = n - 1 }
+    return btWriteLeaf(f, path[path.count - 1], page, ent, n)
+}
+
+// A leaf's packed entries region (everything after its header), into
+// `ent`; returns the last entry's key (0 for an empty leaf).
+func btLeafEntries(page: text, ent: text): int {
+    var n: int = page.wordAt(1)
+    var off: int = btLeafHeaderSize
+    var i: int = 0
+    var last: int = 0
     while i < n {
-        if at < 0 and page.intAt(off) == key { at = off }
+        last = page.intAt(off)
         off = off + 10 + page.wordAt(off + 4) * 4
         i = i + 1
     }
-    endOff = off
-    if at < 0 { return false }
-    vc = page.wordAt(at + 4)
+    ent.clear()
+    if off > btLeafHeaderSize { ent.append(page.textAt(btLeafHeaderSize, off - btLeafHeaderSize)) }
+    return last
+}
+
+// Remove `key` (valueOnly: just `value` under it) from a leaf's entries
+// region `ent` (n entries), in place. The entry is found by reading
+// fields only and the region rebuilt from three slices (before, the
+// entry minus the value or nothing, after) -- one text copy per entry
+// cost ~290 ms a leaf on the 68k. Every other entry is copied through
+// untouched. Returns -1 not found, 0 removed from the key's overflow
+// chain (region unchanged), 1 value removed (entry kept), 2 entry
+// dropped.
+func btEntryRemove(f: filehandle, ent: text, n: int, key: int, value: int, valueOnly: bool): int {
+    var out: text
+    var off: int = 0
+    var i: int = 0
+    var at: int = 0 - 1
+    var vc: int
+    var esz: int
+    var ovf: int
+    var hit: int = 0 - 1
+    var j: int
+    while i < n and at < 0 {
+        if ent.intAt(off) == key { at = off }
+        off = off + 10 + ent.wordAt(off + 4) * 4
+        i = i + 1
+    }
+    if at < 0 { return 0 - 1 }
+    vc = ent.wordAt(at + 4)
     esz = 10 + vc * 4
-    ovf = page.intAt(at + 6 + vc * 4)
-    hit = 0 - 1
+    ovf = ent.intAt(at + 6 + vc * 4)
     if valueOnly {
         j = 0
         while j < vc and hit < 0 {
-            if page.intAt(at + 6 + j * 4) == value { hit = j }
+            if ent.intAt(at + 6 + j * 4) == value { hit = j }
             j = j + 1
         }
         if hit < 0 {
-            // not inline: the overflow chain; the leaf is unchanged
-            return ovf != 0 and btOverflowRemoveFirst(f, ovf, value)
+            // not inline: the overflow chain; the region is unchanged
+            if ovf != 0 and btOverflowRemoveFirst(f, ovf, value) { return 0 }
+            return 0 - 1
         }
     }
-    if at > btLeafHeaderSize { out.append(page.textAt(btLeafHeaderSize, at - btLeafHeaderSize)) }
-    if not valueOnly or (vc == 1 and ovf == 0) {
-        drops = 1                           // the whole entry goes
-    } else {
+    if at > 0 { out.append(ent.textAt(0, at)) }
+    if valueOnly and not (vc == 1 and ovf == 0) {
         // the entry minus value `hit`: key, count, values before it,
         // then the values after it and the overflow pointer
         j = out.length
-        out.append(page.textAt(at, 6 + hit * 4))
+        out.append(ent.textAt(at, 6 + hit * 4))
         out.setWordAt(j + 4, vc - 1)
-        out.append(page.textAt(at + 10 + hit * 4, (vc - hit - 1) * 4 + 4))
+        out.append(ent.textAt(at + 10 + hit * 4, (vc - hit - 1) * 4 + 4))
     }
-    if endOff > at + esz { out.append(page.textAt(at + esz, endOff - at - esz)) }
-    return btWriteLeaf(f, leaf, page, out, n - drops)
+    if ent.length > at + esz { out.append(ent.textAt(at + esz, ent.length - at - esz)) }
+    ent.clear()
+    ent.append(out)
+    if valueOnly and not (vc == 1 and ovf == 0) { return 1 }
+    return 2
+}
+
+// Remove every (keys[i], values[i]) pair, grouped by leaf: pairs are
+// taken in key order, each leaf is read once, all of its pairs are
+// removed in memory (btEntryRemove -- only those exact pairs; every
+// other entry on the page is kept), and the leaf is written once. A
+// batch of consecutive keys (expiry: oldest IDs, dates, threads) costs
+// about one leaf write instead of one per pair -- writes are ~73 ms on
+// the SE. The root must be current (deletes never move it). Returns
+// the number removed, or -1 on an I/O error.
+func btRemoveMany(f: filehandle, root: int, keys: list of int, values: list of int): int {
+    var order: list of int
+    var page: text
+    var ent: text
+    var path: list of int
+    var i: int
+    var j: int
+    var t: int
+    var p: int = 0
+    var n: int
+    var last: int
+    var r: int
+    var changed: bool
+    var removed: int = 0
+    // insertion sort of indices by key (batches are small)
+    i = 0
+    while i < keys.count {
+        order.add(i)
+        j = order.count - 1
+        while j > 0 and keys[order[j - 1]] > keys[order[j]] {
+            t = order[j - 1]
+            order[j - 1] = order[j]
+            order[j] = t
+            j = j - 1
+        }
+        i = i + 1
+    }
+    while p < order.count {
+        if not btDescendFrom(f, root, keys[order[p]], path, page) { return 0 - 1 }
+        n = page.wordAt(1)
+        last = btLeafEntries(page, ent)
+        changed = false
+        // this pair, then every following pair whose key this leaf holds
+        j = p
+        while j < order.count and (j == p or (n > 0 and keys[order[j]] <= last)) {
+            r = btEntryRemove(f, ent, n, keys[order[j]], values[order[j]], true)
+            if r >= 0 { removed = removed + 1 }
+            if r >= 1 { changed = true }
+            if r == 2 { n = n - 1 }
+            j = j + 1
+        }
+        if changed {
+            if not btWriteLeaf(f, path[path.count - 1], page, ent, n) { return 0 - 1 }
+        }
+        p = j
+    }
+    return removed
 }
 
 // Delete a key and all its values.
