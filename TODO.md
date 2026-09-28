@@ -72,6 +72,61 @@ negotiates BINARY at connect; add if some other client turns up that
 won't. `zmodem.cla` receiver's `ZRINIT` builder, plus a unit case in
 `tests/zmodem-test.cla` (the parser side already handles ESCCTL).
 
+## Faster post adds (tossing)
+
+`dbAdd` of a post costs ~1.55 s on the SE (68kBBS Bench, 2026-09-28),
+and a tossed echomail message pays more on top of it. Deletes had the
+same problem and went from ~2.2 s to ~0.32 s each by cutting disk
+writes (see `dbDeleteMany`/`btRemoveMany`, commit 96d5680). The
+constraint is the same: on the SE a 512-byte `writeAt` costs ~73 ms
+(and about that per sector whatever the size), a `readAt` ~6 ms, a
+flush ~25 ms more, a text op ~4-7 ms, a one-byte `append` ~0.3 ms.
+
+Where an add's writes go today (`dbAdd`, vdb.cla): pending-flag header
+write; free-list read/write or file growth (`dbAllocatePages`); a
+518-byte journal entry built, appended and flushed
+(`dbJournalRecord`); the record page; a primary `btInsert` leaf write;
+three secondary `btInsert`s, each opening/closing its index file and
+writing a leaf (`dbIndexInsertAll`); the commit (header write +
+journal truncate). Per tossed post, `addPostFtn` (postsdb.cla) adds a
+body-heap append + flush and `boardTouch` -- a full journaled
+`dbUpdate` of the Boards record, just to stamp `lastPost`.
+
+In order:
+
+1. **Measure first.** Per-phase `dbTiming` for `dbAdd` like `dbDelete`
+   has (`dt*` phases, `dbTimes`), plus an "add a post the way the toss
+   does" run in `bench.cla` (body append + `boardTouch` + MsgId dupe
+   check) so the whole per-message cost is visible.
+2. **`boardTouch` once per batch, not per post** -- probably the
+   cheapest big win: remember the newest `created` per board during a
+   toss unit and stamp it once at the end (local posts can keep the
+   per-post touch).
+3. **`dbAddMany(db, recs)` for the toss:** one pending flag, one
+   free-list update, record pages written, each index file opened once
+   and updated by a `btInsertMany` (keys sorted, each leaf read once,
+   the batch's entries inserted in memory, written once; a leaf that
+   overflows its budget falls back to the existing one-at-a-time split
+   path for that leaf), one commit. Body-heap appends batched with a
+   single flush before the header adds (keep the body-before-header
+   ordering, postsdb.cla file comment). The tosser (`ftntoss.cla`)
+   would collect a packet's messages per board -- dupe-checking against
+   the batch as well as the board -- and add them together; that
+   changes its one-message-per-tick unit, so size batches to the
+   ~5-tick slice budget.
+4. **Drop the journal entry for single-page records**, as
+   `dbDeleteMany` did: a pending database's next open rebuilds every
+   index from the data pages, so a crash mid-add either has the record
+   page (kept) or not (gone). Required first: replay must recompute
+   `next_record_id` as max ID + 1 (and it already recounts records via
+   `dbCountPrimary`), or a crash between the page write and the header
+   update would hand the same ID out twice. Multi-page records keep the
+   journal (a torn run of pages).
+
+Adds matter less than deletes did for maintenance, but they set the
+toss rate: a big inbound packet on the SE currently tosses at well
+under one message a second.
+
 ## Maintenance follow-ups (docs/maintenance.md)
 
 - **Bulk-load the index rebuild.** `dbCompact` re-inserts one record at
