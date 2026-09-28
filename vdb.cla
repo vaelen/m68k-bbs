@@ -309,6 +309,24 @@ func dbFieldIntAt(db: Database, firstPage: int, off: int): int {
     return t.intAt(0)
 }
 
+// Write the i32 field at record offset `off` in place: dbFieldIntAt's
+// inverse. NOT journaled and no index maintenance -- only for
+// unindexed fields whose caller can redo the write after a crash
+// (heap.cla's offset fix, redone while its .OLD file exists). The
+// caller flushes db.data when done.
+func dbSetFieldIntAt(db: Database, firstPage: int, off: int, v: int): bool {
+    var f: filehandle = db.data
+    var t: text
+    var page: int = firstPage + off / dbPageDataSize
+    var at: int = off mod dbPageDataSize
+    var n: int = dbPageDataSize - at
+    btAppendInt(t, v)
+    if n >= 4 { return f.writeAt(page * dbPageSize + 6 + at, t) }
+    // the field straddles a page boundary
+    if not f.writeAt(page * dbPageSize + 6 + at, t.textAt(0, n)) { return false }
+    return f.writeAt((page + 1) * dbPageSize + 6, t.textAt(n, 4 - n))
+}
+
 // --- Secondary indexes ------------------------------------------------
 // Metadata lives in page 0's index list: 32-byte DBIndexInfo slots at
 // offset 32 + 32*slot -- field_name (Pascal, 28 bytes), field_offset

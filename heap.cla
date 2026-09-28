@@ -6,31 +6,68 @@
 // bytes with an (offset, length) pair at fixed field positions, bodies
 // are exact-fit with no framing, and deletes orphan their bytes.
 //
-// Enumeration: heapLiveBytes and heapCompact's copy loop walk the
-// primary index (ascending = ID order) reading only the offset/length
-// fields (dbFieldIntAt) -- a dbFind per ID cost ~130 ms each on the
-// 68k, which made the clean-heap no-op check alone take minutes on a
-// big board. heapFixOffsets deliberately stays on ID probing: it
-// updates records while iterating, which the scan cursor's no-writes
-// rule forbids, and it only runs when a heap was actually rewritten
-// (or on crash recovery).
-//
 // Fresh-file rewrite with deterministic offsets: walk records in ID
 // order appending each live body to <name>.NEW; a body's new offset is
 // the running total of the live bodies before it, so it can be
 // recomputed from the headers alone. Then .MSG -> .OLD, .NEW -> .MSG,
-// rewrite every header's offset (journaled dbUpdate), delete .OLD.
-// Every crash point is recoverable at the next open (heapRecover):
+// rewrite every header's offset, delete .OLD. Every crash point is
+// recoverable at the next open (heapRecover):
 //   .NEW only            crashed mid-rewrite       delete .NEW
 //   .OLD + .NEW, no .MSG crashed between renames   finish the swap, then
 //   .OLD + .MSG          crashed fixing offsets    fix offsets, delete .OLD
 // Both are idempotent. docs/maintenance.md.
 //
+// The offset fix writes the field in place (dbSetFieldIntAt: no
+// journal, no index work -- the offset fields are unindexed). That is
+// safe because .OLD stays on disk until the fix is flushed: a crash
+// part-way leaves .OLD, and the next open redoes the whole fix.
+//
+// Maintenance runs it as a job of one-record units (heapBegin, then
+// heapUnit until it stops returning hsMore) in three passes over the
+// primary index (ID order, no deleted-ID gaps), each reading only the
+// offset/length fields (dbFieldIntAt -- a dbFind costs ~130 ms on the
+// 68k):
+//   hjCheck  sum the live lengths; too little waste ends the job here
+//   hjCopy   append each live body to .NEW, then swap the files
+//   hjFix    rewrite each offset, flush, delete .OLD
+// The scan cursor (hjCur) lives in a global across events, which the
+// scan API normally forbids: it is safe only because nothing writes
+// the database's index while a job runs -- maintenance refuses callers
+// and holds off polls and tosses, and the job itself writes only .NEW
+// and record data pages. One job at a time.
+//
 // `path` is a plain file name next to the app (file.rename takes a
-// leaf name). The owner closes its own heap handle before calling
-// heapCompact and reopens it after.
+// leaf name). The owner closes its own heap handle before heapBegin
+// and reopens after the job ends.
 
 include "vdb.cla"
+
+const hsDone: int = 0       // job finished (hjPacked says whether it rewrote)
+const hsMore: int = 1       // call heapUnit again
+const hsFailed: int = 2
+
+const hjCheck: int = 1
+const hjCopy: int = 2
+const hjFix: int = 3
+
+// A heap is rewritten only when at least 1/heapWasteDivisor of it is
+// orphaned bytes, so daily expiry doesn't rewrite a big heap nightly.
+const heapWasteDivisor: int = 4
+
+var hjPath: string
+var hjOff: int
+var hjLen: int
+var hjSrc: filehandle
+var hjDst: filehandle
+var hjStage: int = 0
+var hjCur: text             // primary-index scan cursor, kept across units
+var hjCurOk: bool = false   // false: the scan is exhausted
+var hjSize: int             // the old heap's size
+var hjLive: int             // check: live bytes so far
+var hjRunning: int          // fix: new offset of the next body
+var hjTotal: int            // records in the database (progress)
+var hjDone: int             // records visited in this pass (progress)
+var hjPacked: bool = false  // the finished job rewrote the heap
 
 func heapNewPath(path: string): string {
     return path[0, path.length - 4] + ".NEW"
@@ -40,89 +77,169 @@ func heapOldPath(path: string): string {
     return path[0, path.length - 4] + ".OLD"
 }
 
-// Sum of the live bodies' lengths (field-only reads via the primary
-// index; runs on every board during maintenance even when clean).
-func heapLiveBytes(db: Database, lenField: int): int {
-    var cur: text
-    var total: int = 0
-    if not btScanStart(db.index, cur, 1, false) { return 0 }
-    while btScanNext(db.index, cur) {
-        total = total + dbFieldIntAt(db, btScanValue(cur), lenField)
-    }
-    return total
-}
-
-// Rewrite every live record's offset to its deterministic value: the
-// running total of the live bodies before it. Idempotent.
+// Rewrite every live record's offset to the running total of the live
+// bodies before it, in one call (crash recovery at open). Idempotent.
 func heapFixOffsets(db: Database, offField: int, lenField: int): bool {
-    var id: int = 1
-    var last: int = dbNextRecordId(db)
-    var rec: text
+    var cur: text
+    var f: filehandle = db.data
     var running: int = 0
+    var page: int
     var len: int
-    while id < last {
-        rec = dbFind(db, id)
-        if rec.length > lenField + 3 {
-            len = rec.intAt(lenField)
+    if btScanStart(db.index, cur, 1, false) {
+        while btScanNext(db.index, cur) {
+            page = btScanValue(cur)
+            len = dbFieldIntAt(db, page, lenField)
             if len > 0 {
-                if rec.intAt(offField) != running {
-                    rec.setIntAt(offField, running)
-                    if not dbUpdate(db, id, rec) { return false }
+                if dbFieldIntAt(db, page, offField) != running {
+                    if not dbSetFieldIntAt(db, page, offField, running) { return false }
                 }
                 running = running + len
             }
         }
-        id = id + 1
     }
+    return f.flush()
+}
+
+func heapCloseFiles() {
+    var s: filehandle = hjSrc
+    var d: filehandle = hjDst
+    if s != nil { s.close() }
+    if d != nil { d.close() }
+    hjSrc = nil
+    hjDst = nil
+}
+
+// Start a pass: the cursor at the first record.
+func heapPass(db: Database, stage: int) {
+    hjStage = stage
+    hjDone = 0
+    hjCurOk = btScanStart(db.index, hjCur, 1, false)
+}
+
+// The next record's first page, or 0 once the pass is over.
+func heapNextPage(db: Database): int {
+    if hjCurOk { hjCurOk = btScanNext(db.index, hjCur) }
+    if not hjCurOk { return 0 }
+    hjDone = hjDone + 1
+    return btScanValue(hjCur)
+}
+
+// Begin a job on `path`; step it with heapUnit.
+func heapBegin(db: Database, path: string, offField: int, lenField: int): bool {
+    heapCloseFiles()
+    hjPacked = false
+    if not dbIsOpen(db) { return false }
+    hjSrc = file.open(path)
+    if hjSrc == nil { return false }
+    hjPath = path
+    hjOff = offField
+    hjLen = lenField
+    hjSize = hjSrc.size()
+    hjLive = 0
+    hjRunning = 0
+    hjTotal = dbRecordCount(db)
+    heapPass(db, hjCheck)
     return true
 }
 
-func heapCompact(db: Database, path: string, offField: int, lenField: int): bool {
-    var src: filehandle
-    var dst: filehandle
-    var cur: text
-    var body: text
+func heapFail(): int {
+    heapCloseFiles()
+    hjStage = 0
+    return hsFailed
+}
+
+// Check pass over: pack only when enough of the heap is orphaned.
+func heapCheckDone(db: Database): int {
+    if hjLive == hjSize or (hjSize - hjLive) * heapWasteDivisor < hjSize {
+        heapCloseFiles()
+        hjStage = 0
+        return hsDone
+    }
+    if file.exists(heapNewPath(hjPath)) { file.delete(heapNewPath(hjPath)) }
+    hjDst = file.create(heapNewPath(hjPath), "TEXT", "68BB")
+    if hjDst == nil { return heapFail() }
+    heapPass(db, hjCopy)
+    return hsMore
+}
+
+// Copy pass over: flush .NEW and swap it in.
+func heapCopyDone(db: Database): int {
+    var dst: filehandle = hjDst
+    if not dst.flush() {
+        heapCloseFiles()
+        file.delete(heapNewPath(hjPath))        // the old heap is untouched
+        return heapFail()
+    }
+    heapCloseFiles()
+    if not file.rename(hjPath, heapOldPath(hjPath)) {
+        file.delete(heapNewPath(hjPath))
+        return heapFail()
+    }
+    if not file.rename(heapNewPath(hjPath), hjPath) { return heapFail() }   // heapRecover finishes it
+    heapPass(db, hjFix)
+    return hsMore
+}
+
+// Fix pass over: flush the offsets, then .OLD can go.
+func heapFixDone(db: Database): int {
+    var f: filehandle = db.data
+    if not f.flush() { return heapFail() }                      // .OLD stays: redone at open
+    if not file.delete(heapOldPath(hjPath)) { return heapFail() }
+    hjStage = 0
+    hjPacked = true
+    return hsDone
+}
+
+// One record of the job. On hsFailed the files are left in a state
+// heapRecover handles, so the owner just closes and reopens.
+func heapUnit(db: Database): int {
+    var page: int = heapNextPage(db)
     var len: int
-    var ok: bool = true
-    if not dbIsOpen(db) { return false }
-    src = file.open(path)
-    if src == nil { return false }
-    if heapLiveBytes(db, lenField) == src.size() {
-        src.close()
-        return true                         // nothing orphaned
+    var body: text
+    var src: filehandle = hjSrc
+    var dst: filehandle = hjDst
+    switch hjStage {
+    case hjCheck {
+        if page == 0 { return heapCheckDone(db) }
+        hjLive = hjLive + dbFieldIntAt(db, page, hjLen)
     }
-    if file.exists(heapNewPath(path)) { file.delete(heapNewPath(path)) }
-    dst = file.create(heapNewPath(path), "TEXT", "68BB")
-    if dst == nil {
-        src.close()
-        return false
-    }
-    // primary-index scan = ID order; only the dst file is written, so
-    // the no-writes-during-scan rule holds
-    if btScanStart(db.index, cur, 1, false) {
-        while ok and btScanNext(db.index, cur) {
-            len = dbFieldIntAt(db, btScanValue(cur), lenField)
-            if len > 0 {
-                ok = src.readAt(dbFieldIntAt(db, btScanValue(cur), offField), len, body)
-                if ok { ok = body.length == len }
-                if ok { ok = dst.append(body) }
+    case hjCopy {
+        if page == 0 { return heapCopyDone(db) }
+        len = dbFieldIntAt(db, page, hjLen)
+        if len > 0 {
+            if not src.readAt(dbFieldIntAt(db, page, hjOff), len, body) or body.length != len or not dst.append(body) {
+                heapCloseFiles()
+                file.delete(heapNewPath(hjPath))    // the old heap is untouched
+                return heapFail()
             }
         }
     }
-    if ok { ok = dst.flush() }
-    dst.close()
-    src.close()
-    if not ok {
-        file.delete(heapNewPath(path))      // the old heap is untouched
-        return false
+    case hjFix {
+        if page == 0 { return heapFixDone(db) }
+        len = dbFieldIntAt(db, page, hjLen)
+        if len > 0 {
+            if dbFieldIntAt(db, page, hjOff) != hjRunning {
+                if not dbSetFieldIntAt(db, page, hjOff, hjRunning) { return heapFail() }
+            }
+            hjRunning = hjRunning + len
+        }
     }
-    if not file.rename(path, heapOldPath(path)) {
-        file.delete(heapNewPath(path))
-        return false
+    else { return hsFailed }
     }
-    if not file.rename(heapNewPath(path), path) { return false }   // heapRecover finishes it
-    if not heapFixOffsets(db, offField, lenField) { return false } // heapRecover redoes it
-    return file.delete(heapOldPath(path))
+    return hsMore
+}
+
+// Job progress, 0-100: the check pass on its own, then the rewrite as
+// 50% copy + 50% offset fix.
+func heapPercent(): int {
+    var t: int = hjTotal
+    if t < 1 { t = 1 }
+    switch hjStage {
+    case hjCheck { return hjDone * 100 / t }
+    case hjCopy { return hjDone * 50 / t }
+    case hjFix { return 50 + hjDone * 50 / t }
+    else { return 100 }
+    }
 }
 
 // Called by the owner right after dbOpen (which has replayed the vDB

@@ -556,21 +556,35 @@ inputChar (bbs.cla) → processInput`.
   `wallRow`; then
   `wallask` (Y → `wallentry`, a line prompt capped at 120) and
   `wallDone` (main menu or `postLoginMotd`). `docs/wall.md`.
-- `heap.cla` — compactor for the append-only `.MSG` body heaps
-  (`heapCompact`/`heapRecover`/`heapFixOffsets`: fresh-file rewrite in
-  ID order with deterministic offsets, `.NEW`/`.OLD` crash recovery on
-  every open; a clean heap is skipped — `heapLiveBytes` and the copy
-  loop use primary-index scans with `dbFieldIntAt` field reads, so the
-  no-op check costs seconds, not a `dbFind` per ID); `postsCompact`/
-  `mailCompact`/`filesCompact` wrap it. `maint.cla` — the daily run (`maintStart`/
-  `maintTick`, one unit per 30-tick firing: expire boards with
-  `keepDays` via `expirePosts`, then compact every database — ALL
-  compaction phases (2-4) currently disabled in maintTick, still hours
-  on a big echomail board; only the Users done marker is written
-  (`dbStampCompacted`, read via `dbLastCompacted`)), the window rule
-  (`maintDueNow`, `config.maintenanceHour`), and the `rejectCallers`/
-  `maintaining` flags `connected()` and `ftnSchedule` honour; the Mac
-  `Maintenance` menu toggles/runs it (menu captions must not contain
+- `heap.cla` — compactor for the append-only `.MSG` body heaps: a
+  job of one-record units (`heapBegin`/`heapUnit(db)` → `hsDone`/
+  `hsMore`/`hsFailed`; passes `hjCheck` → `hjCopy` → `hjFix` over one
+  global primary-index cursor, `hjCur` — safe only because nothing
+  writes the index during maintenance; `heapPercent` for progress,
+  `hjPacked` says whether it rewrote) that checks the waste, rewrites
+  into `.NEW` in ID order with deterministic offsets,
+  swaps via `.OLD`, then fixes offsets in place with `vdb.cla`'s
+  non-journaled `dbSetFieldIntAt` (unindexed fields only; `.OLD` stays
+  until the flush, so `heapRecover` on every open redoes a crashed
+  fix); heaps under 1/4 waste are skipped. Owners start it with
+  `postsHeapBegin`/`filesHeapBegin`/`mailHeapBegin`; `postsCompact`/
+  `filesCompact`/`mailCompact` are now header-only `dbCompact`s.
+  `maint.cla` — the daily run (`maintStart`; `maintTick` from bbs.cla's
+  2-tick timer runs one-record units — `maintUnit` — until
+  `maintTickBudget` (5) ticks pass or a unit logs via `maintLog`, which
+  sets `maintYield` so the line paints first; one item at a time —
+  each board, each area, then Mail — through `msStart` ("Starting") →
+  `msOpen` → `msCollect` (one Created-index key) → `msDelete` (one
+  `dbDelete`) → `msHeap` (one `heapUnit`: check, then copy + fix when
+  worth it) → `msDone` ("Done - N expired" / "Done");
+  `maintProgress` logs `% (N/sec)` once a minute; then the Users stamp
+  — the "run finished" marker, `dbStampCompacted`/`dbLastCompacted`); no
+  database file is compacted nightly — `compactStart` (Mac
+  `Maintenance > Compact Databases`) is the manual `dbCompact` of
+  everything, `compacting` set alongside `maintaining`. Also the window
+  rule (`maintDueNow`, `config.maintenanceHour`), and the
+  `rejectCallers`/`maintaining` flags `connected()` and `ftnSchedule`
+  honour; the Mac `Maintenance` menu toggles/runs it (menu captions must not contain
   `(` -- the Menu Manager dims such an item). A `FileInfo` temp is too big for
   the 68k backend — assign `file.info(p)` to a local, never
   `file.info(p).size`. `docs/maintenance.md`.

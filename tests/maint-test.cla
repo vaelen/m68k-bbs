@@ -1,8 +1,8 @@
 // Copyright 2026, Andrew C. Young <andrew@vaelen.org>
 // SPDX-License-Identifier: MIT
 
-// CLI self-check for maint.cla: the window rule, then a whole run
-// stepped by hand over seeded databases. Run by scripts/test.sh from
+// CLI self-check for maint.cla: the window rule, then a scheduled run
+// and a manual compaction stepped by hand over seeded databases. Run by scripts/test.sh from
 // a scratch directory. Exits 0 on pass, 1 on the first failure.
 
 include "../maint.cla"
@@ -37,6 +37,7 @@ func windowTests() {
 
 func seed() {
     var none: FtnAddress
+    var i: int = 0
     expect(usersOpen() and boardsOpen() and networksOpen() and mailOpen() and areasOpen() and wallOpen(), "databases open")
     user.name = "sysop"
     user.access = accessAllFlags
@@ -48,58 +49,79 @@ func seed() {
     expect(saveBoard(), "board 2 keeps 30 days")
     expect(postsOpen(1) and addPostFtn("a", now() - 300000000, 0, "ancient but kept", "b", 0, none, 0) > 0, "old post on board 1")
     expect(postsOpen(2), "board 2")
-    expect(addPostFtn("a", now() - 40 * 86400, 0, "40 days old", "old body", 0, none, 0) == 1, "old post on board 2")
-    expect(addPost("a", 0, "fresh", "fresh body") == 2, "fresh post on board 2")
+        while i < 30 {
+        expect(addPostFtn("a", now() - 40 * 86400, 0, "40 days old", "old body", 0, none, 0) == i + 1, "old post on board 2")
+        i = i + 1
+    }
+    expect(addPost("a", 0, "fresh", "fresh body") == i + 1, "fresh post on board 2")
     postsClose()
     expect(createArea("Files", "d", "", accessAll) == 1, "area 1")
     expect(filesOpen(1) and addFile("x.txt", "u", "s", 1, 0, "desc") == 1, "a file entry")
     filesClose()
 }
 
-func runTests() {
+func run(): int {
     var steps: int = 0
-    var orphaned: int
-    rejectCallers = false
-    expect(maintStart(true), "manual run starts")
-    expect(maintaining and rejectCallers, "run in progress closes the BBS")
-    expect(not maintStart(true), "a second start is refused")
-    while maintaining and steps < 200 {
+    while maintaining and steps < 5000 {
         maintTick()
         steps = steps + 1
     }
+    return steps
+}
+
+func runTests() {
+    var steps: int = 0
+    var deleting: int = 0
+    var reported: bool = false
+    var orphaned: int
+    var usersStamp: int
+    rejectCallers = false
+    expect(maintStart(), "run starts")
+    expect(maintaining and not compacting and rejectCallers, "run in progress closes the BBS")
+    expect(not maintStart() and not compactStart(), "a second start is refused")
+    // unit by unit (maintTick runs these until 5 ticks pass or one logs)
+    while maintaining and steps < 5000 {
+        if maintStep == msDelete { deleting = deleting + 1 }
+        if maintStep == msDelete and maintDoomedAt == 10 and not reported {
+            // a minute's worth of ticks: the progress line goes out and resets
+            maintProgStart = TickCount() - maintProgressTicks
+            maintYield = false
+            maintProgress()
+            reported = maintYield and maintProgCount == 0
+        }
+        maintUnit()
+        steps = steps + 1
+    }
+    expect(reported, "progress line logged and counters reset")
     expect(not maintaining, "run finished")
     expect(not rejectCallers, "manual flag restored")
-    expect(steps > 2 and steps < 200, "one unit per tick")   // ~5 with phases 2-4 disabled
-    expect(postsOpen(2) and postCount() == 1 and not loadPost(1) and loadPost(2), "40-day-old post expired, fresh one kept")
+    expect(deleting == 31, "one delete per unit (plus the unit that moves on)")
+    expect(postsOpen(2) and postCount() == 1 and not loadPost(1) and loadPost(31), "40-day-old posts expired, fresh one kept")
+    postsClose()
+    expect(file.info("BRD02.MSG").size == 10, "board 2 heap compacted to the fresh body")
+    expect(not file.exists("BRD02.OLD") and not file.exists("BRD02.NEW"), "no scratch files left")
+    expect(postsOpen(2) and postBody(31) == "fresh body", "fresh body reads back")
     postsClose()
     expect(postsOpen(1) and postCount() == 1, "board with keepDays 0 untouched")
     postsClose()
-    // with the compaction phases disabled only Users is stamped (the
-    // run-finished marker); assert boardsDb/mailDb again on re-enable
-    expect(dbLastCompacted(usersDb) != 0 and dbLastCompacted(boardsDb) == 0 and dbLastCompacted(mailDb) == 0, "only the Users run-finished marker is stamped")
+    expect(dbLastCompacted(usersDb) != 0 and dbLastCompacted(boardsDb) == 0 and dbLastCompacted(mailDb) == 0, "no database compacted, only the Users marker stamped")
     expect(not maintDueNow(), "not due right after a run")
-    // a scheduled run right after a completed one skips everything already
-    // stamped: orphan bytes left on board 1 stay put; a forced run reclaims them
+
+    // manual compaction: every database file, no heaps
     expect(postsOpen(1) and addPost("a", 0, "doomed", "orphan bytes") == 2 and dbDelete(postsDb, 2), "leave an orphan on board 1")
     postsClose()
     orphaned = file.info("BRD01.MSG").size
-    expect(maintStart(false), "scheduled run starts")
-    steps = 0
-    while maintaining and steps < 200 {
-        maintTick()
-        steps = steps + 1
-    }
-    expect(not maintaining and file.info("BRD01.MSG").size == orphaned, "stamped board skipped: orphan still there")
-    expect(maintStart(true), "forced run starts")
-    steps = 0
-    while maintaining and steps < 200 {
-        maintTick()
-        steps = steps + 1
-    }
-    // board compaction is disabled for now (maintTick phase 2), so even
-    // a forced run leaves the orphan; assert `< orphaned` again when
-    // maintBoardStep is restored
-    expect(not maintaining and file.info("BRD01.MSG").size == orphaned, "forced run leaves heaps alone while board compaction is off")
+    usersStamp = dbLastCompacted(usersDb)
+    expect(compactStart(), "compaction starts")
+    expect(maintaining and compacting and rejectCallers, "compaction closes the BBS")
+    expect(not maintStart(), "maintenance refused during compaction")
+    steps = run()
+    expect(not maintaining and not compacting and not rejectCallers, "compaction finished")
+    expect(dbLastCompacted(boardsDb) != 0 and dbLastCompacted(mailDb) != 0 and dbLastCompacted(wallDb) != 0, "fixed databases compacted")
+    expect(postsOpen(1) and dbLastCompacted(postsDb) != 0 and postCount() == 1, "board headers compacted")
+    postsClose()
+    expect(file.info("BRD01.MSG").size == orphaned, "compaction leaves heaps alone")
+    expect(dbLastCompacted(usersDb) != 0 and mailCount() == 0, "Users compacted, mail still open")
 }
 
 on App.startCLI(args: list of string) {

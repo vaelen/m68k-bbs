@@ -1,24 +1,40 @@
 // Copyright 2026, Andrew C. Young <andrew@vaelen.org>
 // SPDX-License-Identifier: MIT
 
-// Daily database maintenance (docs/maintenance.md): delete expired
-// posts, then compact every database -- headers, indexes and body
-// heaps. The run is a state machine stepped by maintTick, one unit per
-// firing of bbs.cla's 30-tick timer, so the log window keeps painting
-// and a refused caller's hang-up can interleave:
-//   phase 1  expire one board per tick (boards with keepDays > 0)
-//   phase 2  compact one board per tick (postsCompact)
-//   phase 3  compact one file area per tick (filesCompact)
-//   phase 4  Mail, Wall, Areas, Networks, Boards, then Users LAST
-// Phases 2-4 are DISABLED for now (see maintTick): compaction still
-// runs for hours on a big echomail board. Only the Users "finished"
-// stamp is written.
-// Users' last_compacted stamp is the "run finished" marker; a scheduled
-// run skips any database already stamped since the window opened
-// (force ignores the stamps). rejectCallers is set for the duration and
-// restored after. The including program decides when to call
-// maintStart (idle: no caller, no poll) and calls maintTick from its
-// timer.
+// Daily maintenance (docs/maintenance.md): delete expired posts, then
+// compact the append-only body heaps. The database files themselves
+// are NOT compacted here -- vDB reuses deleted records' pages, so that
+// is the sysop's manual Compact Databases run (compactStart), not a
+// nightly job.
+//
+// Both runs are state machines of small units. bbs.cla calls maintTick
+// from its 2-tick timer; each call runs units until maintTickBudget
+// ticks have passed or a unit logs (maintYield -- so the line paints
+// before the next unit starts), then returns to the event loop, so the
+// menus and log window stay live.
+//
+// Scheduled run (maintStart), one item at a time -- each board, each
+// file area, then Mail -- through these steps:
+//   msStart    pick the item, log "Starting"
+//   msOpen     open it; boards with keepDays > 0 open the Created index
+//   msCollect  one Created-index key per unit: collect the expired IDs
+//   msDelete   one dbDelete per unit
+//   msHeap     one heap-job record per unit (heap.cla: check, and when
+//              worth it, copy + offset fix)
+//   msDone     log "Done", close the item, next
+// then the Users stamp -- the "run finished" marker the schedule reads
+// (a manual compaction also stamps it, which counts as that day's
+// run). While a step runs, a progress line goes out once a minute
+// (maintProgress: percent done and records/sec since the last line).
+//
+// Manual compaction (compactStart): dbCompact every database, one per
+// unit -- each board's and area's headers, then Mail, Wall, Areas,
+// Networks, Boards, Users.
+//
+// `maintaining` is set for either run (the flag the rest of the BBS
+// honours); `compacting` says which. rejectCallers is set for the
+// duration and restored after. The including program decides when to
+// start (idle: no caller, no poll) and calls maintTick from its timer.
 
 include "user.cla"
 include "config.cla"
@@ -31,17 +47,39 @@ include "filesdb.cla"
 include "maildb.cla"
 include "walldb.cla"
 include "toolbox/osutils.cla"
+include "toolbox/events.cla"
 
 const maintDay: int = 86400
+const maintTickBudget: int = 5          // ticks of work per maintTick
+const maintProgressTicks: int = 3600    // a progress line a minute
+
+// per-item steps
+const msStart: int = 0
+const msOpen: int = 1
+const msCollect: int = 2
+const msDelete: int = 3
+const msHeap: int = 4
+const msDone: int = 5
 
 var maintaining: bool = false
+var compacting: bool = false        // the run is a manual compaction
 var rejectCallers: bool = false     // callers are told to call back later
 var maintSavedReject: bool = false
-var maintForce: bool = false
-var maintWindow: int = 0            // this run's window start
-var maintPhase: int = 0
-var maintCursor: int = 0            // next board/area ID in phases 1-3
-var maintRest: int = 0              // next entry of the phase-4 list
+var maintPhase: int = 0             // 1 boards, 2 areas, 3 Mail, 4 finish
+var maintStep: int = msStart
+var maintCursor: int = 0            // current board/area ID
+var maintRest: int = 0              // compaction: next entry of the fixed list
+var maintLabel: string              // "Board 3 (Name)", "Area 1 (Name)", "Mail"
+var maintYield: bool = false        // a unit logged: end this maintTick
+var maintIdx: filehandle            // expiry: the board's Created index
+var maintIdxCur: text               //   its scan cursor (nothing writes it until msDelete)
+var maintIdxOk: bool = false
+var maintCutoff: int = 0
+var maintDoomed: list of int        // expiry: the board's doomed IDs
+var maintDoomedAt: int = 0
+var maintExpired: int = 0
+var maintProgStart: int = 0         // TickCount at the last progress line
+var maintProgCount: int = 0         // records since then
 
 // Today's hour:00:00 in Mac local time, or yesterday's if the hour
 // hasn't come yet.
@@ -69,12 +107,6 @@ func maintDueNow(): bool {
     return maintDueAt(dbLastCompacted(usersDb), maintWindowStart(config.maintenanceHour))
 }
 
-// A database stamped since the window opened is done for this run.
-func maintDone(stamp: int): bool {
-    if maintForce { return false }
-    return not maintDueAt(stamp, maintWindow)
-}
-
 // A FileInfo temp is too big for the 68k backend's scratch pool, so the
 // record goes through a local (the same shape ftntoss.cla uses).
 func maintFileSize(p: string): int {
@@ -87,202 +119,407 @@ func maintKb(n: int): string {
     return string((n + 1023) / 1024) + "K"
 }
 
-func maintStart(force: bool): bool {
-    if maintaining { return false }
+// Every log line ends the current maintTick, so it paints before more
+// work starts.
+func maintLog(msg: string) {
+    log("Maint: " + msg)
+    maintYield = true
+}
+
+func maintItemLog(msg: string) {
+    maintLog(maintLabel + ": " + msg)
+}
+
+func maintProgReset() {
+    maintProgStart = TickCount()
+    maintProgCount = 0
+}
+
+func maintCloseIdx() {
+    var f: filehandle = maintIdx
+    if f != nil { f.close() }
+    maintIdx = nil
+    maintIdxOk = false
+}
+
+func maintBegin(manual: bool) {
     maintaining = true
-    maintForce = force
+    compacting = manual
     maintSavedReject = rejectCallers
     rejectCallers = true
-    maintWindow = maintWindowStart(config.maintenanceHour)
     maintPhase = 1
+    maintStep = msStart
     maintCursor = 1
     maintRest = 0
-    log("Maintenance: starting.")
+    maintDoomed.clear()
+    maintDoomedAt = 0
+    maintProgReset()
+}
+
+// The scheduled run (the menu's Run Database Maintenance starts the
+// same thing outside the window).
+func maintStart(): bool {
+    if maintaining { return false }
+    maintBegin(false)
+    maintLog("Starting.")
     return true
 }
 
 func maintEnd() {
+    maintCloseIdx()
+    heapCloseFiles()
     postsClose()
     filesClose()
     maintaining = false
     maintPhase = 0
     rejectCallers = maintSavedReject
-    log("Maintenance complete.")
-}
-
-// Phase 1: the next board with keepDays > 0, or on to phase 2.
-func maintExpireStep() {
-    var last: int = boardsNextId()
-    var n: int
-    while maintCursor < last {
-        if loadBoard(maintCursor) and board.keepDays > 0 {
-            n = expirePosts(board.id, now() - board.keepDays * maintDay)
-            if n < 0 {
-                log("Maintenance: board " + string(board.id) + " (" + board.name + "): cannot open: " + lastError.message)
-            } else {
-                log("Maintenance: board " + string(board.id) + " (" + board.name + "): " + string(n) + " expired.")
-            }
-            maintCursor = maintCursor + 1
-            return
-        }
-        maintCursor = maintCursor + 1
+    if compacting {
+        log("Compaction complete.")
+    } else {
+        log("Maintenance complete.")
     }
-    postsClose()
-    maintPhase = 2
-    maintCursor = 1
+    compacting = false
 }
 
-// Phase 2: the next existing board, compacted, or on to phase 3.
-func maintBoardStep() {
-    var last: int = boardsNextId()
-    var name: string
-    var hdrBefore: int
-    var heapBefore: int
-    while maintCursor < last {
-        if loadBoard(maintCursor) {
-            name = postsName(board.id)
-            if postsOpen(board.id) and maintDone(dbLastCompacted(postsDb)) {
-                maintCursor = maintCursor + 1
+// --- Scheduled run ----------------------------------------------------
+
+// msStart: the next board / area / Mail, or the finish.
+func maintNextItem() {
+    var last: int
+    switch maintPhase {
+    case 1 {
+        last = boardsNextId()
+        while maintCursor < last {
+            if loadBoard(maintCursor) {
+                maintLabel = "Board " + string(board.id) + " (" + board.name + ")"
+                maintItemLog("Starting")
+                maintStep = msOpen
                 return
             }
-            hdrBefore = maintFileSize(name + ".DAT")
-            heapBefore = maintFileSize(name + ".MSG")
-            if postsCompact(board.id) {
-                log("Maintenance: board " + string(board.id) + " (" + board.name + "): headers " + maintKb(hdrBefore) + " -> " + maintKb(maintFileSize(name + ".DAT")) + ", heap " + maintKb(heapBefore) + " -> " + maintKb(maintFileSize(name + ".MSG")) + ".")
-            } else {
-                log("Maintenance: board " + string(board.id) + " (" + board.name + "): compaction failed: " + lastError.message)
-            }
             maintCursor = maintCursor + 1
-            return
         }
-        maintCursor = maintCursor + 1
+        maintPhase = 2
+        maintCursor = 1
     }
-    postsClose()
-    maintPhase = 3
-    maintCursor = 1
-}
-
-// Phase 3: the next existing file area, compacted, or on to phase 4.
-func maintAreaStep() {
-    var last: int = areasNextId()
-    var name: string
-    var hdrBefore: int
-    var heapBefore: int
-    while maintCursor < last {
-        if loadArea(maintCursor) {
-            name = filesName(area.id)
-            if filesOpen(area.id) and maintDone(dbLastCompacted(filesDb)) {
-                maintCursor = maintCursor + 1
+    case 2 {
+        last = areasNextId()
+        while maintCursor < last {
+            if loadArea(maintCursor) {
+                maintLabel = "Area " + string(area.id) + " (" + area.name + ")"
+                maintItemLog("Starting")
+                maintStep = msOpen
                 return
             }
-            hdrBefore = maintFileSize(name + ".DAT")
-            heapBefore = maintFileSize(name + ".MSG")
-            if filesCompact(area.id) {
-                log("Maintenance: area " + string(area.id) + " (" + area.name + "): headers " + maintKb(hdrBefore) + " -> " + maintKb(maintFileSize(name + ".DAT")) + ", heap " + maintKb(heapBefore) + " -> " + maintKb(maintFileSize(name + ".MSG")) + ".")
-            } else {
-                log("Maintenance: area " + string(area.id) + " (" + area.name + "): compaction failed: " + lastError.message)
-            }
             maintCursor = maintCursor + 1
-            return
         }
-        maintCursor = maintCursor + 1
+        maintPhase = 3
     }
-    filesClose()
-    maintPhase = 4
-    maintRest = 0
+    case 3 {
+        maintLabel = "Mail"
+        maintItemLog("Starting")
+        maintStep = msOpen
+    }
+    else {
+        if not dbStampCompacted(usersDb) {
+            maintLog("Users stamp failed: " + lastError.message)
+        }
+        maintEnd()
+    }
+    }
+}
+
+// Begin the current item's heap job (msHeap), or skip to msDone.
+func maintHeapBegin() {
+    var ok: bool
+    switch maintPhase {
+    case 1 { ok = postsHeapBegin() }
+    case 2 { ok = filesHeapBegin(maintCursor) }
+    else   { ok = mailHeapBegin() }
+    }
+    maintProgReset()
+    if ok {
+        maintStep = msHeap
+    } else {
+        maintItemLog("Cannot pack: " + lastError.message)
+        maintStep = msDone
+    }
+}
+
+// msOpen: boards open (and, with keepDays, start collecting); areas
+// and Mail go straight to their heap job.
+func maintOpenItem() {
+    maintExpired = 0
+    maintDoomed.clear()
+    maintDoomedAt = 0
+    if maintPhase != 1 {
+        maintHeapBegin()
+        return
+    }
+    if not postsOpen(board.id) {
+        maintItemLog("Cannot open: " + lastError.message)
+        maintStep = msDone
+        return
+    }
+    if board.keepDays <= 0 {
+        maintHeapBegin()
+        return
+    }
+    maintCutoff = now() - board.keepDays * maintDay
+    maintIdx = dbIndexOpenByName(postsDb, "Created")
+    if maintIdx == nil {
+        maintItemLog("Cannot open the Created index")
+        maintHeapBegin()
+        return
+    }
+    maintIdxOk = btScanStart(maintIdx, maintIdxCur, -2147483647 - 1, false)
+    maintProgReset()
+    maintStep = msCollect
+}
+
+// msCollect: one Created-index key; the walk stops at the first date
+// past the cutoff (O(expired), not O(board)).
+func maintCollectUnit() {
+    var vals: list of int
+    var i: int = 0
+    if maintIdxOk { maintIdxOk = btScanNext(maintIdx, maintIdxCur) }
+    if maintIdxOk and btScanKey(maintIdxCur) < maintCutoff {
+        if btFind(maintIdx, btScanKey(maintIdxCur), vals) {
+            while i < vals.count {
+                maintDoomed.add(vals[i])
+                i = i + 1
+            }
+        }
+        maintProgCount = maintProgCount + 1
+        return
+    }
+    // the index handle must be closed before the deletes rewrite it
+    maintCloseIdx()
+    maintProgReset()
+    if maintDoomed.count > 0 {
+        maintStep = msDelete
+    } else {
+        maintHeapBegin()
+    }
+}
+
+// msDelete: one journaled delete (its own transaction, so a reboot
+// just leaves the rest for the next run).
+func maintDeleteUnit() {
+    if maintDoomedAt < maintDoomed.count {
+        if dbDelete(postsDb, maintDoomed[maintDoomedAt]) { maintExpired = maintExpired + 1 }
+        maintDoomedAt = maintDoomedAt + 1
+        maintProgCount = maintProgCount + 1
+        return
+    }
+    maintHeapBegin()
+}
+
+// msHeap: one record of the heap job.
+func maintHeapUnit() {
+    var before: int = hjStage
+    var r: int
+    switch maintPhase {
+    case 1 { r = heapUnit(postsDb) }
+    case 2 { r = heapUnit(filesDb) }
+    else   { r = heapUnit(mailDb) }
+    }
+    maintProgCount = maintProgCount + 1
+    if r == hsMore {
+        if before == hjCheck and hjStage == hjCopy { maintProgReset() }
+        return
+    }
+    if r == hsFailed {
+        maintItemLog("Packing failed: " + lastError.message)
+    }
+    maintStep = msDone
+}
+
+// msDone: report, close the item, next.
+func maintItemDone() {
+    switch maintPhase {
+    case 1 {
+        maintItemLog("Done - " + string(maintExpired) + " expired")
+        postsClose()
+    }
+    case 2 {
+        maintItemLog("Done")
+        filesClose()
+    }
+    else {
+        maintItemLog("Done")
+        mailOpen()              // reopen the body handle (and recover)
+        maintPhase = 4
+    }
+    }
+    maintCursor = maintCursor + 1
+    maintStep = msStart
+}
+
+// Once a minute while a counted step runs: how far, and how fast since
+// the last line.
+func maintProgress() {
+    var ticks: int = TickCount() - maintProgStart
+    var rate: int
+    var what: string
+    if compacting or ticks < maintProgressTicks { return }
+    rate = maintProgCount * 60 / ticks
+    switch maintStep {
+    case msCollect { what = "Collecting - " + string(maintDoomed.count) + " found" }
+    case msDelete {
+        what = "Deleting - " + string(maintDoomedAt * 100 / maintDoomed.count) + "%"
+    }
+    case msHeap {
+        if hjStage == hjCheck {
+            what = "Checking - " + string(heapPercent()) + "%"
+        } else {
+            what = "Packing - " + string(heapPercent()) + "%"
+        }
+    }
+    else {
+        maintProgReset()
+        return
+    }
+    }
+    maintItemLog(what + " (" + string(rate) + "/sec)")
+    maintProgReset()
+}
+
+func maintUnit() {
+    if compacting {
+        compactStep()
+        maintYield = true           // a whole dbCompact is one unit
+        return
+    }
+    switch maintStep {
+    case msStart { maintNextItem() }
+    case msOpen { maintOpenItem() }
+    case msCollect { maintCollectUnit() }
+    case msDelete { maintDeleteUnit() }
+    case msHeap { maintHeapUnit() }
+    else { maintItemDone() }
+    }
+}
+
+// --- Manual compaction ------------------------------------------------
+
+// Start the manual compaction of every database file (Maintenance >
+// Compact Databases). The line must be idle; the caller checks.
+func compactStart(): bool {
+    if maintaining { return false }
+    maintBegin(true)
+    log("Compaction: starting.")
+    return true
 }
 
 // Compacts a fixed-name database and returns the handle to keep
 // (dbCompact closes and reopens the primary index); on failure the
 // handle comes back closed and the caller reopens through the owner's
 // open function, which replays the journal.
-func maintCompactNamed(db: Database, label: string): Database {
+func compactNamed(db: Database, label: string): Database {
     var before: int = maintFileSize(label + ".DAT")
     var after: Database
-    if maintDone(dbLastCompacted(db)) { return db }
     after = dbCompact(db)
     if dbIsOpen(after) {
-        log("Maintenance: " + label + ": " + maintKb(before) + " -> " + maintKb(maintFileSize(label + ".DAT")) + ".")
+        log("Compaction: " + label + ": " + maintKb(before) + " -> " + maintKb(maintFileSize(label + ".DAT")) + ".")
     } else {
-        log("Maintenance: " + label + ": compaction failed: " + lastError.message)
+        log("Compaction: " + label + ": failed: " + lastError.message)
     }
     return after
 }
 
-// Phase 4: the fixed list, Users last.
-func maintRestStep() {
-    var before: int
-    switch maintRest {
-    case 0 {
-        if not maintDone(dbLastCompacted(mailDb)) {
-            before = maintFileSize("Mail.MSG")
-            if mailCompact() {
-                log("Maintenance: Mail: heap " + maintKb(before) + " -> " + maintKb(maintFileSize("Mail.MSG")) + ".")
-            } else {
-                log("Maintenance: Mail: compaction failed: " + lastError.message)
-            }
-        }
+func compactLog(label: string, before: int, path: string, ok: bool) {
+    if ok {
+        log("Compaction: " + label + ": " + maintKb(before) + " -> " + maintKb(maintFileSize(path)) + ".")
+    } else {
+        log("Compaction: " + label + ": failed: " + lastError.message)
     }
-    case 1 {
-        wallDb = maintCompactNamed(wallDb, "Wall")
-        if not dbIsOpen(wallDb) { wallOpen() }
-    }
-    case 2 {
-        areasDb = maintCompactNamed(areasDb, "Areas")
-        if not dbIsOpen(areasDb) { areasOpen() }
-    }
-    case 3 {
-        networksDb = maintCompactNamed(networksDb, "Networks")
-        if not dbIsOpen(networksDb) { networksOpen() }
-    }
-    case 4 {
-        boardsDb = maintCompactNamed(boardsDb, "Boards")
-        if not dbIsOpen(boardsDb) { boardsOpen() }
-    }
-    case 5 {
-        usersDb = maintCompactNamed(usersDb, "Users")
-        if not dbIsOpen(usersDb) { usersOpen() }
-    }
-    else {
-        maintEnd()
-        return
-    }
-    }
-    maintRest = maintRest + 1
 }
 
-// One unit of work; call from the timer while `maintaining`.
-func maintTick() {
-    if not maintaining { return }
+// Phase 1 boards, phase 2 areas, phase 3 the fixed list (Users last).
+func compactStep() {
+    var last: int
+    var path: string
+    var before: int
     switch maintPhase {
-    case 1 { maintExpireStep() }
-    case 2 {
-        // Compaction (phases 2-4) is disabled for now: postsCompact on
-        // a big echomail board still runs for hours (heapFixOffsets
-        // does a journaled dbUpdate per record after the heap
-        // rewrite). Orphaned heap bytes and B-tree slack accumulate
-        // until it's re-enabled -- restore the three steps below.
-        // maintBoardStep()
-        postsClose()
-        maintPhase = 3
+    case 1 {
+        last = boardsNextId()
+        while maintCursor < last {
+            if loadBoard(maintCursor) {
+                path = postsName(board.id) + ".DAT"
+                before = maintFileSize(path)
+                compactLog("Board " + string(board.id) + " (" + board.name + ")", before, path, postsCompact(board.id))
+                postsClose()
+                maintCursor = maintCursor + 1
+                return
+            }
+            maintCursor = maintCursor + 1
+        }
+        maintPhase = 2
         maintCursor = 1
     }
-    case 3 {
-        // maintAreaStep()
-        filesClose()
-        maintPhase = 4
+    case 2 {
+        last = areasNextId()
+        while maintCursor < last {
+            if loadArea(maintCursor) {
+                path = filesName(area.id) + ".DAT"
+                before = maintFileSize(path)
+                compactLog("Area " + string(area.id) + " (" + area.name + ")", before, path, filesCompact(area.id))
+                filesClose()
+                maintCursor = maintCursor + 1
+                return
+            }
+            maintCursor = maintCursor + 1
+        }
+        maintPhase = 3
         maintRest = 0
     }
-    case 4 {
-        // maintRestStep()
-        // Users' stamp is the "run finished" marker maintDueNow
-        // schedules by; without it the run would restart every idle
-        // minute, so it is still written.
-        if not dbStampCompacted(usersDb) {
-            log("Maintenance: Users stamp failed: " + lastError.message)
+    else {
+        switch maintRest {
+        case 0 {
+            before = maintFileSize("Mail.DAT")
+            compactLog("Mail", before, "Mail.DAT", mailCompact())
+            if not dbIsOpen(mailDb) { mailOpen() }
         }
-        maintEnd()
+        case 1 {
+            wallDb = compactNamed(wallDb, "Wall")
+            if not dbIsOpen(wallDb) { wallOpen() }
+        }
+        case 2 {
+            areasDb = compactNamed(areasDb, "Areas")
+            if not dbIsOpen(areasDb) { areasOpen() }
+        }
+        case 3 {
+            networksDb = compactNamed(networksDb, "Networks")
+            if not dbIsOpen(networksDb) { networksOpen() }
+        }
+        case 4 {
+            boardsDb = compactNamed(boardsDb, "Boards")
+            if not dbIsOpen(boardsDb) { boardsOpen() }
+        }
+        case 5 {
+            usersDb = compactNamed(usersDb, "Users")
+            if not dbIsOpen(usersDb) { usersOpen() }
+        }
+        else {
+            maintEnd()
+            return
+        }
+        }
+        maintRest = maintRest + 1
     }
-    else   { maintEnd() }
     }
+}
+
+
+// Call from a fast timer while `maintaining`: units until
+// maintTickBudget ticks pass or one logs.
+func maintTick() {
+    var t0: int = TickCount()
+    if not maintaining { return }
+    maintYield = false
+    while maintaining and not maintYield {
+        maintUnit()
+        if TickCount() - t0 >= maintTickBudget { break }
+    }
+    if maintaining { maintProgress() }
 }

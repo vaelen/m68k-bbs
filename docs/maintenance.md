@@ -1,10 +1,14 @@
 # Daily database maintenance
 
 Once a day, in a configured window, the BBS deletes expired posts and
-compacts every database — headers, indexes and the append-only body
-heaps. Inbound echomail already past a board's expiry is never stored.
-Modules: `maint.cla` (the run) and `heap.cla` (the heap compactor);
-design: `docs/superpowers/specs/2026-08-29-maintenance-design.md`.
+compacts the append-only body heaps (`BRD<nn>.MSG`, `ARE<nn>.MSG`,
+`Mail.MSG`), which never reuse deleted space. The vDB database files
+themselves reuse deleted records' pages, so they are compacted only
+by hand (`Maintenance > Compact Databases`, below). Inbound echomail
+already past a board's expiry is never stored. Modules: `maint.cla`
+(both runs) and `heap.cla` (the heap compactor); design:
+`docs/superpowers/specs/2026-08-29-maintenance-design.md`, revised by
+`docs/superpowers/specs/2026-09-28-maintenance-heaps-only.md`.
 
 ## Expiry
 
@@ -34,22 +38,53 @@ was off at the hour runs at its first idle minute after launch.
 
 ## The run
 
-One unit per timer firing: expire one board; compact one board
-(`postsCompact`: `dbCompact` then `heapCompact`); compact one file
-area (`filesCompact`); then `Mail` (`mailCompact`), `Wall`, `Areas`,
-`Networks`, `Boards`, `Users` — Users last, so its stamp means
-"finished". A scheduled run skips a database already stamped since the
-window opened, so an interrupted run resumes where it stopped;
-`Maintenance > Run Database Maintenance` forces every database (it
-still needs the line idle to start). Each unit logs one line with
-before/after sizes; a failing unit is logged and the run continues.
+The run is a state machine of one-record units. `bbs.cla`'s 2-tick
+timer calls `maintTick`, which runs units until 5 ticks have passed
+(`maintTickBudget`) or a unit logs — every `Maint:` line ends the
+slice so it paints before more work starts — then returns to the
+event loop, so menus and the log window stay live.
 
-**The compaction phases (2-4) are disabled for now** (maintTick):
-even with field-only reads a big echomail board compacts for hours,
-`heapFixOffsets`'s journaled per-record updates dominating. Expiry
-still runs; orphaned heap bytes and B-tree slack accumulate until
-compaction is re-enabled. The Users stamp — the scheduling marker —
-is still written at the end of each run (`dbStampCompacted`).
+It works one item at a time — each board, each file area, then Mail:
+
+```
+Maint: Board 2 (Name): Starting
+Maint: Board 2 (Name): Deleting - 40% (3/sec)     once a minute
+Maint: Board 2 (Name): Checking - 70% (25/sec)    once a minute
+Maint: Board 2 (Name): Packing - 62% (9/sec)      once a minute
+Maint: Board 2 (Name): Done - 1234 expired
+```
+
+1. **Collect** (boards with `keepDays > 0`) — one Created-index key per
+   unit, stopping at the first date past the cutoff.
+2. **Delete** — one `dbDelete` per unit. Each is its own transaction,
+   so an interrupted board just finishes on the next run.
+3. **Check** — the heap job's first pass (`heap.cla`, one record per
+   unit) sums the live lengths. Less than a quarter orphaned: done.
+4. **Pack** (only when the check says so; no line of its own, just the
+   minute progress) — copy the live bodies to `.NEW`, swap, fix the offsets
+   (progress: copy is 0-50%, fix 50-100%).
+5. **Done** — `Done - N expired` for a board (always printed, even when
+   nothing was deleted or packed), `Done` for an area and Mail.
+
+After Mail, the Users stamp (`dbStampCompacted`) — the "run finished"
+marker the schedule reads. Progress lines give the percentage through
+the current step and the records/sec since the last line (integer, so
+a very slow step reads `0/sec`). `Maintenance > Run Database
+Maintenance` starts the same run outside the window (the line must be
+idle). Failures are logged and the run moves on.
+
+## Manual compaction
+
+`Maintenance > Compact Databases` (line idle, no run in progress)
+`dbCompact`s every database file, one per tick: each board's and file
+area's headers (`postsCompact`/`filesCompact`), then `Mail`
+(`mailCompact`), `Wall`, `Areas`, `Networks`, `Boards`, `Users`. It
+reclaims B-tree slack and truncates the `.DAT` files; it never touches
+the heaps. The BBS is closed to callers while it runs. `dbCompact`
+works in place, so a crash leaves the database pending and its next
+open replays the journal and rebuilds the indexes — slow but
+recoverable, and the reason it isn't a nightly job. Compacting Users
+stamps it, which counts as that day's scheduled run.
 
 While a run is in progress the BBS is **closed**: `connected()` sends
 `THE BBS IS CLOSED FOR MAINTENANCE. PLEASE CALL BACK LATER.` and hangs
@@ -75,8 +110,15 @@ the run (`ftnSchedule`/`ftnNext` check `maintaining`).
 `heap.cla` rewrites a heap into `<name>.NEW` in record-ID order (a
 body's new offset is the running total of the live bodies before it),
 renames `.MSG` → `.OLD` and `.NEW` → `.MSG`, rewrites the headers'
-offsets (journaled `dbUpdate`), deletes `.OLD`. A clean heap (live
-bytes == file size) is skipped without a copy. The rewrite needs the
+offsets, deletes `.OLD`. The offset fix walks the primary index and
+writes each changed offset in place (`dbSetFieldIntAt`: no journal, no
+index work — the offset fields are unindexed); `.OLD` is the "fix
+incomplete" marker, deleted only after the data file is flushed, so a
+crash anywhere in the fix is redone in full at the next open. The job
+is stepped (`heapBegin`/`heapUnit`, one record per unit) with a
+single global primary-index cursor across units — safe only because
+nothing writes the index while maintenance holds the databases. A
+heap under the waste threshold is skipped without a copy. The rewrite needs the
 heap's size in free disk while it runs; a write failure deletes `.NEW`
 and leaves the old heap untouched. On every open, `heapRecover`
 finishes whatever a crash interrupted:
@@ -104,6 +146,7 @@ the cap. A board left `pending` by an old build recovers on next open --
 
 ## Measured
 
+Before the 2026-09-28 split (these runs included `dbCompact`).
 Mac II (Snow), 2026-08-29, the seeded test image: board 1 (20 posts,
 6K heap, nothing to reclaim) 15 s; board 2 (10 live posts after 30
 expired and 5 deleted, heap 11K -> 2K) 9 s; the small fixed databases

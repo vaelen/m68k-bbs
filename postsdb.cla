@@ -25,8 +25,8 @@
 // Bodies are exact-fit and never journaled: addPost appends + flushes
 // the body BEFORE the journaled header add, so a crash can only leave
 // orphaned heap bytes, never a header pointing at missing text.
-// Deleted posts orphan their body bytes until postsCompact (heap.cla)
-// reclaims them.
+// Deleted posts orphan their body bytes until maintenance's heap job
+// (postsHeapStart, heap.cla) reclaims them.
 
 include "vdb.cla"
 include "ftnaddr.cla"
@@ -336,16 +336,29 @@ func threadPosts(root: int, ids: list of int) {
 // time. Returns the count, or -1 if the board can't be opened; leaves
 // the board open.
 func expirePosts(boardId: int, cutoff: int): int {
+    var doomed: list of int
+    var i: int = 0
+    var n: int = 0
+    if not expireCollect(boardId, cutoff, doomed) { return -1 }
+    while i < doomed.count {
+        if dbDelete(postsDb, doomed[i]) { n = n + 1 }
+        i = i + 1
+    }
+    return n
+}
+
+// The IDs of board `boardId`'s posts created before `cutoff`, appended
+// to `doomed`; the board is left open so the caller can dbDelete them
+// (maintenance spreads the deletes over timer ticks).
+func expireCollect(boardId: int, cutoff: int, doomed: list of int): bool {
     var idx: filehandle
     var cur: text
     var vals: list of int
-    var doomed: list of int
     var going: bool = true
     var i: int
-    var n: int = 0
-    if not postsOpen(boardId) { return -1 }
+    if not postsOpen(boardId) { return false }
     idx = dbIndexOpenByName(postsDb, "Created")
-    if idx == nil { return -1 }
+    if idx == nil { return false }
     if btScanStart(idx, cur, -2147483647 - 1, false) {
         while going and btScanNext(idx, cur) {
             if btScanKey(cur) < cutoff {
@@ -362,29 +375,27 @@ func expirePosts(boardId: int, cutoff: int): int {
         }
     }
     idx.close()
-    i = 0
-    while i < doomed.count {
-        if dbDelete(postsDb, doomed[i]) { n = n + 1 }
-        i = i + 1
-    }
-    return n
+    return true
 }
 
-// Maintenance: compact the headers (dbCompact: slide, truncate, rebuild
-// indexes) and then the body heap. Leaves the board open.
+// Manual compaction: the headers only (dbCompact: slide, truncate,
+// rebuild indexes). Leaves the board open.
 func postsCompact(boardId: int): bool {
-    var b: filehandle
-    var name: string = postsName(boardId)
     if not postsOpen(boardId) { return false }
     postsDb = dbCompact(postsDb)
     if not dbIsOpen(postsDb) {
         postsClose()
         return false
     }
-    b = postsBody
-    b.close()
+    return true
+}
+
+// Maintenance: begin the body-heap job (heap.cla) on the open board,
+// releasing its body handle. Step it with heapUnit(postsDb), then
+// postsClose() (the next open reopens and recovers).
+func postsHeapBegin(): bool {
+    var b: filehandle = postsBody
+    if b != nil { b.close() }
     postsBody = nil
-    if not heapCompact(postsDb, name + ".MSG", pOffBodyOff, pOffBodyLen) { return false }
-    postsBody = file.open(name + ".MSG")
-    return postsBody != nil
+    return heapBegin(postsDb, postsName(postsBoardId) + ".MSG", pOffBodyOff, pOffBodyLen)
 }

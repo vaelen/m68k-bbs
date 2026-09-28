@@ -279,21 +279,25 @@ func filePath(id: int): string {
     return fileFolderPath(dbExtractString(rec, fOffName))
 }
 
-// Maintenance: compact headers, then the description heap. Leaves the
-// area open.
+// Manual compaction: the headers only. Leaves the area open.
 func filesCompact(areaId: int): bool {
-    var b: filehandle
-    var name: string = filesName(areaId)
     if not filesOpen(areaId) { return false }
     filesDb = dbCompact(filesDb)
     if not dbIsOpen(filesDb) {
         filesClose()
         return false
     }
+    return true
+}
+
+// Maintenance: open area `areaId` and begin its description-heap job
+// (heap.cla), releasing the heap handle. Step it with
+// heapUnit(filesDb), then filesClose().
+func filesHeapBegin(areaId: int): bool {
+    var b: filehandle
+    if not filesOpen(areaId) { return false }
     b = filesDesc
     b.close()
     filesDesc = nil
-    if not heapCompact(filesDb, name + ".MSG", fOffDescOff, fOffDescLen) { return false }
-    filesDesc = file.open(name + ".MSG")
-    return filesDesc != nil
+    return heapBegin(filesDb, filesName(areaId) + ".MSG", fOffDescOff, fOffDescLen)
 }

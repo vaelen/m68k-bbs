@@ -277,19 +277,23 @@ func unreadCount(userId: int): int {
     return n
 }
 
-// Maintenance: compact headers, then the body heap. Leaves mail open.
+// Manual compaction: the headers only. Leaves mail open.
 func mailCompact(): bool {
-    var b: filehandle
     if not dbIsOpen(mailDb) { return false }
     mailDb = dbCompact(mailDb)
     if not dbIsOpen(mailDb) {
         mailClose()
         return false
     }
-    b = mailBody
+    return true
+}
+
+// Maintenance: begin the body-heap job (heap.cla), releasing the body
+// handle. Step it with heapUnit(mailDb), then mailOpen() to reopen.
+func mailHeapBegin(): bool {
+    var b: filehandle = mailBody
+    if not dbIsOpen(mailDb) { return false }
     if b != nil { b.close() }
     mailBody = nil
-    if not heapCompact(mailDb, "Mail.MSG", mOffBodyOff, mOffBodyLen) { return false }
-    mailBody = file.open("Mail.MSG")
-    return mailBody != nil
+    return heapBegin(mailDb, "Mail.MSG", mOffBodyOff, mOffBodyLen)
 }

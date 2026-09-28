@@ -1,11 +1,12 @@
 // Copyright 2026, Andrew C. Young <andrew@vaelen.org>
 // SPDX-License-Identifier: MIT
 
-// CLI self-check for heap.cla through its owners: compaction of the
-// posts heap (with dbCompact of the headers), the clean-heap
-// short-circuit, and recovery from every crash state; then one run
-// each over mail and file areas. Run by scripts/test.sh from a
-// scratch directory. Exits 0 on pass, 1 on the first failure.
+// CLI self-check for heap.cla through its owners: the header
+// compaction (dbCompact) and heap job of a board, the low-waste
+// short-circuit, stepping budgets, dbSetFieldIntAt across a page
+// boundary, and recovery from every crash state; then one run each
+// over mail and file areas. Run by scripts/test.sh from a scratch
+// directory. Exits 0 on pass, 1 on the first failure.
 
 include "../postsdb.cla"
 include "../maildb.cla"
@@ -47,6 +48,16 @@ func readFile(p: string): text {
     return t
 }
 
+// Run board `id`'s heap job to the end, one record per unit; leaves
+// the board open (reopened, as maintenance's next user would).
+func boardHeap(id: int): bool {
+    var r: int = hsMore
+    if not postsOpen(id) or not postsHeapBegin() { return false }
+    while r == hsMore { r = heapUnit(postsDb) }
+    postsClose()
+    return r == hsDone and postsOpen(id)
+}
+
 func postsTests() {
     var b1: text = "one-1"
     var b2: text = "two-22"
@@ -66,7 +77,9 @@ func postsTests() {
     expect(dbDelete(postsDb, 2) and dbDelete(postsDb, 5), "delete two")
     expect(fileSize("BRD01.MSG") == b1.length + b2.length + b3.length + b4.length + b5.length, "deletes orphan, don't shrink")
 
-    expect(postsCompact(1), "compact board 1")
+    expect(postsCompact(1), "compact board 1 headers")
+    expect(fileSize("BRD01.MSG") == b1.length + b2.length + b3.length + b4.length + b5.length, "header compaction leaves the heap alone")
+    expect(boardHeap(1), "compact board 1 heap")
     expect(postCount() == 3 and postsNextId() == 6, "count recounted, IDs never reused")
     expect(postBody(1) == b1 and postBody(3) == b3 and postBody(4) == b4, "surviving bodies intact")
     expect(postBody(2).length == 0 and postBody(5).length == 0, "deleted posts gone")
@@ -79,7 +92,7 @@ func postsTests() {
 
     // clean heap: nothing to do
     before = fileSize("BRD01.MSG")
-    expect(postsCompact(1), "compact again")
+    expect(boardHeap(1), "compact again")
     expect(fileSize("BRD01.MSG") == before and postBody(4) == b4, "clean heap untouched")
 
     // persistence across reopen
@@ -120,14 +133,75 @@ func postsTests() {
     postsClose()
 }
 
+// Gaps in the IDs, progress through the passes, and a heap under the
+// waste threshold left alone.
+func stepTests() {
+    var bodies: list of string
+    var i: int = 1
+    var want: text
+    var r: int = hsMore
+    var sawCopy: bool = false
+    var sawFix: bool = false
+    while i <= 8 {
+        bodies.add("body number " + string(i) + " of eight")
+        i = i + 1
+    }
+    expect(postsOpen(2), "board 2 open")
+    i = 0
+    while i < 8 {
+        expect(addPost("a", 0, "s", bodies[i]) == i + 1, "post " + string(i + 1))
+        i = i + 1
+    }
+    expect(dbDelete(postsDb, 1) and dbDelete(postsDb, 4) and dbDelete(postsDb, 5), "gaps on board 2")
+    expect(postsHeapBegin() and hjStage == hjCheck and heapPercent() == 0, "job begins with the check")
+    while r == hsMore {
+        r = heapUnit(postsDb)
+        if hjStage == hjCopy { sawCopy = true }
+        if hjStage == hjFix {
+            sawFix = true
+            expect(heapPercent() >= 50, "fix pass reports 50% and up")
+        }
+    }
+    expect(r == hsDone and hjPacked and sawCopy and sawFix, "checked, copied, fixed")
+    postsClose()
+    want = bodies[1] + bodies[2] + bodies[5] + bodies[6] + bodies[7]
+    expect(readFile("BRD02.MSG") == want, "heap is the live bodies in ID order")
+    expect(postsOpen(2) and postBody(2) == bodies[1] and postBody(3) == bodies[2] and postBody(8) == bodies[7], "offsets read back")
+    expect(dbFind(postsDb, 8).intAt(pOffBodyOff) == want.length - bodies[7].length, "last post at the end of the heap")
+    // one small orphan in a bigger heap: under the threshold, untouched
+    expect(addPost("a", 0, "s", "x") == 9 and dbDelete(postsDb, 9), "a tiny orphan")
+    postsClose()
+    expect(boardHeap(2) and not hjPacked and fileSize("BRD02.MSG") == want.length + 1, "low-waste heap skipped")
+    postsClose()
+}
+
+// dbSetFieldIntAt on a field that straddles a page boundary.
+func fieldTests() {
+    var db: Database = dbCreate("Wide", 600, "68BB")
+    var rec: text
+    var page: int
+    expect(dbIsOpen(db) and dbAdd(db, rec) == 1, "a 600-byte record")
+    page = dbFirstPage(db, 1)
+    expect(dbSetFieldIntAt(db, page, 504, 0x12345678) and dbSetFieldIntAt(db, page, 100, 7), "write across and inside a page")
+    expect(dbFieldIntAt(db, page, 504) == 0x12345678 and dbFieldIntAt(db, page, 100) == 7, "read back")
+    rec = dbFind(db, 1)
+    expect(rec.intAt(504) == 0x12345678 and rec.intAt(100) == 7, "the record sees both writes")
+    dbClose(db)
+}
+
 func mailTests() {
     var b1: text = "mail one"
     var b2: text = "mail two"
     var b3: text = "mail three"
+    var r: int
     expect(mailOpen(), "mail open")
     expect(sendMail("a", 1, "b", 2, "1", b1) == 1 and sendMail("a", 1, "b", 2, "2", b2) == 2 and sendMail("a", 1, "b", 2, "3", b3) == 3, "three messages")
     expect(deleteMessage(2), "delete one")
-    expect(mailCompact(), "compact mail")
+    expect(mailCompact(), "compact mail headers")
+    r = hsMore
+    expect(mailHeapBegin(), "mail heap job begins")
+    while r == hsMore { r = heapUnit(mailDb) }
+    expect(r == hsDone and hjPacked and mailOpen(), "compact mail heap")
     expect(messageBody(1) == b1 and messageBody(3) == b3, "bodies intact")
     expect(fileSize("Mail.MSG") == b1.length + b3.length, "mail heap is the live bytes")
     expect(mailCount() == 2, "mail count recounted")
@@ -140,10 +214,16 @@ func filesTests() {
     var d1: text = "long one"
     var d2: text = "long two"
     var none: text
+    var r: int
     expect(filesOpen(1), "area 1 open")
     expect(addFile("a.txt", "u", "s", 10, 0, d1) == 1 and addFile("b.txt", "u", "s", 10, 0, d2) == 2 and addFile("c.txt", "u", "s", 10, 0, none) == 3, "three entries, one without a long description")
     expect(dbDelete(filesDb, 2), "delete one")
-    expect(filesCompact(1), "compact area 1")
+    expect(filesCompact(1), "compact area 1 headers")
+    r = hsMore
+    expect(filesHeapBegin(1), "area heap job begins")
+    while r == hsMore { r = heapUnit(filesDb) }
+    filesClose()
+    expect(r == hsDone and filesOpen(1), "compact area 1 heap")
     expect(fileLongDesc(1) == d1 and fileLongDesc(3).length == 0, "descriptions intact")
     expect(fileSize("ARE01.MSG") == d1.length, "area heap is the live bytes")
     expect(findFile("c.txt") == 3, "Name index rebuilt")
@@ -152,6 +232,8 @@ func filesTests() {
 
 on App.startCLI(args: list of string) {
     postsTests()
+    stepTests()
+    fieldTests()
     mailTests()
     filesTests()
     if failures > 0 {

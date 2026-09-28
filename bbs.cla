@@ -126,6 +126,7 @@ menu FidoNet {
 menu Maintenance {
     item ToggleClosed "Toggle Closed to Callers"
     item RunNow "Run Database Maintenance"
+    item CompactNow "Compact Databases"
     item RunBench "Run Benchmarks"
 }
 
@@ -1286,14 +1287,15 @@ func logoff() {
     hangupPhase = 1
 }
 
-// Keeps a BASIC program moving between caller keystrokes (games/basic.cla).
+// Keeps a BASIC program moving between caller keystrokes (games/basic.cla)
+// and maintenance moving in short slices (maint.cla), then paints the log.
 every 2 ticks {
     if basicActive and (basicState == BRunning or basicState == BSleeping) { basicPump() }
+    if maintaining { maintTick() }
     if logDirty { logRedraw() }
 }
 
 every 30 ticks {
-    if maintaining { maintTick() }
     if ftnPolling { emsiTick() }
     if tossing and not isConnected and not ftnPolling and not maintaining {
         tossTick()               // one packet open / one message / one delete
@@ -1303,7 +1305,7 @@ every 30 ticks {
     if ftnSchedMinutes >= 120 {      // once a minute: clock resync, the maintenance window, then interval polls
         ftnSchedMinutes = 0
         ReadDateTime(timeBox)        // resync Time with the hardware clock (toolbox/osutils.cla)
-        if not maintaining and not isConnected and not ftnPolling and not tossing and maintDueNow() { maintStart(false) }
+        if not maintaining and not isConnected and not ftnPolling and not tossing and maintDueNow() { maintStart() }
         ftnSchedule()
         if ftnPolling { log("FTN: session in progress.") }
     }
@@ -1791,9 +1793,16 @@ extend Maintenance {
     }
     on RunNow.select {
         if isConnected or ftnPolling or tossing {
-            log("Maintenance: not started, line busy.")
+            log("Maint: not started, line busy.")
         } else {
-            maintStart(true)
+            maintStart()
+        }
+    }
+    on CompactNow.select {
+        if isConnected or ftnPolling or tossing {
+            log("Compaction: not started, line busy.")
+        } else if not compactStart() {
+            log("Compaction: not started, maintenance is running.")
         }
     }
     on RunBench.select {
