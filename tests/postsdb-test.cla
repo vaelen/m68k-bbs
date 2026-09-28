@@ -68,13 +68,13 @@ func unopenableTests() {
     var before: int
     expect(postsOpen(8) and addPost("a", 0, "keep me", "body") == 1, "board 8 with a post")
     postsClose()
-    f = file.open("BRD08.DAT")
+    f = file.open(":Boards:BRD08.DAT")
     expect(f != nil and f.writeAt(0, "XXXX"), "board 8 header damaged")
     f.close()
-    before = file.info("BRD08.DAT").size
+    before = file.info(":Boards:BRD08.DAT").size
     expect(not postsOpen(8), "a damaged board fails to open")
-    expect(file.info("BRD08.DAT").size == before and file.info("BRD08.MSG").size == 4, "its files are left alone")
-    f = file.open("BRD08.DAT")
+    expect(file.info(":Boards:BRD08.DAT").size == before and file.info(":Boards:BRD08.MSG").size == 4, "its files are left alone")
+    f = file.open(":Boards:BRD08.DAT")
     expect(f != nil and f.writeAt(0, "VDB\x00"), "header repaired")
     f.close()
     expect(postsOpen(8) and postCount() == 1 and postBody(1) == "body", "and the post is still there")
@@ -246,7 +246,7 @@ on App.startCLI(args: list of string) {
     postsClose()
 
     // Created-index migration: a board written before the index existed
-    legacy = dbCreate("BRD09", postRecordSize, "68BB")
+    legacy = dbCreate(postsName(9), postRecordSize, "68BB")
     expect(dbIsOpen(legacy), "legacy board db created")
     expect(dbAddIndex(legacy, "Thread", itID, pOffThread) and dbAddIndex(legacy, "MsgId", itID, pOffMsgId), "legacy board has only two indexes")
     expect(dbAdd(legacy, packPost("old-timer", now() - 400, 0, "pre-index", 0, 0, 0, a, 0)) == 1, "legacy record added")

@@ -98,8 +98,8 @@ func runTests() {
     expect(deleting == (30 + maintDeleteBatch - 1) / maintDeleteBatch + 1, "one batch per unit (plus the unit that moves on)")
     expect(postsOpen(2) and postCount() == 1 and not loadPost(1) and loadPost(31), "40-day-old posts expired, fresh one kept")
     postsClose()
-    expect(file.info("BRD02.MSG").size == 10, "board 2 heap compacted to the fresh body")
-    expect(not file.exists("BRD02.OLD") and not file.exists("BRD02.NEW"), "no scratch files left")
+    expect(file.info(":Boards:BRD02.MSG").size == 10, "board 2 heap compacted to the fresh body")
+    expect(not file.exists(":Boards:BRD02.OLD") and not file.exists(":Boards:BRD02.NEW"), "no scratch files left")
     expect(postsOpen(2) and postBody(31) == "fresh body", "fresh body reads back")
     postsClose()
     expect(postsOpen(1) and postCount() == 1, "board with keepDays 0 untouched")
@@ -110,7 +110,7 @@ func runTests() {
     // manual compaction: every database file, no heaps
     expect(postsOpen(1) and addPost("a", 0, "doomed", "orphan bytes") == 2 and dbDelete(postsDb, 2), "leave an orphan on board 1")
     postsClose()
-    orphaned = file.info("BRD01.MSG").size
+    orphaned = file.info(":Boards:BRD01.MSG").size
     usersStamp = dbLastCompacted(usersDb)
     expect(compactStart(), "compaction starts")
     expect(maintaining and compacting and rejectCallers, "compaction closes the BBS")
@@ -120,7 +120,7 @@ func runTests() {
     expect(dbLastCompacted(boardsDb) != 0 and dbLastCompacted(mailDb) != 0 and dbLastCompacted(wallDb) != 0, "fixed databases compacted")
     expect(postsOpen(1) and dbLastCompacted(postsDb) != 0 and postCount() == 1, "board headers compacted")
     postsClose()
-    expect(file.info("BRD01.MSG").size == orphaned, "compaction leaves heaps alone")
+    expect(file.info(":Boards:BRD01.MSG").size == orphaned, "compaction leaves heaps alone")
     expect(dbLastCompacted(usersDb) != 0 and mailCount() == 0, "Users compacted, mail still open")
 }
 

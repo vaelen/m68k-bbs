@@ -6,3 +6,6 @@ simple-modem-emulator/modem.log
 build
 docs/superpowers
 hermes
+*.hda
+*.img
+fix-boards

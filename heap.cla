@@ -36,8 +36,8 @@
 // and holds off polls and tosses, and the job itself writes only .NEW
 // and record data pages. One job at a time.
 //
-// `path` is a plain file name next to the app (file.rename takes a
-// leaf name). The owner closes its own heap handle before heapBegin
+// `path` may include folders (":Boards:BRD01.MSG"); renames pass
+// heapLeaf, since file.rename takes a leaf name. The owner closes its own heap handle before heapBegin
 // and reopens after the job ends.
 
 include "vdb.cla"
@@ -76,6 +76,16 @@ func heapNewPath(path: string): string {
 
 func heapOldPath(path: string): string {
     return path[0, path.length - 4] + ".OLD"
+}
+
+// The file name after the last ':' -- file.rename's new name.
+func heapLeaf(path: string): string {
+    var i: int = path.length
+    while i > 0 {
+        if path[i - 1] == ':' { return path[i, path.length - i] }
+        i = i - 1
+    }
+    return path
 }
 
 // Rewrite every live record's offset to the running total of the live
@@ -172,11 +182,11 @@ func heapCopyDone(db: Database): int {
         return heapFail()
     }
     heapCloseFiles()
-    if not file.rename(hjPath, heapOldPath(hjPath)) {
+    if not file.rename(hjPath, heapLeaf(heapOldPath(hjPath))) {
         file.delete(heapNewPath(hjPath))
         return heapFail()
     }
-    if not file.rename(heapNewPath(hjPath), hjPath) { return heapFail() }   // heapRecover finishes it
+    if not file.rename(heapNewPath(hjPath), heapLeaf(hjPath)) { return heapFail() }   // heapRecover finishes it
     heapPass(db, hjFix)
     return hsMore
 }
@@ -250,7 +260,7 @@ func heapRecover(db: Database, path: string, offField: int, lenField: int): bool
     var oldP: string = heapOldPath(path)
     if file.exists(oldP) {
         if not file.exists(path) {
-            if not file.rename(newP, path) { return false }
+            if not file.rename(newP, heapLeaf(path)) { return false }
         }
         if not heapFixOffsets(db, offField, lenField) { return false }
         return file.delete(oldP)

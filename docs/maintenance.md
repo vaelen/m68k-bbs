@@ -122,8 +122,8 @@ the run (`ftnSchedule`/`ftnNext` check `maintaining`).
 A big board's compaction freezes the Mac for hours, so it can be done
 on the host instead: the vDB and heap formats are the same on both
 lanes. With the BBS **not running**, copy the board's files
-(`BRDnn.DAT`, `.IDX`, `.JNL`, `.I00`-`.I02`, `.MSG`) into an empty
-directory, then
+(`BRDnn.DAT`, `.IDX`, `.JNL`, `.I00`-`.I02`, `.MSG`) into a `Boards`
+folder inside an empty directory DIR, then
 
     scripts/boardtool.sh DIR BOARD [KEEPDAYS]
 
@@ -132,8 +132,9 @@ It expires posts older than KEEPDAYS (if given), runs `postsCompact`
 rebuilt), packs the heap whatever its waste (`heapForce`), and logs
 sizes as it goes. Copy the files back over the originals (type and
 creator don't matter; the app opens them by name). From a disk image,
-with hfsutils: `hcopy -r ":BRD13.DAT" DIR/` out and `hcopy -r
-DIR/BRD13.DAT :` back, image unmounted from the emulator.
+with hfsutils: `hcopy -r ":Boards:BRD13.DAT" DIR/Boards/` out and
+`hcopy -r DIR/Boards/BRD13.DAT :Boards:` back, image unmounted from the
+emulator.
 
 ## Heap compaction and recovery
 

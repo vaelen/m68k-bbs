@@ -55,8 +55,10 @@ Board deletion is a plain `dbDelete` on the Boards database.
 
 ## A board's posts
 
-Files per board, named from the board ID (`postsName`: `BRD` + two
-decimal digits, so board IDs are 1–99 — a guard `postsOpen` enforces):
+Files per board, in the `:Boards` folder (`postsOpen` creates it when
+it creates a board's database), named from the board ID (`postsName`:
+`:Boards:BRD` + two decimal digits, so board IDs are 1–99 — a guard
+`postsOpen` enforces):
 
 - `BRD<nn>.DAT` / `.IDX` / `.JNL` — post header records in vDB
 - `BRD<nn>.I00` — secondary index on the thread-ID field

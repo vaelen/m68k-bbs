@@ -4,7 +4,7 @@
 // Host-side board maintenance: the slow 68k jobs run on a copy of one
 // board's files (BRDnn.DAT/.IDX/.JNL/.Inn/.MSG -- the vDB format is the
 // same on both lanes), then the files go back to the Mac. Run in the
-// directory holding them, via scripts/boardtool.sh:
+// directory whose Boards folder holds them, via scripts/boardtool.sh:
 //   boardtool BOARD [KEEPDAYS]
 // KEEPDAYS > 0 first expires posts older than that many days. Then
 // Compact Databases' board step (postsCompact: legacy thread starters

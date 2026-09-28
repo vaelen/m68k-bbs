@@ -135,9 +135,10 @@ Full background: `docs/snow-hdd-howto.md`.
 
 Before an e2e test run against the emulator, delete all database files
 from the image (while Snow is stopped) so every run starts from the
-same baseline: `hdel` the vDB files — `Users.*`, `Boards.*`, `BRD*`,
-`Mail.*`, `Areas.*`, `ARE*`, `Networks.*`, `Wall.*`, `Games.*` — plus
-the `GameData` folder,
+same baseline: `hdel` the vDB files — `Users.*`, `Boards.*`,
+`Mail.*`, `Areas.*`, `Networks.*`, `Wall.*`, `Games.*` — plus
+the `Boards` and `Areas` folders (per-board `BRD*` / per-area `ARE*`
+files; empty, then `hrmdir`), the `GameData` folder,
 `Logins.txt`, `MOTD.txt` and the `FTN` folder (empty `FTN:In`, `FTN:Out`, `FTN:Tmp`, then `hrmdir`),
 then reseed. The vDB format is identical on both lanes (big-endian),
 so seed data can be built with a host-lane CLI program and `hcopy -r`'d
@@ -218,7 +219,8 @@ inputChar (bbs.cla) → processInput`.
   a leaf read once, only the batch's exact key/record pairs removed via
   `btEntryRemove`, written once), roots read once (deletes never move a
   root); on error it leaves the db pending for the caller to close.
-  Used by expiry (`maintDeleteBatch`, `expirePosts`). `dbCreate` refuses a name whose `.DAT`
+  Used by expiry (`maintDeleteBatch`, `expirePosts`). `heap.cla` renames via `heapLeaf` (file.rename takes a leaf name).
+  `dbCreate` refuses a name whose `.DAT`
   exists (logs "exists but did not open"): every owner's open falls
   back to it when `dbOpen` fails, which once recreated boards empty
   over their data. `usersdb.cla` — the "Users" vDB database
@@ -232,7 +234,7 @@ inputChar (bbs.cla) → processInput`.
   `addPostFtn` (postsdb includes boardsdb; a no-op when Boards isn't
   open) and backfilled at launch by `boardsBackfillLastPost` for
   boards that predate it — record ID = board ID; `boardNetworked()`). `postsdb.cla` — one board's posts at a time
-  (`postsOpen(boardId)`): header records in `BRD<nn>.*` (sender/
+  (`postsOpen(boardId)`): header records in `:Boards:BRD<nn>.*` (sender/
   created/threadId/subject, thread ID indexed = the starter's post ID,
   a starter's own ID for itself (`addPostFtn` predicts it with
   `dbNextRecordId`; boards from before 2026-09-28 hold 0 there until
@@ -264,7 +266,7 @@ inputChar (bbs.cla) → processInput`.
   `docs/fidonet.md`). `areasdb.cla` — the "Areas" database (256-byte
   records: name/description/folder path/access byte, record ID =
   area ID). `filesdb.cla` — one area's file entries at a time
-  (`filesOpen(areaId)`): header records in `ARE<nn>.*` (filename
+  (`filesOpen(areaId)`): header records in `:Areas:ARE<nn>.*` (filename
   indexed case-insensitively, uploader name, description, created,
   size, downloads, flags: pending/offline) plus long descriptions in
   an append-only `ARE<nn>.MSG` heap, same write ordering as posts;

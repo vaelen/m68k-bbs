@@ -3,7 +3,7 @@
 
 // Posts for one message board: fixed-size header records in a vDB
 // database plus an append-only body heap, the classic message-base
-// split (Hudson/Squish/JAM). A board's files are BRD<nn>.DAT/.IDX/
+// split (Hudson/Squish/JAM). A board's files are Boards:BRD<nn>.DAT/.IDX/
 // .I00/.I01/.JNL (headers, board IDs 1-99) and BRD<nn>.MSG (bodies).
 //
 // On-disk header record (160 bytes, vDB record ID = post ID):
@@ -62,8 +62,10 @@ var postsBody: filehandle
 var post: Post      // last loaded post header
 var postsBoardId: int = 0   // the open board, 0 = none (a caller or a toss may switch it)
 
+const postsFolder: string = ":Boards"
+
 func postsName(boardId: int): string {
-    return "BRD" + char(int('0') + boardId / 10) + char(int('0') + boardId mod 10)
+    return postsFolder + ":BRD" + char(int('0') + boardId / 10) + char(int('0') + boardId mod 10)
 }
 
 // One-time migration: add the Created index to a board that predates
@@ -99,6 +101,7 @@ func postsOpen(boardId: int): bool {
     name = postsName(boardId)
     postsDb = dbOpen(name, "68BB")
     if not dbIsOpen(postsDb) {
+        if not file.exists(postsFolder) { file.makeDir(postsFolder) }
         postsDb = dbCreate(name, postRecordSize, "68BB")
         if not dbIsOpen(postsDb) { return false }
         if not dbAddIndex(postsDb, "Thread", itID, pOffThread) {

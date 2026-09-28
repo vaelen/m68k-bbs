@@ -76,8 +76,10 @@ into the global `area`, `saveArea()` writing the global `area` back,
 
 ## An area's file entries
 
-Files per area, named from the area ID (`filesName`: `ARE` + two
-decimal digits, so area IDs are 1–99 — `filesOpen` enforces it):
+Files per area, in the `:Areas` folder (`filesOpen` creates it when it
+creates an area's database), named from the area ID (`filesName`:
+`:Areas:ARE` + two decimal digits, so area IDs are 1–99 — `filesOpen`
+enforces it):
 
 - `ARE<nn>.DAT` / `.IDX` / `.JNL` — file header records in vDB
 - `ARE<nn>.I00` — secondary index on the filename field

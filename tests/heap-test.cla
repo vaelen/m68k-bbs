@@ -73,27 +73,27 @@ func postsTests() {
     expect(addPost("a", 0, "1", b1) == 1 and addPost("b", 1, "2", b2) == 2 and addPost("c", 0, "3", b3) == 3, "three posts")
     expect(addPostFtn("d", 0, 1, "4", b4, 4444, a, postFlagInbound) == 4, "an FTN post with a MSGID")
     expect(addPost("e", 3, "5", b5) == 5, "fifth post")
-    expect(fileSize("BRD01.MSG") == b1.length + b2.length + b3.length + b4.length + b5.length, "heap holds all five")
+    expect(fileSize(":Boards:BRD01.MSG") == b1.length + b2.length + b3.length + b4.length + b5.length, "heap holds all five")
     expect(dbDelete(postsDb, 2) and dbDelete(postsDb, 5), "delete two")
-    expect(fileSize("BRD01.MSG") == b1.length + b2.length + b3.length + b4.length + b5.length, "deletes orphan, don't shrink")
+    expect(fileSize(":Boards:BRD01.MSG") == b1.length + b2.length + b3.length + b4.length + b5.length, "deletes orphan, don't shrink")
 
     expect(postsCompact(1), "compact board 1 headers")
-    expect(fileSize("BRD01.MSG") == b1.length + b2.length + b3.length + b4.length + b5.length, "header compaction leaves the heap alone")
+    expect(fileSize(":Boards:BRD01.MSG") == b1.length + b2.length + b3.length + b4.length + b5.length, "header compaction leaves the heap alone")
     expect(boardHeap(1), "compact board 1 heap")
     expect(postCount() == 3 and postsNextId() == 6, "count recounted, IDs never reused")
     expect(postBody(1) == b1 and postBody(3) == b3 and postBody(4) == b4, "surviving bodies intact")
     expect(postBody(2).length == 0 and postBody(5).length == 0, "deleted posts gone")
-    expect(fileSize("BRD01.MSG") == b1.length + b3.length + b4.length, "heap is exactly the live bytes")
-    expect(not file.exists("BRD01.NEW") and not file.exists("BRD01.OLD"), "no scratch files left")
+    expect(fileSize(":Boards:BRD01.MSG") == b1.length + b3.length + b4.length, "heap is exactly the live bytes")
+    expect(not file.exists(":Boards:BRD01.NEW") and not file.exists(":Boards:BRD01.OLD"), "no scratch files left")
     expect(findPostByMsgId(4444) == 4, "MsgId index rebuilt")
     threadPosts(1, ids)
     expect(ids.count == 2 and ids[1] == 4, "Thread index rebuilt")
     expect(loadPost(4) and post.threadId == 1 and (post.flags & postFlagInbound) != 0, "header fields intact")
 
     // clean heap: nothing to do
-    before = fileSize("BRD01.MSG")
+    before = fileSize(":Boards:BRD01.MSG")
     expect(boardHeap(1), "compact again")
-    expect(fileSize("BRD01.MSG") == before and postBody(4) == b4, "clean heap untouched")
+    expect(fileSize(":Boards:BRD01.MSG") == before and postBody(4) == b4, "clean heap untouched")
 
     // persistence across reopen
     postsClose()
@@ -101,35 +101,35 @@ func postsTests() {
 
     // recovery A: a stray .NEW from a crash mid-rewrite
     postsClose()
-    expect(writeFile("BRD01.NEW", "junk"), "stage stray .NEW")
+    expect(writeFile(":Boards:BRD01.NEW", "junk"), "stage stray .NEW")
     expect(postsOpen(1), "reopen recovers")
-    expect(not file.exists("BRD01.NEW") and postBody(1) == b1, "stray .NEW deleted, heap untouched")
+    expect(not file.exists(":Boards:BRD01.NEW") and postBody(1) == b1, "stray .NEW deleted, heap untouched")
 
     // recovery B: crash between the two renames (.OLD + .NEW, no .MSG)
     expect(dbDelete(postsDb, 3), "delete post 3")
-    staged = readFile("BRD01.MSG")
+    staged = readFile(":Boards:BRD01.MSG")
     postsClose()
-    expect(file.rename("BRD01.MSG", "BRD01.OLD"), "stage .OLD")
-    expect(writeFile("BRD01.NEW", b1 + b4), "stage the complete .NEW")
+    expect(file.rename(":Boards:BRD01.MSG", "BRD01.OLD"), "stage .OLD")
+    expect(writeFile(":Boards:BRD01.NEW", b1 + b4), "stage the complete .NEW")
     expect(postsOpen(1), "reopen recovers")
-    expect(not file.exists("BRD01.OLD") and not file.exists("BRD01.NEW") and file.exists("BRD01.MSG"), "swap finished, scratch gone")
+    expect(not file.exists(":Boards:BRD01.OLD") and not file.exists(":Boards:BRD01.NEW") and file.exists(":Boards:BRD01.MSG"), "swap finished, scratch gone")
     expect(postBody(1) == b1 and postBody(4) == b4, "bodies read at the fixed offsets")
     expect(dbFind(postsDb, 4).intAt(pOffBodyOff) == b1.length, "offset rewritten")
-    expect(fileSize("BRD01.MSG") == b1.length + b4.length, "heap is the live bytes")
+    expect(fileSize(":Boards:BRD01.MSG") == b1.length + b4.length, "heap is the live bytes")
 
     // recovery C: crash during fix-offsets (.OLD + new .MSG, offsets stale)
     expect(dbDelete(postsDb, 1), "delete post 1")
     postsClose()
-    expect(file.rename("BRD01.MSG", "BRD01.OLD"), "stage .OLD")
-    expect(writeFile("BRD01.MSG", b4), "stage the new .MSG")
+    expect(file.rename(":Boards:BRD01.MSG", "BRD01.OLD"), "stage .OLD")
+    expect(writeFile(":Boards:BRD01.MSG", b4), "stage the new .MSG")
     expect(postsOpen(1), "reopen recovers")
-    expect(not file.exists("BRD01.OLD") and postBody(4) == b4, "offset fixed, .OLD gone")
+    expect(not file.exists(":Boards:BRD01.OLD") and postBody(4) == b4, "offset fixed, .OLD gone")
     expect(dbFind(postsDb, 4).intAt(pOffBodyOff) == 0, "post 4 now at offset 0")
 
     // recovery D: .OLD left behind with offsets already correct
     postsClose()
-    expect(writeFile("BRD01.OLD", "stale"), "stage a leftover .OLD")
-    expect(postsOpen(1) and not file.exists("BRD01.OLD") and postBody(4) == b4, "leftover .OLD deleted")
+    expect(writeFile(":Boards:BRD01.OLD", "stale"), "stage a leftover .OLD")
+    expect(postsOpen(1) and not file.exists(":Boards:BRD01.OLD") and postBody(4) == b4, "leftover .OLD deleted")
     postsClose()
 }
 
@@ -165,13 +165,13 @@ func stepTests() {
     expect(r == hsDone and hjPacked and sawCopy and sawFix, "checked, copied, fixed")
     postsClose()
     want = bodies[1] + bodies[2] + bodies[5] + bodies[6] + bodies[7]
-    expect(readFile("BRD02.MSG") == want, "heap is the live bodies in ID order")
+    expect(readFile(":Boards:BRD02.MSG") == want, "heap is the live bodies in ID order")
     expect(postsOpen(2) and postBody(2) == bodies[1] and postBody(3) == bodies[2] and postBody(8) == bodies[7], "offsets read back")
     expect(dbFind(postsDb, 8).intAt(pOffBodyOff) == want.length - bodies[7].length, "last post at the end of the heap")
     // one small orphan in a bigger heap: under the threshold, untouched
     expect(addPost("a", 0, "s", "x") == 9 and dbDelete(postsDb, 9), "a tiny orphan")
     postsClose()
-    expect(boardHeap(2) and not hjPacked and fileSize("BRD02.MSG") == want.length + 1, "low-waste heap skipped")
+    expect(boardHeap(2) and not hjPacked and fileSize(":Boards:BRD02.MSG") == want.length + 1, "low-waste heap skipped")
     postsClose()
 }
 
@@ -225,7 +225,7 @@ func filesTests() {
     filesClose()
     expect(r == hsDone and filesOpen(1), "compact area 1 heap")
     expect(fileLongDesc(1) == d1 and fileLongDesc(3).length == 0, "descriptions intact")
-    expect(fileSize("ARE01.MSG") == d1.length, "area heap is the live bytes")
+    expect(fileSize(":Areas:ARE01.MSG") == d1.length, "area heap is the live bytes")
     expect(findFile("c.txt") == 3, "Name index rebuilt")
     filesClose()
 }

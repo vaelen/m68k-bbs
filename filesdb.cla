@@ -5,7 +5,7 @@
 // database (filename indexed case-insensitively) plus an append-only
 // long-description heap -- the posts header/heap split, except that
 // the main content is a real file on disk at <area folder>:<name>.
-// An area's files are ARE<nn>.DAT/.IDX/.I00/.JNL (headers, area IDs
+// An area's files are Areas:ARE<nn>.DAT/.IDX/.I00/.JNL (headers, area IDs
 // 1-99) and ARE<nn>.MSG (long descriptions). Layout and rationale:
 // docs/files.md.
 //
@@ -59,8 +59,10 @@ var filesDb: Database
 var filesDesc: filehandle
 var fileRec: FileEntry      // last loaded file entry
 
+const filesFolder: string = ":Areas"
+
 func filesName(areaId: int): string {
-    return "ARE" + char(int('0') + areaId / 10) + char(int('0') + areaId mod 10)
+    return filesFolder + ":ARE" + char(int('0') + areaId / 10) + char(int('0') + areaId mod 10)
 }
 
 // Open area `areaId`'s file entries (closing any area already open),
@@ -72,6 +74,7 @@ func filesOpen(areaId: int): bool {
     name = filesName(areaId)
     filesDb = dbOpen(name, "68BB")
     if not dbIsOpen(filesDb) {
+        if not file.exists(filesFolder) { file.makeDir(filesFolder) }
         filesDb = dbCreate(name, fileRecordSize, "68BB")
         if not dbIsOpen(filesDb) { return false }
         if not dbAddIndex(filesDb, "Name", itString, fOffName) {
