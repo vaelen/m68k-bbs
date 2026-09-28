@@ -61,6 +61,26 @@ func legacyThreadTests() {
     postsClose()
 }
 
+// A board whose .DAT exists but won't open must fail to open, not be
+// recreated empty over the data (dbCreate refuses an existing .DAT).
+func unopenableTests() {
+    var f: filehandle
+    var before: int
+    expect(postsOpen(8) and addPost("a", 0, "keep me", "body") == 1, "board 8 with a post")
+    postsClose()
+    f = file.open("BRD08.DAT")
+    expect(f != nil and f.writeAt(0, "XXXX"), "board 8 header damaged")
+    f.close()
+    before = file.info("BRD08.DAT").size
+    expect(not postsOpen(8), "a damaged board fails to open")
+    expect(file.info("BRD08.DAT").size == before and file.info("BRD08.MSG").size == 4, "its files are left alone")
+    f = file.open("BRD08.DAT")
+    expect(f != nil and f.writeAt(0, "VDB\x00"), "header repaired")
+    f.close()
+    expect(postsOpen(8) and postCount() == 1 and postBody(1) == "body", "and the post is still there")
+    postsClose()
+}
+
 on App.startCLI(args: list of string) {
     var id1: int
     var id2: int
@@ -182,6 +202,7 @@ on App.startCLI(args: list of string) {
     postsByCreatedEnd()
     postsClose()
     legacyThreadTests()
+    unopenableTests()
 
     if failures > 0 {
         log("postsdb-test: FAILED")

@@ -209,7 +209,10 @@ inputChar (bbs.cla) → processInput`.
   secondary in key order, `btFind` expands duplicate keys;
   `dbFieldIntAt` — one i32 field without materializing the record,
   which a 68k text-returning call makes ~100 ms; `dbBuildIndex` reads
-  only key fields the same way). `usersdb.cla` — the "Users" vDB database
+  only key fields the same way). `dbCreate` refuses a name whose `.DAT`
+  exists (logs "exists but did not open"): every owner's open falls
+  back to it when `dbOpen` fails, which once recreated boards empty
+  over their data. `usersdb.cla` — the "Users" vDB database
   (160-byte records: username/hash/email/access flags (i32)/created/
   lastSeen; vDB record ID = user ID; username indexed
   case-insensitively).

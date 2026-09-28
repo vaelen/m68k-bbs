@@ -1719,6 +1719,7 @@ func benchDelete() {
     var i: int
     var t0: int
     var names: list of string
+    benchDeleteCleanup()                // a cut-short earlier run's files
     db = dbCreate("BENCH", postRecordSize, "68BB")
     if not dbIsOpen(db) {
         log("bench delete: cannot create BENCH: " + lastError.message)

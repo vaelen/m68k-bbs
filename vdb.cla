@@ -659,6 +659,14 @@ func dbCreate(name: string, recordSize: int, creator: string): Database {
     var fl: text
     var idx: filehandle
     if recordSize < 1 or recordSize > 65535 { return none }
+    // Never over an existing database: every owner's open falls back to
+    // dbCreate when dbOpen fails, and a failed open (out of memory, a
+    // bad replay) must not wipe the data -- boards were lost that way
+    // (2026-09-28). The owner's open fails instead; the files stay put.
+    if file.exists(name + ".DAT") {
+        log("vdb: " + name + ".DAT exists but did not open; not recreating it")
+        return none
+    }
     db.name = name
     db.creator = creator
     db.data = file.create(name + ".DAT", "VDBd", creator)
