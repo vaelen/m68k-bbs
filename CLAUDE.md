@@ -196,7 +196,8 @@ inputChar (bbs.cla) → processInput`.
   values -- `btMaxInline` inline, the rest chained) over a `filehandle`,
   plus transient scan cursors (`btScanStart`/`btScanNext`, caller-owned
   opaque `text` blob, ascending or descending — descending walks the
-  parent path, no format change); `vdb.cla` — journaled page database
+  parent path, no format change; `btScanValues` gives the current key's
+  values from the cursor's leaf copy — use it, not a `btFind` per key); `vdb.cla` — journaled page database
   with secondary indexes on top of it (formats: `docs/vdb-clarus.md`;
   design: `docs/vdb.md`), a cached header page (module map, refreshed
   by every `dbWriteHeader`, dropped on open/close), and the scan API

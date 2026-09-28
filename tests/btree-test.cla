@@ -43,6 +43,8 @@ on App.startCLI(args: list of string) {
     var cur: text
     var f2: filehandle
     var hit: bool
+    var sv: list of int
+    var keys: int
 
     f = btCreate("BT.IDX", "VDBi", "68BB")
     expect(f != nil, "btree created")
@@ -84,6 +86,26 @@ on App.startCLI(args: list of string) {
     // delete an inline value (one of the first few)
     expect(btDeleteValue(f, 0, 2), "delete an inline value")
     expect(countValues(f, 0) == 498 and not hasValue(f, 0, 2), "inline delete took")
+
+    // btScanValues reads the cursor's snapshot: same answer as btFind,
+    // for an inline key (5) and one spilling into overflow pages (0)
+    hit = true
+    keys = 0
+    if btScanStart(f, cur, -2147483647 - 1, false) {
+        while btScanNext(f, cur) {
+            keys = keys + 1
+            if not btScanValues(f, cur, sv) or not btFind(f, btScanKey(cur), v) or sv.count != v.count {
+                hit = false
+            } else {
+                i = 0
+                while i < v.count {
+                    if sv[i] != v[i] { hit = false }
+                    i = i + 1
+                }
+            }
+        }
+    }
+    expect(keys == 2 and hit, "btScanValues matches btFind, inline and overflow")
 
     // persistence across reopen
     f.close()

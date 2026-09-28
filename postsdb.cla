@@ -362,7 +362,7 @@ func expireCollect(boardId: int, cutoff: int, doomed: list of int): bool {
     if btScanStart(idx, cur, -2147483647 - 1, false) {
         while going and btScanNext(idx, cur) {
             if btScanKey(cur) < cutoff {
-                if btFind(idx, btScanKey(cur), vals) {
+                if btScanValues(idx, cur, vals) {
                     i = 0
                     while i < vals.count {
                         doomed.add(vals[i])

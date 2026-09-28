@@ -566,6 +566,24 @@ func btScanValue(cur: text): int {
     return cur.intAt(12)
 }
 
+// All values of the current entry, read from the cursor's leaf
+// snapshot -- no descent from the root (what a btFind per key costs);
+// only an entry past btMaxInline values reads its overflow chain.
+func btScanValues(f: filehandle, cur: text, values: list of int): bool {
+    var off: int = btScanEntryOff(cur, cur.wordAt(2))
+    var vc: int = cur.wordAt(off + 4)
+    var j: int = 0
+    values.clear()
+    while j < vc {
+        values.add(cur.intAt(off + 6 + j * 4))
+        j = j + 1
+    }
+    if cur.intAt(off + 6 + vc * 4) != 0 {
+        return btOverflowValues(f, cur.intAt(off + 6 + vc * 4), values)
+    }
+    return true
+}
+
 // Byte offset (within the blob) of leaf entry `idx`.
 func btScanEntryOff(cur: text, idx: int): int {
     var off: int = btScanHdrSize + btLeafHeaderSize

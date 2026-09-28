@@ -483,7 +483,7 @@ func timestamp(): string {
     var rec: DateTimeRec
     var s: string
     SecondsToDate(now(), rec)
-    s = "[" + intStr(rec.year) + "-" + pad2(rec.month)
+    s = "[" + pad2(rec.month)
     s = s + "-" + pad2(rec.day) + " " + pad2(rec.hour)
     s = s + ":" + pad2(rec.minute) + ":" + pad2(rec.second) + "] "
     return s

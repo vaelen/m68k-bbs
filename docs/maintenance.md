@@ -55,7 +55,11 @@ Maint: Board 2 (Name): Done - 1234 expired
 ```
 
 1. **Collect** (boards with `keepDays > 0`) — one Created-index key per
-   unit, stopping at the first date past the cutoff.
+   unit, its post IDs read from the scan cursor's leaf copy
+   (`btScanValues`, no per-key search), stopping at the first date past
+   the cutoff. Its progress line has no percentage (the total isn't
+   known until the cutoff is reached): `Collecting - 5513 found, through
+   03-14-25` — the date the walk has reached.
 2. **Delete** — one `dbDelete` per unit. Each is its own transaction,
    so an interrupted board just finishes on the next run.
 3. **Check** — the heap job's first pass (`heap.cla`, one record per

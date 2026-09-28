@@ -75,6 +75,8 @@ var maintIdx: filehandle            // expiry: the board's Created index
 var maintIdxCur: text               //   its scan cursor (nothing writes it until msDelete)
 var maintIdxOk: bool = false
 var maintCutoff: int = 0
+var maintThrough: int = 0           // expiry: the Created date the walk has reached
+var maintThroughSet: bool = false   // (a timestamp: no sentinel value)
 var maintDoomed: list of int        // expiry: the board's doomed IDs
 var maintDoomedAt: int = 0
 var maintExpired: int = 0
@@ -272,6 +274,7 @@ func maintOpenItem() {
         return
     }
     maintIdxOk = btScanStart(maintIdx, maintIdxCur, -2147483647 - 1, false)
+    maintThroughSet = false
     maintProgReset()
     maintStep = msCollect
 }
@@ -283,7 +286,9 @@ func maintCollectUnit() {
     var i: int = 0
     if maintIdxOk { maintIdxOk = btScanNext(maintIdx, maintIdxCur) }
     if maintIdxOk and btScanKey(maintIdxCur) < maintCutoff {
-        if btFind(maintIdx, btScanKey(maintIdxCur), vals) {
+        maintThrough = btScanKey(maintIdxCur)
+        maintThroughSet = true
+        if btScanValues(maintIdx, maintIdxCur, vals) {
             while i < vals.count {
                 maintDoomed.add(vals[i])
                 i = i + 1
@@ -364,7 +369,12 @@ func maintProgress() {
     if compacting or ticks < maintProgressTicks { return }
     rate = maintProgCount * 60 / ticks
     switch maintStep {
-    case msCollect { what = "Collecting - " + string(maintDoomed.count) + " found" }
+    case msCollect {
+        what = "Collecting - " + string(maintDoomed.count) + " found"
+        if maintThroughSet {
+            what = what + ", through " + dateTimeStr(maintThrough)[0, 8]
+        }
+    }
     case msDelete {
         what = "Deleting - " + string(maintDoomedAt * 100 / maintDoomed.count) + "%"
     }
