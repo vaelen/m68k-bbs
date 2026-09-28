@@ -22,6 +22,7 @@
 // (dbCompact: squeeze out holes, truncate, rebuild everything tightly).
 
 include "btree.cla"
+include "toolbox/events.cla"   // TickCount, for dbDelete phase timing
 
 const dbPageSize: int = 512
 const dbPageDataSize: int = 506
@@ -491,9 +492,12 @@ func dbIndexDeleteAll(db: Database, hdr: text, rec: text, id: int) {
     while i < count {
         base = 32 + i * 32
         idx = btOpen(dbIndexPath(db.name, int(hdr[base + 31])))
+        dbTime(dtIdxOpen)
         if idx != nil {
             btDeleteValue(idx, dbExtractKey(rec, hdr.wordAt(base + 28), int(hdr[base + 30])), id)
+            dbTime(dtIdxDelete)
             idx.close()
+            dbTime(dtIdxOpen)
         }
         i = i + 1
     }
@@ -838,6 +842,34 @@ func dbUpdate(db: Database, id: int, data: text): bool {
     return dbCommit(db, hdr)
 }
 
+// Per-phase timing of dbDelete for Maintenance > Run Benchmarks: while
+// dbTiming is set each phase's ticks accumulate in dbTimes (index =
+// the dt* phase). Off, it costs one bool test per phase.
+const dtLookup: int = 0      // header, primary lookup, record read
+const dtJournal: int = 1     // pending flag + journal entry + flush
+const dtFree: int = 2        // mark pages empty, free list
+const dtPrimary: int = 3     // primary-index delete
+const dtIdxOpen: int = 4     // secondary index files: open + close
+const dtIdxDelete: int = 5   // secondary index deletes
+const dtCommit: int = 6      // clear pending, truncate the journal
+const dtCount: int = 7
+var dbTiming: bool = false
+var dbTimes: int[7]
+var dbTimeMark: int = 0
+
+// Charge the ticks since the last mark to `phase`.
+func dbTime(phase: int) {
+    var t: int
+    if not dbTiming { return }
+    t = TickCount()
+    dbTimes[phase] = dbTimes[phase] + t - dbTimeMark
+    dbTimeMark = t
+}
+
+func dbTimeStart() {
+    if dbTiming { dbTimeMark = TickCount() }
+}
+
 // Delete a record: journal it, mark its pages empty, drop it from the
 // primary and every secondary index.
 func dbDelete(db: Database, id: int): bool {
@@ -848,6 +880,7 @@ func dbDelete(db: Database, id: int): bool {
     var firstPage: int
     var pages: int
     var size: int
+    dbTimeStart()
     if not dbIsOpen(db) { return false }
     if not dbReadHeader(db, hdr) { return false }
     firstPage = dbFirstPage(db, id)
@@ -856,6 +889,7 @@ func dbDelete(db: Database, id: int): bool {
     oldRec = dbReadRecordAt(db, firstPage, id, size)
     if oldRec.length != size { return false }
     pages = dbPagesNeeded(size)
+    dbTime(dtLookup)
     if not dbSetPending(db, hdr, true) { return false }
     j = db.journal
     e = dbJournalEntry(joDelete, firstPage, id, psEmpty, e, 0)
@@ -863,17 +897,22 @@ func dbDelete(db: Database, id: int): bool {
         dbRollback(db, hdr)
         return false
     }
+    dbTime(dtJournal)
     if not dbFreePages(db, firstPage, pages) {
         dbRollback(db, hdr)
         return false
     }
+    dbTime(dtFree)
     if not btDeleteValue(db.index, id, firstPage) {
         dbRollback(db, hdr)
         return false
     }
+    dbTime(dtPrimary)
     dbIndexDeleteAll(db, hdr, oldRec, id)
     hdr.setIntAt(10, hdr.intAt(10) - 1)    // record_count
-    return dbCommit(db, hdr)
+    if not dbCommit(db, hdr) { return false }
+    dbTime(dtCommit)
+    return true
 }
 
 // Active-record count, from the header; -1 on error.

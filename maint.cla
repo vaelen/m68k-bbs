@@ -363,11 +363,13 @@ func maintItemDone() {
 // Once a minute while a counted step runs: how far, and how fast since
 // the last line.
 func maintProgress() {
-    var ticks: int = TickCount() - maintProgStart
+    var ticks: int
     var rate: int
     var what: string
+    ticks = TickCount()
+    ticks = ticks - maintProgStart
     if compacting or ticks < maintProgressTicks { return }
-    rate = maintProgCount * 60 / ticks
+    rate = maintProgCount * 600 / ticks     // tenths of a record per second
     switch maintStep {
     case msCollect {
         what = "Collecting - " + string(maintDoomed.count) + " found"
@@ -390,7 +392,7 @@ func maintProgress() {
         return
     }
     }
-    maintItemLog(what + " (" + string(rate) + "/sec)")
+    maintItemLog(what + " (" + string(rate / 10) + "." + string(rate mod 10) + "/sec)")
     maintProgReset()
 }
 

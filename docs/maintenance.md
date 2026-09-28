@@ -72,8 +72,8 @@ Maint: Board 2 (Name): Done - 1234 expired
 
 After Mail, the Users stamp (`dbStampCompacted`) — the "run finished"
 marker the schedule reads. Progress lines give the percentage through
-the current step and the records/sec since the last line (integer, so
-a very slow step reads `0/sec`). `Maintenance > Run Database
+the current step and the records/sec since the last line, to one
+decimal place. `Maintenance > Run Database
 Maintenance` starts the same run outside the window (the line must be
 idle). Failures are logged and the run moves on.
 
@@ -81,7 +81,10 @@ idle). Failures are logged and the run moves on.
 
 `Maintenance > Compact Databases` (line idle, no run in progress)
 `dbCompact`s every database file, one per tick: each board's and file
-area's headers (`postsCompact`/`filesCompact`), then `Mail`
+area's headers (`postsCompact`/`filesCompact` — a board first has any
+legacy thread starters' threadId 0 rewritten to their own ID,
+`postsThreadFix`, so its Thread index stops collecting every starter
+under key 0, the overflow chain that made expiry deletes slow), then `Mail`
 (`mailCompact`), `Wall`, `Areas`, `Networks`, `Boards`, `Users`. It
 reclaims B-tree slack and truncates the `.DAT` files; it never touches
 the heaps. The BBS is closed to callers while it runs. `dbCompact`
@@ -108,6 +111,24 @@ window's follow-newest-line behaviour; turn it off to scroll back
 through the log while lines keep arriving. The manual setting survives a
 run: the run saves it, closes, and restores it. FidoNet polls wait for
 the run (`ftnSchedule`/`ftnNext` check `maintaining`).
+
+## Compacting a board on the host
+
+A big board's compaction freezes the Mac for hours, so it can be done
+on the host instead: the vDB and heap formats are the same on both
+lanes. With the BBS **not running**, copy the board's files
+(`BRDnn.DAT`, `.IDX`, `.JNL`, `.I00`-`.I02`, `.MSG`) into an empty
+directory, then
+
+    scripts/boardtool.sh DIR BOARD [KEEPDAYS]
+
+It expires posts older than KEEPDAYS (if given), runs `postsCompact`
+(legacy thread starters rewritten, headers compacted, indexes
+rebuilt), packs the heap whatever its waste (`heapForce`), and logs
+sizes as it goes. Copy the files back over the originals (type and
+creator don't matter; the app opens them by name). From a disk image,
+with hfsutils: `hcopy -r ":BRD13.DAT" DIR/` out and `hcopy -r
+DIR/BRD13.DAT :` back, image unmounted from the emulator.
 
 ## Heap compaction and recovery
 

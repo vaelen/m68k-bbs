@@ -246,7 +246,10 @@ func packPost(sender: string, created: int, threadId: int, subject: string, body
 }
 
 // Add a local post; threadId is 0 for a new thread, or the thread
-// starter's post ID for a reply. Returns the new post ID, or -1.
+// starter's post ID for a reply. A starter is stored with its OWN ID as
+// its threadId, so the Thread index keys each thread separately (boards
+// from before 2026-09-28 hold 0 there until Compact Databases rewrites
+// them -- postThread reads both). Returns the new post ID, or -1.
 func addPost(sender: string, threadId: int, subject: string, body: text): int {
     var none: FtnAddress
     return addPostFtn(sender, 0, threadId, subject, body, 0, none, 0)
@@ -259,7 +262,12 @@ func addPostFtn(sender: string, created: int, threadId: int, subject: string, bo
     var off: int
     var when: int = created
     var id: int
+    var thread: int = threadId
+    var rec: text
     if not dbIsOpen(postsDb) or b == nil { return -1 }
+    // a starter's ID is the one dbAdd is about to assign: IDs are handed
+    // out in sequence and never reused
+    if thread == 0 { thread = dbNextRecordId(postsDb) }
     if when == 0 { when = now() }
     off = b.size()
     if off < 0 { return -1 }
@@ -268,9 +276,22 @@ func addPostFtn(sender: string, created: int, threadId: int, subject: string, bo
         if not b.append(body) { return -1 }
         if not b.flush() { return -1 }
     }
-    id = dbAdd(postsDb, packPost(sender, when, threadId, subject, off, body.length, msgidCrc, origin, flags))
+    id = dbAdd(postsDb, packPost(sender, when, thread, subject, off, body.length, msgidCrc, origin, flags))
+    if id > 0 and threadId == 0 and thread != id {
+        // the guess was wrong (should not happen): store the real ID
+        rec = dbFind(postsDb, id)
+        rec.setIntAt(pOffThread, id)
+        dbUpdate(postsDb, id, rec)
+    }
     if id > 0 { boardTouch(postsBoardId, when) }   // no-op when Boards isn't open
     return id
+}
+
+// The thread the loaded `post` belongs to: its starter's ID. A starter
+// stores its own ID; one from before 2026-09-28 still stores 0.
+func postThread(): int {
+    if post.threadId == 0 { return post.id }
+    return post.threadId
 }
 
 // Load post `id`'s header into the global `post`.
@@ -319,7 +340,7 @@ func threadPosts(root: int, ids: list of int) {
     ids.add(root)
     dbFindAllByInt(postsDb, "Thread", root, more)
     while i < more.count {
-        ids.add(more[i])
+        if more[i] != root { ids.add(more[i]) }     // a starter indexes itself
         i = i + 1
     }
 }
@@ -378,10 +399,41 @@ func expireCollect(boardId: int, cutoff: int, doomed: list of int): bool {
     return true
 }
 
-// Manual compaction: the headers only (dbCompact: slide, truncate,
-// rebuild indexes). Leaves the board open.
+// Rewrite every legacy starter's threadId 0 to its own ID, in place,
+// for dbCompact to fold into its index rebuild. The pending flag is set
+// first, so a crash part-way leaves a database whose next open rebuilds
+// every index from the (partly rewritten) records -- and a later run
+// finishes the rewrite. Returns the number rewritten, -1 on error.
+func postsThreadFix(): int {
+    var hdr: text
+    var cur: text
+    var f: filehandle = postsDb.data
+    var n: int = 0
+    var page: int
+    if not dbReadHeader(postsDb, hdr) { return -1 }
+    if not dbSetPending(postsDb, hdr, true) { return -1 }
+    if btScanStart(postsDb.index, cur, 1, false) {
+        while btScanNext(postsDb.index, cur) {
+            page = btScanValue(cur)
+            if dbFieldIntAt(postsDb, page, pOffThread) == 0 {
+                if not dbSetFieldIntAt(postsDb, page, pOffThread, btScanKey(cur)) { return -1 }
+                n = n + 1
+            }
+        }
+    }
+    if not f.flush() { return -1 }
+    return n
+}
+
+// Manual compaction: rewrite legacy thread starters (postsThreadFix),
+// then the headers (dbCompact: slide, truncate, rebuild indexes --
+// clearing the pending flag the fix set). Leaves the board open.
 func postsCompact(boardId: int): bool {
     if not postsOpen(boardId) { return false }
+    if postsThreadFix() < 0 {
+        postsClose()
+        return false
+    }
     postsDb = dbCompact(postsDb)
     if not dbIsOpen(postsDb) {
         postsClose()

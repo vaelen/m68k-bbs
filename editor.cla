@@ -60,11 +60,7 @@ func startReply() {
     var sub: string = post.subject
     editTarget = 'P'
     editReplyMsgId = findKludge(postBody(post.id), "MSGID:")
-    if post.threadId == 0 {
-        editThread = post.id
-    } else {
-        editThread = post.threadId
-    }
+    editThread = postThread()
     if sub.length < 4 or sub[0, 4] != "Re: " {
         if sub.length > 59 { sub = sub[0, 59] }
         sub = "Re: " + sub

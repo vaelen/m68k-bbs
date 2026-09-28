@@ -53,6 +53,7 @@ const hjFix: int = 3
 // A heap is rewritten only when at least 1/heapWasteDivisor of it is
 // orphaned bytes, so daily expiry doesn't rewrite a big heap nightly.
 const heapWasteDivisor: int = 4
+var heapForce: bool = false     // pack any waste at all (scripts/boardtool.cla)
 
 var hjPath: string
 var hjOff: int
@@ -150,7 +151,7 @@ func heapFail(): int {
 
 // Check pass over: pack only when enough of the heap is orphaned.
 func heapCheckDone(db: Database): int {
-    if hjLive == hjSize or (hjSize - hjLive) * heapWasteDivisor < hjSize {
+    if hjLive == hjSize or (not heapForce and (hjSize - hjLive) * heapWasteDivisor < hjSize) {
         heapCloseFiles()
         hjStage = 0
         return hsDone

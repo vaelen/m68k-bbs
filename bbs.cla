@@ -1689,6 +1689,83 @@ func benchLog() {
         i = i + 1
     }
     log("bench ruleLine wide x1000: " + intStr(TickCount() - t0))
+    benchDelete()
+}
+
+func benchDeleteCleanup() {
+    var i: int = 0
+    var p: string
+    if file.exists("BENCH.DAT") { file.delete("BENCH.DAT") }
+    if file.exists("BENCH.IDX") { file.delete("BENCH.IDX") }
+    if file.exists("BENCH.JNL") { file.delete("BENCH.JNL") }
+    while i < 4 {
+        p = dbIndexPath("BENCH", i)
+        if file.exists(p) { file.delete(p) }
+        i = i + 1
+    }
+}
+
+// Where a post delete's time goes: a scratch board-shaped database
+// (BENCH.*: the three post indexes), benchDelN legacy thread starters
+// (threadId 0, like a board from before 2026-09-28), then benchDelM
+// timed dbDeletes, logged per phase as ms per delete. The key-0
+// overflow chain of a big board isn't reproduced at this size.
+const benchDelN: int = 40
+const benchDelM: int = 30
+
+func benchDelete() {
+    var db: Database
+    var none: FtnAddress
+    var i: int
+    var t0: int
+    var names: list of string
+    db = dbCreate("BENCH", postRecordSize, "68BB")
+    if not dbIsOpen(db) {
+        log("bench delete: cannot create BENCH: " + lastError.message)
+        return
+    }
+    if not dbAddIndex(db, "Thread", itID, pOffThread) or not dbAddIndex(db, "MsgId", itID, pOffMsgId) or not dbAddIndex(db, "Created", itID, pOffCreated) {
+        log("bench delete: cannot add indexes: " + lastError.message)
+        dbClose(db)
+        benchDeleteCleanup()
+        return
+    }
+    t0 = TickCount()
+    i = 0
+    while i < benchDelN {
+        dbAdd(db, packPost("bench", now() - 86400 + i, 0, "bench", 0, 0, 1000 + i, none, 0))
+        i = i + 1
+    }
+    log("bench delete: " + intStr(benchDelN) + " adds: " + intStr((TickCount() - t0) * 1000 / 60 / benchDelN) + " ms each")
+    i = 0
+    while i < dtCount {
+        dbTimes[i] = 0
+        i = i + 1
+    }
+    dbTiming = true
+    t0 = TickCount()
+    i = 1
+    while i <= benchDelM {
+        dbDelete(db, i)
+        i = i + 1
+    }
+    t0 = TickCount() - t0
+    dbTiming = false
+    names.add("lookup")
+    names.add("journal")
+    names.add("free pages")
+    names.add("primary index")
+    names.add("index open/close")
+    names.add("index deletes")
+    names.add("commit")
+    log("bench delete: " + intStr(benchDelM) + " deletes: " + intStr(t0 * 1000 / 60 / benchDelM) + " ms each")
+    i = 0
+    while i < dtCount {
+        log("bench delete   " + names[i] + ": " + intStr(dbTimes[i] * 1000 / 60 / benchDelM) + " ms")
+        i = i + 1
+    }
+    dbClose(db)
+    benchDeleteCleanup()
 }
 
 // The open port's fixed driver refNums (Serial.h: .AIn -6, .AOut -7,

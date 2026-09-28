@@ -146,7 +146,7 @@ func tossEchomail(netId: int) {
     if pktMsg.reply != "" {
         parent = findPostByMsgId(msgIdCrc(pktMsg.reply))
         if parent > 0 and loadPost(parent) {
-            if post.threadId == 0 { thread = parent } else { thread = post.threadId }
+            thread = postThread()
         }
     }
     if addPostFtn(pktMsg.fromName, tossCreated(), thread, tossSubject(), pktBody, crc, pktMsg.orig, postFlagInbound) < 1 {

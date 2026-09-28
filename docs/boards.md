@@ -73,7 +73,7 @@ bodies with no per-post slack.
 |-------:|-----:|-------|-------|
 | 0 | 64 | sender | Pascal string, ≤ 63 chars — a **name**, not a user ID, so echomail senders need not be local users |
 | 64 | 4 | created | i32, Mac-epoch seconds |
-| 68 | 4 | thread ID | i32, indexed (IT_ID, `.I00`): 0 = thread starter; otherwise the starter's post ID |
+| 68 | 4 | thread ID | i32, indexed (IT_ID, `.I00`): the thread starter's post ID -- a starter stores its own ID. Boards from before 2026-09-28 store 0 for a starter until Compact Databases rewrites it (`postThread()` reads both) |
 | 72 | 64 | subject | Pascal string, ≤ 63 chars |
 | 136 | 4 | body offset | i32, byte offset into `BRD<nn>.MSG` |
 | 140 | 4 | body length | i32; 0 = no body (offset then meaningless) |

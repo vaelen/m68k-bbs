@@ -1,0 +1,82 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// Host-side board maintenance: the slow 68k jobs run on a copy of one
+// board's files (BRDnn.DAT/.IDX/.JNL/.Inn/.MSG -- the vDB format is the
+// same on both lanes), then the files go back to the Mac. Run in the
+// directory holding them, via scripts/boardtool.sh:
+//   boardtool BOARD [KEEPDAYS]
+// KEEPDAYS > 0 first expires posts older than that many days. Then
+// Compact Databases' board step (postsCompact: legacy thread starters
+// rewritten, headers compacted, indexes rebuilt), then the heap packed
+// (any waste at all, heapForce). Exit 1 on any failure.
+
+include "../postsdb.cla"
+
+func argInt(s: string): int {
+    var n: int = 0
+    var i: int = 0
+    while i < s.length {
+        if s[i] < '0' or s[i] > '9' { return -1 }
+        n = n * 10 + (int(s[i]) - int('0'))
+        i = i + 1
+    }
+    if s.length == 0 { return -1 }
+    return n
+}
+
+func size(p: string): int {
+    var fi: FileInfo
+    if not file.exists(p) { return 0 }
+    fi = file.info(p)
+    return fi.size
+}
+
+func fail(msg: string) {
+    log("boardtool: " + msg + ": " + lastError.message)
+    postsClose()
+    quit 1
+}
+
+on App.startCLI(args: list of string) {
+    var id: int
+    var keep: int = 0
+    var n: int
+    var r: int = hsMore
+    var name: string
+    if args.count < 1 or args.count > 2 {
+        log("usage: boardtool BOARD [KEEPDAYS]")
+        quit 1
+    }
+    id = argInt(args[0])
+    if args.count == 2 { keep = argInt(args[1]) }
+    if id < 1 or id > 99 or keep < 0 {
+        log("boardtool: BOARD is 1-99, KEEPDAYS a number of days")
+        quit 1
+    }
+    name = postsName(id)
+    if not file.exists(name + ".DAT") {
+        log("boardtool: no " + name + ".DAT here")
+        quit 1
+    }
+    log(name + ": " + string(size(name + ".DAT") / 1024) + "K headers, " + string(size(name + ".MSG") / 1024) + "K heap")
+    if not postsOpen(id) { fail("cannot open") }
+    log(name + ": " + string(postCount()) + " posts")
+    if keep > 0 {
+        n = expirePosts(id, now() - keep * 86400)
+        if n < 0 { fail("expiry failed") }
+        log(name + ": " + string(n) + " expired, " + string(postCount()) + " left")
+    }
+    if not postsCompact(id) { fail("compaction failed") }
+    log(name + ": compacted, headers " + string(size(name + ".DAT") / 1024) + "K")
+    heapForce = true                    // pack whatever the waste
+    if not postsHeapBegin() { fail("cannot start packing") }
+    while r == hsMore { r = heapUnit(postsDb) }
+    if r != hsDone { fail("packing failed") }
+    postsClose()
+    if not postsOpen(id) { fail("cannot reopen") }
+    log(name + ": packed, heap " + string(size(name + ".MSG") / 1024) + "K, " + string(postCount()) + " posts")
+    postsClose()
+    log("boardtool: done")
+    quit
+}

@@ -221,8 +221,12 @@ inputChar (bbs.cla) → processInput`.
   open) and backfilled at launch by `boardsBackfillLastPost` for
   boards that predate it — record ID = board ID; `boardNetworked()`). `postsdb.cla` — one board's posts at a time
   (`postsOpen(boardId)`): header records in `BRD<nn>.*` (sender/
-  created/threadId/subject, thread ID indexed; 0 = thread starter,
-  else the starter's post ID; created indexed — echomail arrives out
+  created/threadId/subject, thread ID indexed = the starter's post ID,
+  a starter's own ID for itself (`addPostFtn` predicts it with
+  `dbNextRecordId`; boards from before 2026-09-28 hold 0 there until
+  `postsCompact` — Compact Databases — rewrites them via
+  `postsThreadFix`; read it through `postThread()`, which handles
+  both); created indexed — echomail arrives out
   of date order, so the reader's list and `expirePosts` (O(expired),
   stops at the cutoff) walk it via `postsByCreatedStart`/`Next`/`End`
   (one event handler; same-second posts share a key), and
@@ -379,7 +383,9 @@ inputChar (bbs.cla) → processInput`.
   picks the port speed (300..57600) and port (modem/printer), saved as
   `modemSpeed`/`modemPort` in Config.txt; a change closes and reopens
   the port (`modemReopen`, dropping any caller). `Maintenance > Run
-  Benchmarks` logs the string/DB micro-benchmarks (`benchLog`).
+  Benchmarks` logs the string/DB micro-benchmarks (`benchLog`), ending
+  with `benchDelete` — per-phase ms of a post `dbDelete` on a scratch
+  `BENCH.*` database (vdb.cla's `dbTiming`/`dbTimes`).
   Sessions reset in `connected()`
   (`new User` / `new Terminal`). bbs.cla also owns the shared
   connection-facing table senders (`sendRule`, `sendTableTitle`,
@@ -754,7 +760,9 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
   `vdb.cla` — modules above
 - `tests/` — host-lane test suites (`tests/fixtures/` — real fsxNet
   packets, `sst.bas`); `scripts/` — build/test/deploy, `xmodem-e2e.sh`
-  (lrz over socat, raw and via `telnet-shim.py`), `ftn-e2e.sh` (a poll
+  (lrz over socat, raw and via `telnet-shim.py`), `boardtool.sh` (+
+  `boardtool.cla`: expire/compact/pack one board's copied files on the
+  host, docs/maintenance.md), `ftn-e2e.sh` (a poll
   against `emsi-peer.py`), `basic.sh`/`basic-host.sh` (BASIC in the terminal / over TCP / exported)
 - `bin/`, `vendor/` — pinned compiler + runtime/toolbox snapshot
 - `docs/` — language reference + Snow how-to (symlinks),
