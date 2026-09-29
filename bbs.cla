@@ -55,23 +55,23 @@ var timeBox: TimeSecsBox
 // forever (0 bytes out, app hung in PBWriteSync).
 extern record SerShkPB {
     qLink: ptr
-    qType: word
-    ioTrap: word
+    qType: int16
+    ioTrap: int16
     ioCmdAddr: ptr
     ioCompletion: ptr
-    ioResult: word
+    ioResult: int16
     ioNamePtr: ptr
-    ioVRefNum: word
-    ioCRefNum: word
-    csCode: word
-    fXOn: byte
-    fCTS: byte
-    xOn: byte
-    xOff: byte
-    errs: byte
-    evts: byte
-    fInX: byte
-    fDTR: byte
+    ioVRefNum: int16
+    ioCRefNum: int16
+    csCode: int16
+    fXOn: uint8
+    fCTS: uint8
+    xOn: uint8
+    xOff: uint8
+    errs: uint8
+    evts: uint8
+    fInX: uint8
+    fDTR: uint8
     pad[14]
 }
 

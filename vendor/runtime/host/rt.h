@@ -1,5 +1,19 @@
 /* runtime/host/rt.h — host stand-in for the future Toolbox runtime. May use libc. */
 #ifndef CLARUS_RT_H
+/* Feature-test macros, before any system header. glibc (and musl) hide
+ * everything past ISO C under -std=c99 unless asked; Darwin ignores both
+ * of these and shows everything by default. What the host runtime uses:
+ *   _XOPEN_SOURCE 700  POSIX.1-2008 + XSI: clock_gettime, localtime_r,
+ *                      nanosleep, fileno, mkstemp, ftruncate, sigaction,
+ *                      poll, and the XSI pty family (posix_openpt,
+ *                      grantpt, unlockpt, ptsname) for the serial pump.
+ *   _DEFAULT_SOURCE    the four BSD extras that are not POSIX at all:
+ *                      struct ip_mreq / IP_ADD_MEMBERSHIP (multicast has
+ *                      no POSIX API; the LToUDP stack needs it),
+ *                      cfmakeraw, tm_gmtoff, and usleep (dropped from
+ *                      POSIX in 2008). Everything else is standard. */
+#define _XOPEN_SOURCE 700
+#define _DEFAULT_SOURCE 1
 #define CLARUS_RT_H
 #include <stdint.h>
 #include <string.h>
@@ -72,6 +86,9 @@ static inline int32_t clar_mod32(int32_t x, int32_t y) {
 void rt_alert(const uint8_t *s);                                      /* stdout + \n; CR bytes rendered as LF */
 void rt_log(const uint8_t *s);                                        /* stderr + \n; CR bytes rendered as LF (Ch12) */
 void rt_quit(int32_t code);                                           /* `quit [code]` statement: exit(code) */
+void rt_app_write_log(const uint8_t *name);                           /* app.writeLog: append-open NAME as the log file */
+void rt_app_flush_log(void);                                          /* app.flushLog: write the pending log buffer */
+void rt_app_trace(int32_t on);                                        /* app.trace: no-op off the native lane */
 
 extern int32_t rt_lasterr_code;
 extern uint8_t rt_lasterr_msg[256];                                    /* a str255 */
@@ -219,7 +236,13 @@ int rt_file_write_res(const uint8_t *path, const rt_text *t, const uint8_t *type
 #define RT_FT_BOOL  2  /* 1B */
 #define RT_FT_CHAR  3  /* 1B */
 #define RT_FT_STR   4  /* 1 len byte + strCap data bytes (fixed width, zero-padded) */
-#define RT_FT_ENUM  5  /* int32 value, 4B BE; load validates membership in enumValues */
+#define RT_FT_ENUM  5  /* uint16_t field; 2B BE on disk in v2 (4B in v1); load validates membership in enumValues */
+/* The narrow kinds (SE wave 3) are v2-only: ser.cla (every build's
+   file.save/load) writes them at their natural widths; rt_ser.inc,
+   which still writes v1 with 4-byte enums, does not handle them. */
+#define RT_FT_U8    6  /* uint8_t, 1B */
+#define RT_FT_I16   7  /* int16_t, 2B BE */
+#define RT_FT_U16   8  /* uint16_t, 2B BE */
 
 typedef struct { short ftype; short strCap; long offset;
                  short enumCount; const int32_t *enumValues;

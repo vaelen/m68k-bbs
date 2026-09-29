@@ -148,16 +148,18 @@ onto the image (file type/creator don't matter; the app opens by name).
 
 `log(...)` lines land in the app's log window (timestamped, each
 line suffixed with `[free NK, max MK]` heap figures -- the 2026-08-29
-OOM diagnostic, kept as a permanent health readout) and in the
-runtime's exit log, which the Mac writes to a file named `out` on
-"BBS HD" when the app quits. The log window is a buffered canvas
+OOM diagnostic, kept as a permanent health readout) and nowhere
+else: the runtime keeps no log file unless the app opts in with
+`app.writeLog(name)` (plus `app.flushLog()` from a coarse timer;
+`app.trace(true)` adds the UI trace), and the BBS doesn't -- the old
+always-on `out` capture wrote and flushed the volume on every timer
+fire, so the disk light never went out. The log window is a buffered canvas
 tailing a 100-line ring (`logLines`/`logRedraw`; appends set
 `logDirty`, the 2-tick timer redraws) -- no scrollbar, no selection;
 TextEdit re-wrapped the whole content per line, ~1 s on the SE.
-History past the window is the `out` file. To read it after quitting Snow cleanly:
-`HOME=scratch hmount snow/hdd2.img && hcopy -t :out ./out.txt && humount`.
-The file also contains the runtime's UI trace (`T OPEN ...`) and exit
-code — useful for verifying a session after the fact.
+History past the window is Sysop menu `L` (the same ring). If a log
+file is turned on, read it after quitting Snow cleanly with
+`HOME=scratch hmount snow/hdd2.img && hcopy -t :<name> ./log.txt && humount`.
 
 ## Architecture
 

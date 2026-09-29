@@ -150,6 +150,9 @@ Clarus is statically typed. All types are known at compile time; values are eith
 | Type | Size | Storage | Description |
 |---|---|---|---|
 | `int` | 4 bytes | inline | 32-bit signed integer |
+| `uint8` | 1 byte | inline | unsigned 8-bit integer, 0..255 (see Narrow Integers below) |
+| `int16` | 2 bytes | inline | signed 16-bit integer, −32768..32767 |
+| `uint16` | 2 bytes | inline | unsigned 16-bit integer, 0..65535 |
 | `bool` | 1 byte | inline | `true` / `false` |
 | `fixed` | 4 bytes | inline | 16.16 fixed-point (Toolbox `Fixed`) |
 | `char` | 1 byte | inline | unsigned 8-bit Mac Roman character; doubles as a byte (0–255) for binary data |
@@ -177,7 +180,19 @@ An `address` is not a resource: it is a plain inline value, copied like an `int`
 
 `FileInfo` is a predeclared record (Chapter 12: Files) returned by `file.info` — an ordinary value, like any user record: assignable, copyable, a legal field, array, or `list of`/`map of` element type. A program may not declare its own `FileInfo` (the ordinary duplicate-declaration error). Its seven fields, in declaration order: `size: int` (data fork length in bytes; 0 for a folder), `rsrcSize: int` (resource fork length in bytes; 0 for a folder or on a host), `type: string` (Finder type, `""` on a host or for a folder), `creator: string` (Finder creator, `""` on a host or for a folder), `created: int` and `modified: int` (Macintosh-epoch seconds, the same clock as `now()`), and `isDir: bool`. A file with no Finder type set reads back `type == ""`, the same as a folder; `isDir` is the reliable discriminator.
 
-**Storage:** `bool` and `char` occupy exactly 1 byte inside every ordinary aggregate — records and arrays — on every target; `bool` occupies 1 byte inside an `extern record` too, but `char` is not a legal `extern record` field type at all (an extern record's 1-byte numeric field type is `byte` — see the Chapter 13 field palette). As a standalone local, parameter, or global, `bool`/`char` occupy a 2-byte slot (68000 even-address alignment). At `external func`/`trap` boundaries the Chapter 13 marshaling rules apply (a bool/char parameter or result travels in a 16-bit stack word).
+**Storage:** `bool` and `char` occupy exactly 1 byte inside every ordinary aggregate — records and arrays — on every target; `bool` occupies 1 byte inside an `extern record` too, but `char` is not a legal `extern record` field type at all (an extern record's 1-byte numeric field type is `uint8` — see the Chapter 13 field palette). As a standalone local, parameter, or global, `bool`/`char` occupy a 2-byte slot (68000 even-address alignment). At `external func`/`trap` boundaries the Chapter 13 marshaling rules apply (a bool/char parameter or result travels in a 16-bit stack word).
+
+### Narrow Integers
+
+`uint8`, `int16` and `uint16` are storage types for integers that fit a smaller range: they cost 1, 2 and 2 bytes in records, arrays, and `list of`/`map of` elements. They are ordinary `int`s in every expression:
+
+- **Widening is implicit.** A narrow value assigns, passes, and returns wherever an `int` is expected.
+- **Arithmetic is 32-bit.** `+ - * / mod`, the bitwise operators (`>>` included), unary minus and the comparisons all work on the operands widened to `int`, and every result is `int`. Any two integer types compare with each other: an `int16` holding −1 does not equal a `uint16` holding 65535.
+- **Narrowing is explicit.** `int` → narrow, and one narrow type → a different one, is a build error (`cannot assign int to int16`). Convert with `uint8(x)`, `int16(x)` or `uint16(x)`, which accept an `int`, a `char` or another narrow type and keep the low 8 or 16 bits: `uint8(300)` is 44, `int16(40000)` is −25536, `uint16(-1)` is 65535. As with every conversion, converting to the same type is an error (`uint8() expects an int, char, int16 or uint16, got uint8`).
+- **Literals adopt the narrow type** where one is expected — an assignment target, an argument, a return value, a field default, a `case` label, or the other operand of a comparison — when the value is in range, and are a build error otherwise: `300 is out of range for uint8 (0..255)`, `-1 is out of range for uint16 (0..65535)`. Everywhere else a literal is an `int`.
+- `string(n)` renders any narrow value in decimal.
+- **At the Toolbox boundary** (Chapter 13), `int16` is also the 16-bit `INTEGER` type of an `external func` or `callback func` signature (including `reg` parameters) and of an `extern record` field, and `uint8` is the 1-byte field type of an `extern record`. There they are boundary types rather than ordinary narrow storage: a plain `int` is accepted and truncated to the slot's width, and an extern result, a callback parameter or an extern record field declared `int16`/`uint8` reads back as `int`, so to store it in an `int16` variable, convert with `int16(...)`. `uint8` and `uint16` in an `external func` or `callback func` signature are a build error (`uint16 cannot cross the Toolbox boundary; use int16 or int`), and `uint16` is not an `extern record` field type.
+- A form `field` binds a narrow field like an `int` one, with the type's range checked at OK, and a table `column` shows it in decimal (Type-Driven Widget Behavior).
 
 ### Records and Defaults
 
@@ -334,7 +349,10 @@ A `list of T` is a growable sequence. List operations are:
 - `l.remove(i)` — remove the element at index `i`
 - `l[i]` — access element at index `i` (returns `T`)
 - `l.count` — number of elements (returns `int`)
-- `l.clear()` — remove all elements; `count` becomes 0, capacity is retained. `.clear()` releases the elements it discards. It is O(1) for scalar element types and O(n) for reference-bearing element types (the elements are released first)
+- `l.clear()` — remove all elements; `count` becomes 0, capacity is retained. `.clear()` releases the elements it discards. It is O(1) for scalar element types and O(n) for reference-bearing element types (the elements are released first). Capacity is kept; use `release()` to free it.
+- `l.release()` — remove all elements (releasing them, exactly as `clear()` does) and free the list's storage: `count` and capacity become 0, as for a freshly declared list. The list stays usable; the next `add` allocates again. It acts on the container itself, so every reference to it (an alias made by assignment, a parameter, a global) sees the result.
+- `l.shrink()` — trim capacity to `count`, freeing the unused tail of the storage. Elements are kept, in order, and none is released; a no-op when capacity already equals `count`. Like `release()`, it acts on the container itself, shared by every reference to it.
+- `l.reserve(n)` — pre-grow capacity to at least `n` elements (sized to exactly `n`, with at most one underlying resize). A no-op when capacity already suffices or `n <= 0`; never shrinks; `count` and contents unchanged. Fails the same way growth during `push` does if memory is exhausted. For code that knows its element count up front; the list counterpart of `text.reserve(n)`. It acts on the container itself, shared by every reference to it.
 - `l.clone()` — return a new `list of T`, independent of `l`, holding a copy of every element (mutating the clone never affects `l`, and vice versa). Only legal when `T` is a *flat* type — no `text`, `list of`, or `map of` anywhere in it, recursively through record fields and fixed arrays (`int`/`bool`/`char`/`fixed`/enum/`string(n)`/`char[n]`/a record built only from those is fine). Cloning a non-flat element type is a check-time error: the clone is a single bulk copy of the backing store, which would alias a reference-typed element instead of copying it
 - `for x in l { … }` — iterate (see Chapter 5)
 
@@ -350,7 +368,9 @@ A `map of T` is a hashtable with string keys (up to 255 bytes) and values of fix
 - `m.has(k)` — test for key presence (returns `bool`)
 - `m.remove(k)` — remove the entry for key `k`; silently succeeds if absent
 - `m.count` — number of entries (returns `int`)
-- `m.clear()` — remove all entries; `count` becomes 0, capacity is retained. `.clear()` releases the values it discards (keys are inline strings, never released). It is O(1) for scalar value types and O(n) for reference-bearing value types (the values are released first)
+- `m.clear()` — remove all entries; `count` becomes 0, capacity is retained. `.clear()` releases the values it discards (keys are inline strings, never released). It is O(1) for scalar value types and O(n) for reference-bearing value types (the values are released first). Capacity is kept; use `release()` to free it.
+- `m.release()` — remove all entries (releasing the values, exactly as `clear()` does) and free all of the map's storage: `count` and every capacity become 0, as for a freshly declared map. The map stays usable; the next insert allocates again. It acts on the container itself, so every reference to it (an alias made by assignment, a parameter, a global) sees the result.
+- `m.shrink()` — trim the entry, value and key storage to what the current entries use (the hash index is kept as it is). Entries, their values and the iteration order are kept, and nothing is released; a no-op when already tight. Like `release()`, it acts on the container itself, shared by every reference to it.
 - `for k, v in m { … }` — iterate (see Chapter 5)
 
 Keys are compared case-sensitively, byte-wise. Iteration (`for k, v in m`) visits entries in an unspecified but deterministic order (a given sequence of inserts and removes always replays the same order); use `sortedmap of T` when ascending key order matters.
@@ -365,7 +385,9 @@ A `sortedmap of T` is a string-keyed (up to 255 bytes) container of fixed-size v
 - `m.has(k)` — test for key presence (returns `bool`)
 - `m.remove(k)` — remove the entry for key `k`; silently succeeds if absent
 - `m.count` — number of entries (returns `int`)
-- `m.clear()` — remove all entries; `count` becomes 0, capacity is retained. `.clear()` releases the values it discards (keys are inline strings, never released). It is O(1) for scalar value types and O(n) for reference-bearing value types (the values are released first)
+- `m.clear()` — remove all entries; `count` becomes 0, capacity is retained. `.clear()` releases the values it discards (keys are inline strings, never released). It is O(1) for scalar value types and O(n) for reference-bearing value types (the values are released first). Capacity is kept; use `release()` to free it.
+- `m.release()` — remove all entries (releasing the values, exactly as `clear()` does) and free the map's storage: `count` and capacity become 0, as for a freshly declared map. The map stays usable; the next insert allocates again. It acts on the container itself, so every reference to it (an alias made by assignment, a parameter, a global) sees the result.
+- `m.shrink()` — trim key and value storage to `count`. Entries are kept, in order, and nothing is released; a no-op when already tight. Like `release()`, it acts on the container itself, shared by every reference to it.
 - `for k, v in m { … }` — iterate (see Chapter 5)
 
 Keys are compared case-sensitively, byte-wise. Iteration (`for k, v in m`) visits entries in ascending key order (byte-wise) — deterministic regardless of insertion or removal history.
@@ -382,7 +404,8 @@ An `intmap of T` is an int-keyed hashtable of fixed-size values of type `T`, wit
 - `m.has(k)` — test for key presence (returns `bool`)
 - `m.remove(k)` — remove the entry for key `k`; silently succeeds if absent
 - `m.count` — number of entries (returns `int`)
-- `m.clear()` — remove all entries; `count` becomes 0, capacity is retained. `.clear()` releases the values it discards (keys are ints, never released). It is O(1) for scalar value types and O(n) for reference-bearing value types (the values are released first)
+- `m.clear()` — remove all entries; `count` becomes 0, capacity is retained. `.clear()` releases the values it discards (keys are ints, never released). It is O(1) for scalar value types and O(n) for reference-bearing value types (the values are released first). Capacity is kept; use `release()` to free it.
+- `m.release()` / `m.shrink()` — as for `map of T`
 - `for k, v in m { … }` — iterate (see Chapter 5), `k` is `int`
 
 Iteration (`for k, v in m`) visits entries in an unspecified but deterministic order (a given sequence of inserts and removes always replays the same order) — same contract as `map of T`.
@@ -396,8 +419,11 @@ A `text` is an unbounded, resizable buffer of characters. A `string` value may b
 - Assignment: `t = "hello"`
 - Concatenation: `t = t + "world"`
 - `t.append(x)` — append `x` (a `string`, `char`, or `text`) in place. Unlike concatenation with `+`, which rebuilds the buffer, `append` grows it amortized (and accepts a `char` directly, which `+` does not) — the right tool for building large output in a loop.
-- `t.clear()` — reset length to 0 in place. Capacity and the underlying buffer are kept (no allocation, no shrink), so a reused buffer cleared each cycle appends again without re-growing — pair with `reserve` for trap-free hot loops.
+- `t.clear()` — reset length to 0 in place. Capacity and the underlying buffer are kept (no allocation, no shrink), so a reused buffer cleared each cycle appends again without re-growing — pair with `reserve` for trap-free hot loops. Capacity is kept; use `release()` to free it.
+- `t.release()` — reset length to 0 and free the buffer: capacity becomes 0, as for a freshly declared `text`. The text stays usable; the next `append` allocates again. It acts on the text itself, so every reference to it (an alias made by assignment, a parameter, a global) sees the result.
+- `t.shrink()` — trim capacity to the current length, freeing the unused tail of the buffer. The contents are kept; a no-op when already tight. Like `release()`, it acts on the text itself, shared by every reference to it.
 - `t.reserve(n)` — pre-grow capacity to at least `n` bytes (at most one underlying resize; a no-op when capacity already suffices; never shrinks). Fails the same way growth during `append` does if memory is exhausted. For producers that must append byte-at-a-time and cannot batch.
+- `t.removeFirst(n)` — drop the first `n` bytes in place: the rest moves down, the length drops by `n`, and the buffer is resized to the new length (capacity becomes the new length). `n` is clamped to `0..length`. Never allocates. It acts on the shared container, so every reference sees it.
 - `t[i]` — the character at index `i` (returns `char`), 0-based; `t[i] = c` assigns in place
 - `t[start, len]` — slice, yielding a `string`; same strict-bounds rules as string slicing (above)
 - `t.indexOf(needle)` — first index of a `string` or `char`, or `-1` (as for strings)
@@ -899,7 +925,7 @@ A Clarus program responds to application-level events through top-level event ha
 
 `on App.log(line: string)` subscribes to the program's own diagnostic stream: every `log(...)` call (Chapter 12) fires it once, with that call's line. It is optional, and only one is meaningful: as with the other `App` handlers, a second declaration of the same event silently replaces the first. Four rules define it:
 
-1. **The persistent channel comes first.** The line reaches the platform's diagnostic stream (standard error on a command-line host; the log the Macintosh runtime writes at exit) *before* the handler runs. A handler that aborts or crashes cannot cost the line.
+1. **The persistent channel comes first.** The line reaches the platform's diagnostic stream (standard error on a command-line host; on the Macintosh, the log file, when the program has enabled one with `app.writeLog` — Chapter 12's Log File and Tracing) *before* the handler runs. A handler that aborts or crashes cannot cost the line.
 2. **The handler runs synchronously**, inside the `log(...)` call, before that statement completes.
 3. **It does not re-enter.** A `log(...)` called from inside the handler — directly or through anything the handler calls — still reaches the persistent channel, but does *not* fire the handler again. Nesting is impossible by construction, so a handler may log freely.
 4. **Only your own `log(...)` calls reach it.** The runtime's own writes to the same stream — the crash report a panic emits, the message an uncaught `abort` prints (Chapter 5), the Macintosh UI trace — never fire the handler. Neither does an unwinding program: no `log(...)` statement runs while an abort is propagating.
@@ -1209,6 +1235,7 @@ A bound widget's behavior comes from the type of the field it binds to, with not
 |---|---|---|
 | `string(n)` | `field` | typing is limited to n characters |
 | `int` | `field` | typing is restricted to numeric input; a non-numeric value fails OK validation |
+| `uint8`, `int16`, `uint16` | `field` | numeric input, as for `int`; OK validation also fails for a value outside the type's range, or with a minus sign for `uint8`/`uint16`. A table `column` shows the value in decimal |
 | `fixed` | `field` | numeric input, including a decimal point |
 | `bool` | `check` | checkbox; `checked` mirrors the field |
 | enum | `popup` | popup items are the enum's member labels (member name when unlabeled — Chapter 3), in declaration order |
@@ -1650,9 +1677,29 @@ Four built-in dialogs cover file selection and quit confirmation. As Chapter 6 n
 
 ### Logging
 
-`log(msg: string)` writes a diagnostic line to the platform's diagnostic stream: on a command-line host, standard error; on the Macintosh, a destination reserved for a later release (a log file or debugging window) — programs use it identically either way. Diagnostics belong in `log`; user-facing output belongs in `alert` or files.
+`log(msg: string)` writes a diagnostic line to the platform's diagnostic stream: on a command-line host, standard error; on the Macintosh, the program's log file, if it has enabled one with `app.writeLog` (below), and nowhere otherwise — programs use it identically either way. A command-line program can also enable a log file; its lines then go to both. Diagnostics belong in `log`; user-facing output belongs in `alert` or files.
 
 A program that declares `on App.log(line: string)` (Chapter 7) also receives every one of these lines as an event, after it has reached the stream — the way to put a program's own diagnostics on screen, into a file, or anywhere else, without changing a single `log(...)` call site.
+
+### Log File and Tracing
+
+A program writes nothing to disk for its diagnostics unless it asks to. Three statements in the `app` namespace control the log file; each may be called from any handler, any number of times:
+
+| Call | Effect |
+|---|---|
+| `app.writeLog(name: string)` | Turns the log file on. Opens `name` (a path resolved like every other `file` path), creating it as a `TEXT` file with the application's own creator (`app.id`) if it doesn't exist; an existing file is **appended to**, never truncated. Lines logged before the first call are not kept. Calling it again writes out anything pending to the current file, closes it, and switches to `name`. If `name` can't be opened, logging stays off and `lastError` is set; the call does not abort. |
+| `app.flushLog()` | Writes the pending lines to the log file now. Does nothing while logging is off or nothing is pending. Call it from a coarse timer (every few seconds) to bound how much a crash could lose; flushing on every tick reintroduces the disk wear the buffer exists to avoid. |
+| `app.trace(on: bool)` | Turns the Macintosh UI trace on or off (off by default). While on, the runtime adds a line for each window opened, menu chosen, timer fired, and similar UI event to the log. Does nothing on a command-line host or in a program with no windows or menus. |
+
+With the log file on, it receives, in order: every `log(...)` line; the UI trace lines, while `app.trace(true)` is in effect; on the Macintosh, the text of each `alert(...)` in a program with no windows or menus; and the report of a runtime error or an uncaught `abort` (Chapter 5). Each line is written as its own text followed by a line feed, with any carriage return in it rendered as a line feed. There are no timestamps and no markers.
+
+Lines collect in a 4 KB buffer, which is written to the file in one piece when the next line would not fit, on `app.flushLog()`, when the program quits (normally or with `quit n`), and immediately after a runtime error or uncaught-abort report is added. Everything written is on disk once the program has quit.
+
+`on App.log` (Chapter 7) fires for every `log(...)` call whether or not a log file is on — the log file and the handler are independent consumers of the same lines.
+
+`app.writeLog`'s `name` is resolved against the default folder at the time of the call, so a later `askOpen` or `askSave` (which make the chosen folder the default) does not move the log. If a write to the log file fails, the pending lines are dropped and `lastError` is set.
+
+Test builds of a native program use the compiler's `--capture` mode (implied by `--events`), which keeps the runtime's own test-capture file. There, `app.writeLog` still writes the named file, but it receives only `log(...)` lines and runtime-error reports (a command-line program's uncaught `abort` is logged, so it arrives too); UI trace lines, `alert(...)` text and a GUI program's uncaught-abort report go only to the capture file, and `app.trace(false)` has no effect.
 
 ### Date and Time
 
@@ -1741,7 +1788,7 @@ func ticksSince(start: int): int {
 }
 ```
 
-`external func` is a top-level declaration and may appear anywhere among a program's top-level declarations, like `record`, `func`, or `const`. It has no body — the form above, ending at the parameter list and optional return type, is complete. Return types are restricted to `int`, `ptr`, `bool`, and `char`; the return type may be omitted for a function with no result. Parameter types additionally allow `str` and `text`: a `str` parameter is marshalled as the address of the caller's Str255, borrowed for the call; a `text` parameter is passed as the underlying box pointer, likewise borrowed — the callee must not store either beyond the call. `word` (below, alongside the trap/inline clauses it exists for) is also accepted in either position — an `int`-compatible 16-bit-at-the-boundary type, not a fifth independent scalar. A call to an `external func` is an ordinary call expression or call statement, indistinguishable at the call site from a call to a Clarus-defined function — `GetTicks()` above is called exactly like any other zero-argument function returning `int`.
+`external func` is a top-level declaration and may appear anywhere among a program's top-level declarations, like `record`, `func`, or `const`. It has no body — the form above, ending at the parameter list and optional return type, is complete. Return types are restricted to `int`, `ptr`, `bool`, and `char`; the return type may be omitted for a function with no result. Parameter types additionally allow `str` and `text`: a `str` parameter is marshalled as the address of the caller's Str255, borrowed for the call; a `text` parameter is passed as the underlying box pointer, likewise borrowed — the callee must not store either beyond the call. `int16` (The `int16` Extern Type, below, alongside the trap/inline clauses it exists for) is also accepted in either position — there it is an `int`-compatible 16-bit-at-the-boundary type: an external func's `int16`-typed parameter or return behaves like `int` in Clarus code, not like the narrow storage type of Chapter 3. A call to an `external func` is an ordinary call expression or call statement, indistinguishable at the call site from a call to a Clarus-defined function — `GetTicks()` above is called exactly like any other zero-argument function returning `int`.
 
 An `external func` may optionally name how its entry point is reached, with a trailing `= trap ...` or `= inline ...` clause — see Trap and Inline Clauses, below.
 
@@ -1786,24 +1833,24 @@ An `extern record` declares a Mac-packed-layout struct transcribed straight from
 
 ```rust
 extern record Point {
-    v: word
-    h: word
+    v: int16
+    h: int16
 }
 
 extern record EventRecord {
-    what: word
+    what: int16
     message: int
     when: int
     where: Point
-    modifiers: word
+    modifiers: int16
 }
 
 extern record SFReply {
     good: bool
     copy: bool
     fType: int
-    vRefNum: word
-    version: word
+    vRefNum: int16
+    version: int16
     fName: str[63]
 }
 ```
@@ -1819,17 +1866,17 @@ The one way to take an extern record's address is **decay at an `external func` 
 | Clarus field type | bytes | alignment | notes |
 |---|---|---|---|
 | `bool` | 1 | 1 | Pascal `Boolean` |
-| `byte` | 1 | 1 | new contextual field-type name, unsigned byte (`SignedByte`/`Byte`); reads/writes as `int`, zero-extended |
-| `word` | 2 | 2 | `INTEGER`; reads back sign-extended (same as extern `word`) |
+| `uint8` | 1 | 1 | unsigned byte (`SignedByte`/`Byte`); reads/writes as `int`, zero-extended |
+| `int16` | 2 | 2 | `INTEGER`; reads back sign-extended (same as an extern `int16` result) |
 | `int` | 4 | 2 | `LONGINT`/`OSType`/`Fixed` — 68k packs longs at 2 |
 | `ptr` | 4 | 2 | `Ptr`/`Handle`/`ProcPtr` fields |
 | nested `extern record` | its size | 2 | `Point` in `EventRecord`; nesting depth unbounded |
 | `str[N]` (1 ≤ N ≤ 255) | N+1 | 1 | Pascal string buffer (`Str63` = `str[63]`): length byte + N bytes. Reads as `string` (copy out), assigns from `string` (truncating at N, length byte updated) |
 | `pad[N]` (N ≥ 1) | N | 1 | reserved/unused byte runs (`ParamBlockRec` filler); not readable or writable, occupies layout only, needs no field name — `pad[4]` alone is a complete field line |
 
-Total record size rounds up to even. Field offsets follow the classic MPW 68k packing rule exactly: each field aligned per the table above, no other padding inserted. `byte` and `pad` are contextual field-type names recognized ONLY inside an `extern record` body, the same way `word` is contextual only in an `external func` signature — elsewhere (a `var` declaration, an ordinary `record` field) they are ordinary identifiers. `pad` additionally has no named form: a field written `name: pad[N]` does NOT declare a pad run — "pad" is recognized only as a bare field line's own leading token, never after `name:`, so `name: pad[N]` instead falls through to the ordinary `type[N]` array-length grammar (an array of a nested type named `pad`), which is not itself in the palette and so is rejected with the same "extern record field type must be bool, byte, word, int, ptr, str[N], pad[N], or an extern record" diagnostic any other non-palette field type gets. `fixed`-typed fields are not supported in this phase (add on demand — `Fixed` transcribes as `int` and converts via the existing fixed conversions).
+Total record size rounds up to even. Field offsets follow the classic MPW 68k packing rule exactly: each field aligned per the table above, no other padding inserted. `pad` is a contextual field-type name recognized ONLY inside an `extern record` body — elsewhere (a `var` declaration, an ordinary `record` field) it is an ordinary identifier. `pad` additionally has no named form: a field written `name: pad[N]` does NOT declare a pad run — "pad" is recognized only as a bare field line's own leading token, never after `name:`, so `name: pad[N]` instead falls through to the ordinary `type[N]` array-length grammar (an array of a nested type named `pad`), which is not itself in the palette and so is rejected with the same "extern record field type must be bool, uint8, int16, int, ptr, str[N], pad[N], or an extern record" diagnostic any other non-palette field type gets. `fixed`-typed fields are not supported in this phase (add on demand — `Fixed` transcribes as `int` and converts via the existing fixed conversions).
 
-**Ordinary `record` packing:** the same discipline governs an ordinary `record`'s (Chapter 3) own field layout, independently of the palette above: `bool` and `char` fields pack at 1-byte alignment — their exact 1-byte size, no padding before or after, in an ordinary record or a fixed array alike; `bool` keeps that same 1-byte packing inside an `extern record` too, but `char` is excluded from the extern-record palette entirely (not a legal field type there — an extern record's 1-byte numeric field type is `byte`, above). Every other ordinary-record field kind (`int`, `fixed`, `string(n)`, enum, nested `record`, `T[n]`, `text`, `list of T`, `map of T`, window and resource references) packs at 2-byte alignment (a degenerate 1-byte `T[n]` — `bool[1]`/`char[1]` — packs at 1-byte alignment instead, same as a bare `bool`/`char` field), in declaration order: a 2-byte-aligned field is padded up to the next even offset when the fields before it left an odd running size, and the record's total size is rounded up to even the same way. A `string(n)` field additionally occupies its even-rounded size — n+1 rounded up to even bytes — so the field after it starts on an even offset on every lane. A fixed array's elements follow the identical rule at element granularity — `bool[n]`/`char[n]` elements sit at stride 1, tightly packed with no inter-element padding, while every other element kind keeps its own natural stride. Both code generators (`cg68k` and the host-C `cprint` lane) implement this rule for `bool`/`char` (small-scalar-width phase) and for `string(n)` fields' 2-byte alignment and even-rounded size (strn-field-alignment phase, 2026-08-06 — the C lane realizes it with explicit pad members and an even-padded `clar_str_n` typedef), so the two lanes' record layouts coincide for those kinds; per-lane layouts are still never interchangeable — a native-computed field offset is never valid against a host build's struct, or vice versa, since each lane computes its own independently.
+**Ordinary `record` packing:** the same discipline governs an ordinary `record`'s (Chapter 3) own field layout, independently of the palette above: `bool` and `char` fields pack at 1-byte alignment — their exact 1-byte size, no padding before or after, in an ordinary record or a fixed array alike; `bool` keeps that same 1-byte packing inside an `extern record` too, but `char` is excluded from the extern-record palette entirely (not a legal field type there — an extern record's 1-byte numeric field type is `uint8`, above). Every other ordinary-record field kind (`int`, `fixed`, `string(n)`, enum, nested `record`, `T[n]`, `text`, `list of T`, `map of T`, window and resource references) packs at 2-byte alignment (a degenerate 1-byte `T[n]` — `bool[1]`/`char[1]` — packs at 1-byte alignment instead, same as a bare `bool`/`char` field), in declaration order: a 2-byte-aligned field is padded up to the next even offset when the fields before it left an odd running size, and the record's total size is rounded up to even the same way. A `string(n)` field additionally occupies its even-rounded size — n+1 rounded up to even bytes — so the field after it starts on an even offset on every lane. A fixed array's elements follow the identical rule at element granularity — `bool[n]`/`char[n]` elements sit at stride 1, tightly packed with no inter-element padding, while every other element kind keeps its own natural stride. Both code generators (`cg68k` and the host-C `cprint` lane) implement this rule for `bool`/`char` (small-scalar-width phase) and for `string(n)` fields' 2-byte alignment and even-rounded size (strn-field-alignment phase, 2026-08-06 — the C lane realizes it with explicit pad members and an even-padded `clar_str_n` typedef), so the two lanes' record layouts coincide for those kinds; per-lane layouts are still never interchangeable — a native-computed field offset is never valid against a host build's struct, or vice versa, since each lane computes its own independently.
 
 Multi-byte fields read and write in the machine's native byte order — the same `peekw`/`peekl`/`pokew`/`pokel` contract Chapter 13's `peek`/`poke` section already documents: big-endian on the 68k target, host-endian on a host build. An `extern record` is all-scalar storage, structurally outside automatic reference counting — never retained or released, the same as an overlay record or a plain `ptr`.
 
@@ -1857,11 +1904,11 @@ This is the normative mapping from Inside Macintosh's own type vocabulary to the
 
 | Inside Macintosh | Clarus |
 |---|---|
-| `INTEGER` / `OSErr` | `word` — `external func` parameter/result (The `word` Extern Type, below) or extern-record field (Field Palette, above) |
+| `INTEGER` / `OSErr` | `int16` — `external func` parameter/result (The `int16` Extern Type, below) or extern-record field (Field Palette, above) |
 | `LONGINT` / `OSType` / `Fixed` | `int` |
 | `Boolean` | `bool` — 1 byte in every aggregate; word-marshaled into the high byte at the pascal trap boundary (Trap and Inline Clauses, below) |
-| `CHAR` (a CharParameter) | `word` — **never** `char`. A CHAR parameter is a plain 16-bit `INTEGER` with the character code in the low byte; Clarus's `char` extern shape instead pads its value into the word's high byte, the same convention `bool` uses (Trap and Inline Clauses, below). Declaring a CHAR parameter `char` silently reads and writes the wrong byte at the trap boundary — the MenuKey lesson. |
-| `SignedByte` / `Byte` | `byte` — extern-record field only (Field Palette, above) |
+| `CHAR` (a CharParameter) | `int16` — **never** `char`. A CHAR parameter is a plain 16-bit `INTEGER` with the character code in the low byte; Clarus's `char` extern shape instead pads its value into the word's high byte, the same convention `bool` uses (Trap and Inline Clauses, below). Declaring a CHAR parameter `char` silently reads and writes the wrong byte at the trap boundary — the MenuKey lesson. |
+| `SignedByte` / `Byte` | `uint8` — extern-record field only (Field Palette, above) |
 | `Str255` / `StrN` | `str` parameter, the caller's Str255 address borrowed for the call (`external func`, above), or `str[N]` extern-record field (Field Palette, above) |
 | `VAR` parameter | `ptr` — an extern-record variable or field lvalue decays to its address at the call site (`extern record`, above) |
 | `Point` passed by value | a 4-byte extern record passed where the callee declares an `int` parameter (`extern record`, above) |
@@ -1875,9 +1922,9 @@ A trap word's bit 11 (`trap & 0x0800`) is the normative test for which calling c
 A `callback func` declares an ordinary Clarus function the Toolbox itself calls back through, via compiler-generated pascal-convention glue — a List Manager LDEF, a control's action procedure, a dialog filter, or any other Inside Macintosh entry point that expects a raw function pointer. `callback` is contextual, recognized only immediately before `func`; elsewhere it is an ordinary identifier. A `callback func` is a top-level declaration only — one may not be nested inside another function.
 
 ```rust
-external func UiTrackControl(ctl: ptr, startPt: int, action: ptr): word
+external func UiTrackControl(ctl: ptr, startPt: int, action: ptr): int16
 
-callback func myAction(ctl: ptr, part: word) {
+callback func myAction(ctl: ptr, part: int16) {
     var offset: int = part
 }
 
@@ -1887,7 +1934,7 @@ func track(ctl: ptr, startPt: int) {
 }
 ```
 
-A callback's parameter and return types are restricted to `bool`, `char`, `word`, `int`, and `ptr` — the same by-value scalars a pascal-convention `external func` already marshals (no `str`/`text`, records, or containers; no defaults). The compiler generates the glue that reads each argument at its fixed pascal-convention stack offset and writes the result back the same way, following the marshaling rule the trap clause above already documents: a `word` sign-extends, and `bool`/`char` occupy a full word but live in its high byte. A callback's own BODY is ordinary Clarus code with no awareness of that boundary at all — the glue is entirely compiler-generated, never hand-written.
+A callback's parameter and return types are restricted to `bool`, `char`, `int16`, `int`, and `ptr` — the same by-value scalars a pascal-convention `external func` already marshals (no `str`/`text`, records, or containers; no defaults). The compiler generates the glue that reads each argument at its fixed pascal-convention stack offset and writes the result back the same way, following the marshaling rule the trap clause above already documents: an `int16` sign-extends, and `bool`/`char` occupy a full word but live in its high byte. A callback's own BODY is ordinary Clarus code with no awareness of that boundary at all — the glue is entirely compiler-generated, never hand-written.
 
 The bare name of a callback decays to its glue's address only where an `external func` parameter is declared `ptr` — `myAction` passed to `UiTrackControl`'s `action` parameter, above. A callback name used anywhere else — a variable initializer, a non-`ptr` or non-extern argument, a return value, a container element — is a build-time error. A callback may also be called directly, like any ordinary function (`myAction(ctl, 1)`, above); a direct call bypasses the glue entirely and runs the body straight, since underneath a callback's body is nothing but an ordinary Clarus function.
 
@@ -1923,11 +1970,11 @@ regBind   = REG ":" IDENT ;   // REG in { d0, d1, d2, a0, a1 }, lowercase
 external func TickCount(): int = trap 0xA975
 ```
 
-A `bool` or `char` parameter or result under the plain `trap` clause still occupies a full 16-bit stack word — Pascal never packs sub-word arguments — but the value itself lives in that word's HIGH-order byte (the word's own, lowest, address), not its low byte: pushing a `bool`/`char` argument shifts the value up 8 bits before the word push, and reading a `bool`/`char` result shifts the popped word down 8 bits before use. This is normative and empirically verified (native-5e Task 12, against a real ROM trap and a real Toolbox struct field on Mini vMac hardware) — an earlier (5d-era) low-byte claim for this same convention was wrong and is superseded by this paragraph. `word` (below) parameters and results are unaffected: a `word` is a genuine 16-bit value, not a narrower value padded into a word, so it always occupies the word's full span with no shift.
+A `bool` or `char` parameter or result under the plain `trap` clause still occupies a full 16-bit stack word — Pascal never packs sub-word arguments — but the value itself lives in that word's HIGH-order byte (the word's own, lowest, address), not its low byte: pushing a `bool`/`char` argument shifts the value up 8 bits before the word push, and reading a `bool`/`char` result shifts the popped word down 8 bits before use. This is normative and empirically verified (native-5e Task 12, against a real ROM trap and a real Toolbox struct field on Mini vMac hardware) — an earlier (5d-era) low-byte claim for this same convention was wrong and is superseded by this paragraph. `int16` (below) parameters and results are unaffected: an `int16` is a genuine 16-bit value, not a narrower value padded into a word, so it always occupies the word's full span with no shift.
 
 Appending `reg` selects the register calling convention some traps use instead, in either of two forms. The POSITIONAL form (below) assigns registers by declaration order; a NAMED form (further below) binds each register to a parameter explicitly.
 
-At most two `ptr` parameters, passed in A0 then A1 (declaration order), and at most two `int`/`bool`/`char`/`word` parameters, passed in D0 then D1 (declaration order) — a third parameter of either kind, or any `str`/`text` parameter, is an error, since none of those has a register slot under `reg`:
+At most two `ptr` parameters, passed in A0 then A1 (declaration order), and at most two `int`/`bool`/`char`/`int16` parameters, passed in D0 then D1 (declaration order) — a third parameter of either kind, or any `str`/`text` parameter, is an error, since none of those has a register slot under `reg`:
 
 ```rust
 external func BlockMove(src: ptr, dst: ptr, count: int) = trap 0xA02E reg
@@ -1939,24 +1986,24 @@ external func BlockMove(src: ptr, dst: ptr, count: int) = trap 0xA02E reg
 external func SetHandleSize(h: ptr, newSize: int): int = trap 0xA024 reg memerr
 ```
 
-`reg` also accepts a NAMED form, `reg( REG: paramName, ... )`, binding each register explicitly to one declared parameter by name instead of assigning by position. Register names are contextual identifiers (like `reg` itself), lowercase only, drawn from the closed set `d0 d1 d2 a0 a1` — matching the listing printer's own lowercase spelling; any other spelling, including `d3` or `a5`, is an error (`a5`/`a6`/`a7` are the globals base, frame, and stack registers, never available here). Every declared parameter must be bound exactly once, every bound name must name a real parameter, and no register may be bound twice; unlike the positional form above, the named form has no 2+2 count limit — it is bounded only by the register table itself. Parameter types are the same set the positional form accepts (`int`, `bool`, `char`, `word`, `ptr`; `str`/`text` remain rejected):
+`reg` also accepts a NAMED form, `reg( REG: paramName, ... )`, binding each register explicitly to one declared parameter by name instead of assigning by position. Register names are contextual identifiers (like `reg` itself), lowercase only, drawn from the closed set `d0 d1 d2 a0 a1` — matching the listing printer's own lowercase spelling; any other spelling, including `d3` or `a5`, is an error (`a5`/`a6`/`a7` are the globals base, frame, and stack registers, never available here). Every declared parameter must be bound exactly once, every bound name must name a real parameter, and no register may be bound twice; unlike the positional form above, the named form has no 2+2 count limit — it is bounded only by the register table itself. Parameter types are the same set the positional form accepts (`int`, `bool`, `char`, `int16`, `ptr`; `str`/`text` remain rejected):
 
 ```rust
-external func PostEvent(eventNum: word, eventMsg: int): word =
+external func PostEvent(eventNum: int16, eventMsg: int): int16 =
     trap 0xA02F reg(a0: eventNum, d0: eventMsg) ret d0
 ```
 
-An optional trailing `ret REG` names the result register, for either form of `reg`; omitted, the default is today's rule — `A0` for a `ptr` result, `D0` otherwise. `ret` on a `void` extern (no declared return type) is an error, and `ret` is mutually exclusive with `memerr` (which already names the result's source — the low-memory global, not a register). Reading the result from whichever register, named or defaulted: an `int` or `ptr` result uses its full 32 bits; a `word` result reads its low 16 bits, SIGN-extended (Toolbox `INTEGER`/`OSErr`); a `bool` or `char` result reads its low byte, zero-extended — see the `word` correction just below.
+An optional trailing `ret REG` names the result register, for either form of `reg`; omitted, the default is today's rule — `A0` for a `ptr` result, `D0` otherwise. `ret` on a `void` extern (no declared return type) is an error, and `ret` is mutually exclusive with `memerr` (which already names the result's source — the low-memory global, not a register). Reading the result from whichever register, named or defaulted: an `int` or `ptr` result uses its full 32 bits; an `int16` result reads its low 16 bits, SIGN-extended (Toolbox `INTEGER`/`OSErr`); a `bool` or `char` result reads its low byte, zero-extended — see the `int16` correction just below.
 
 Some Toolbox packages share a single trap word across many routines, distinguished by a selector word the caller pushes immediately before the trap — the List Manager's `LNew`/`LDispose`/`LAddRow`/etc. all dispatch through the one trap `0xA9E7` this way. `trap NNNN sel SELECTOR` names that shape: `SELECTOR` (an unsigned 16-bit value, decimal or hex) is pushed as one more Pascal-convention stack word, closest to the trap itself, after every declared argument — the trap dispatcher pops it along with the rest, so no separate caller cleanup is needed. `sel` and `reg` are mutually exclusive — a selector-dispatch trap is always Pascal-convention:
 
 ```rust
-external func LAddRow(count: word, rowNum: word, lHandle: ptr): word = trap 0xA9E7 sel 0x0008
+external func LAddRow(count: int16, rowNum: int16, lHandle: ptr): int16 = trap 0xA9E7 sel 0x0008
 ```
 
-Some other Toolbox managers share a single trap word the same way, but distinguish the routine by PRELOADING the selector into D0 instead of pushing it — the AppleEvent Manager's own trap `0xA816` (every `AE*` routine) is the working example. `trap NNNN seld0 SELECTOR` names that shape: the selector is moved into D0 immediately before the trap, after every declared argument has already been pushed — no extra stack word, so no extra cleanup either. `seld0` and `sel` are two different selector-dispatch shapes for two different trap families; a routine's own Inside Macintosh/Universal-Interfaces `THREEWORDINLINE` encoding says which — `0x3F3C` (`MOVE.W #selector,-(SP)`) is `sel`, `0x303C` (`MOVE.W #selector,D0`) is `seld0`. Like `sel`, `seld0` is mutually exclusive with `reg` (`external func AEInstallEventHandler(theAEEventClass: int, theAEEventID: int, handler: ptr, handlerRefcon: int, isSysHandler: bool): word = trap 0xA816 seld0 0x091F`, toolbox/appleevents.cla).
+Some other Toolbox managers share a single trap word the same way, but distinguish the routine by PRELOADING the selector into D0 instead of pushing it — the AppleEvent Manager's own trap `0xA816` (every `AE*` routine) is the working example. `trap NNNN seld0 SELECTOR` names that shape: the selector is moved into D0 immediately before the trap, after every declared argument has already been pushed — no extra stack word, so no extra cleanup either. `seld0` and `sel` are two different selector-dispatch shapes for two different trap families; a routine's own Inside Macintosh/Universal-Interfaces `THREEWORDINLINE` encoding says which — `0x3F3C` (`MOVE.W #selector,-(SP)`) is `sel`, `0x303C` (`MOVE.W #selector,D0`) is `seld0`. Like `sel`, `seld0` is mutually exclusive with `reg` (`external func AEInstallEventHandler(theAEEventClass: int, theAEEventID: int, handler: ptr, handlerRefcon: int, isSysHandler: bool): int16 = trap 0xA816 seld0 0x091F`, toolbox/appleevents.cla).
 
-`= inline deref`, `= inline nop`, and `= inline a5` name no trap at all — they mark the external as a compiler-known intrinsic, expanded at the call site instead of dispatched through a trap number. `inline deref` requires the signature `(ptr): ptr` exactly, reading the pointer stored at its argument address (the common master-pointer-to-object-pointer step of following a Handle):
+`= inline deref`, `= inline nop`, `= inline a5` and `= inline sp` name no trap at all — they mark the external as a compiler-known intrinsic, expanded at the call site instead of dispatched through a trap number. `inline deref` requires the signature `(ptr): ptr` exactly, reading the pointer stored at its argument address (the common master-pointer-to-object-pointer step of following a Handle):
 
 ```rust
 external func HandleToPtr(h: ptr): ptr = inline deref
@@ -1974,6 +2021,12 @@ external func DebugBreak() = inline nop
 external func CurrentA5(): ptr = inline a5
 ```
 
+`inline sp` requires zero parameters and a `ptr` return; it reads the current value of the 68k stack pointer (A7) at the call site. It is meant for stack-depth probes (paint-and-scan high-water measurement); the value is only meaningful relative to the low-memory globals `CurStackBase` (0x908) and `ApplLimit` (0x130). Native lane only: a C lane build resolves it as an ordinary `rt_ext_` extern.
+
+```rust
+external func CurrentSP(): ptr = inline sp
+```
+
 Two `external func` declarations sharing a name are legal if and only if they are IDENTICAL: the same parameter list (types and order; parameter names may differ), the same return type, and the same trap/inline clause in full — trap word, `sel`, calling convention, every register binding, `memerr`, and `ret`. The checker merges an identical repeat into the first declaration; every call site resolves to that one entry, and no diagnostic is raised. Any other kind of same-name mismatch is a compile error naming both declaration sites. This is the same accommodation a C header gives a repeated `extern` prototype: a program can redeclare a trap the runtime already declares — transcribed independently from the same Inside Macintosh page — without a spurious redeclaration error:
 
 ```rust
@@ -1986,10 +2039,10 @@ external func TickCount(): int = trap 0xA975
 `= ptr` names no trap and no compiler intrinsic; it calls through a pointer the program already holds at run time — a loaded code resource, a `ProcPtr` handed back from the Toolbox, any machine-code entry point reachable only by value rather than by a fixed trap number. The declaration's first parameter is the call target: it must exist and must be declared `ptr`, and it is consumed as the jump address rather than pushed as an argument — a zero-parameter `= ptr` declaration, or one whose first parameter is any other type, is a compile-time error (`= ptr requires a first parameter of type ptr`):
 
 ```rust
-external func PluginMain(entry: ptr, verb: word, param: ptr): int = ptr
+external func PluginMain(entry: ptr, verb: int16, param: ptr): int = ptr
 ```
 
-Every parameter after the target, and the return type, follow the plain pascal `trap` clause's own marshalling rules exactly (Trap and Inline Clauses, above) — the same type sets (`int`/`ptr`/`bool`/`char`/`word`/`str`/`text` parameters; `int`/`ptr`/`bool`/`char`/`word`, or no return type), the same high-byte `bool`/`char` convention, the same borrowed-address treatment for `str`/`text`. A `= ptr` declaration with no parameters besides the target is fine — the call still marshals a target and nothing else.
+Every parameter after the target, and the return type, follow the plain pascal `trap` clause's own marshalling rules exactly (Trap and Inline Clauses, above) — the same type sets (`int`/`ptr`/`bool`/`char`/`int16`/`str`/`text` parameters; `int`/`ptr`/`bool`/`char`/`int16`, or no return type), the same high-byte `bool`/`char` convention, the same borrowed-address treatment for `str`/`text`. A `= ptr` declaration with no parameters besides the target is fine — the call still marshals a target and nothing else.
 
 `ptr` takes no suffix: none of `sel`, `seld0`, `reg`, `memerr`, or `ret` may follow it — those all modify a `trap` clause's dispatch or calling convention, and `= ptr` is Pascal-convention-only with no trap word to select and no convention to override. The grammar itself has no production for a suffix in that position, so writing one is a plain parse error, not a checked diagnostic the way an incompatible `reg`/`sel` combination under `trap` is.
 
@@ -2006,7 +2059,7 @@ The declaration is a calling contract, not a binding: nothing in it ties the cal
 ```rust
 external func HLock(h: ptr) = trap 0xA029 reg               // toolbox/memory.cla
 external func HandleToPtr(h: ptr): ptr = inline deref
-external func PluginMain(entry: ptr, verb: word, param: ptr): int = ptr
+external func PluginMain(entry: ptr, verb: int16, param: ptr): int = ptr
 
 // h: ptr — a resource Handle from GetResource, e.g. GetResource('PLUG', 128)
 // pb: ptr — a parameter block the plugin's caller has already built
@@ -2018,22 +2071,22 @@ func callPlugin(h: ptr, pb: ptr): int {
 }
 ```
 
-### The `word` Extern Type
+### The `int16` Extern Type
 
-The Toolbox's Pascal calling convention is built on 16-bit `INTEGER` arguments and results, not the 32-bit values every other Clarus `int` marshals as. `word` names that 16-bit width at the extern boundary — it is accepted ONLY as an `external func` parameter or return type:
+The Toolbox's Pascal calling convention is built on 16-bit `INTEGER` arguments and results, not the 32-bit values every other Clarus `int` marshals as. `int16` names that 16-bit width at the extern boundary when it appears as an `external func` (or `callback func`) parameter or return type. `uint8` and `uint16` are rejected in a signature (Narrow Integers, Chapter 3):
 
 ```
-externParam = IDENT ":" ( type | "word" ) ;
-externRet   = type | "word" ;
+externParam = IDENT ":" type ;     // type may be int16
+externRet   = type ;
 ```
 
-`word` is contextual, the same way `overlay` and `external` are: recognized only in an `external func`'s own parameter list or return type position; everywhere else (a `var` declaration, a `record` field, a non-extern function's parameter) it is an ordinary identifier, and a program may freely use `word` as a variable or field name.
+At these positions `int16` is a boundary type, not the ordinary narrow storage type of Chapter 3 (which it remains everywhere else — a `var` declaration, a `record` field, a non-extern function's parameter).
 
-Within Clarus code, a `word`-typed parameter or return behaves exactly like `int` — callers pass ordinary `int` expressions, and a call returning `word` reads back as `int`, usable anywhere an `int` is:
+Within Clarus code, an external func's `int16`-typed parameter or return behaves exactly like `int` — callers pass ordinary `int` expressions, and a call returning `int16` reads back as `int`, usable anywhere an `int` is:
 
 ```rust
-external func UiMoveTo(h: word, v: word) = trap 0xA893
-external func UiFindWindow(pt: int, wpOut: ptr): word = trap 0xA92C
+external func UiMoveTo(h: int16, v: int16) = trap 0xA893
+external func UiFindWindow(pt: int, wpOut: ptr): int16 = trap 0xA92C
 
 func openAt(pt: int, wpOut: ptr): int {
     var kind: int = UiFindWindow(pt, wpOut)
@@ -2042,9 +2095,9 @@ func openAt(pt: int, wpOut: ptr): int {
 }
 ```
 
-The distinction matters only at the trap boundary itself. A `word` argument pushes as a single 16-bit stack word rather than `int`'s 32-bit long — the Pascal calling convention's own `bool`/`char` push shape, one stack word per argument regardless of width. A `word` result is popped back off its reserved stack slot and SIGN-extended to fill the full 32-bit value the rest of Clarus code sees — Toolbox `INTEGER` is signed (a coordinate, a row number, an index that can carry a negative sentinel), unlike the zero-extended `bool`/`char` result.
+The distinction matters only at the trap boundary itself. An `int16` argument pushes as a single 16-bit stack word rather than `int`'s 32-bit long — the Pascal calling convention's own `bool`/`char` push shape, one stack word per argument regardless of width. An `int16` result is popped back off its reserved stack slot and SIGN-extended to fill the full 32-bit value the rest of Clarus code sees — Toolbox `INTEGER` is signed (a coordinate, a row number, an index that can carry a negative sentinel), unlike the zero-extended `bool`/`char` result.
 
-Under EITHER form of the `reg` calling convention (positional or named, above), a `word` PARAMETER has no separate marshaling of its own: it occupies a full D-register slot exactly like `int`, since `reg` never narrows to a stack word in the first place. A `word` RESULT is different — this corrects an earlier revision of this paragraph, which said a `word` result also occupies a full register slot like `int`: it does not. A `word` result under `reg` reads back from its result register's low 16 bits, SIGN-extended — the same `INTEGER`/`OSErr` signedness rule as a `word` result under the plain `trap` convention above, just sourced from a register instead of a popped stack slot. The one real call site that returns a `word` under `reg`, `UiGestaltErr` (`runtime/clarus/ui.cla`), already sign-extends its result this way; this correction makes the written rule match it.
+Under EITHER form of the `reg` calling convention (positional or named, above), an `int16` PARAMETER has no separate marshaling of its own: it occupies a full D-register slot exactly like `int`, since `reg` never narrows to a stack word in the first place. An `int16` RESULT is different — this corrects an earlier revision of this paragraph, which said an `int16` result also occupies a full register slot like `int`: it does not. An `int16` result under `reg` reads back from its result register's low 16 bits, SIGN-extended — the same `INTEGER`/`OSErr` signedness rule as an `int16` result under the plain `trap` convention above, just sourced from a register instead of a popped stack slot. The one real call site that returns an `int16` under `reg`, `UiGestaltErr` (`runtime/clarus/ui.cla`), already sign-extends its result this way; this correction makes the written rule match it.
 
 ## Appendix A: Grammar (EBNF)
 
@@ -2075,12 +2128,12 @@ type        = "int" | "bool" | "fixed" | "char" | "text" | "ptr"
 
 varDecl     = "var" IDENT ":" type [ "=" expr ] ;
 funcDecl    = "func" IDENT "(" [ params ] ")" [ ":" type ] block ;
-externDecl  = "external" "func" IDENT "(" [ params ] ")" [ ":" ( type | "word" ) ]
+externDecl  = "external" "func" IDENT "(" [ params ] ")" [ ":" type ]
             [ "=" ( "trap" ( INT | HEXINT ) [ "sel" ( INT | HEXINT ) | regClause ]
                   | "inline" ( "deref" | "nop" | "a5" ) ) ] ;
             // regClause: see "Trap and Inline Clauses" (Chapter 13) for the full production
 params      = param { "," param } ;
-param       = IDENT ":" ( type | "word" ) ;
+param       = IDENT ":" type ;
 
 windowDecl  = "window" IDENT "{" { windowItem } "}" ;
 windowItem  = property | widgetDecl | varDecl | "form" "for" IDENT ;

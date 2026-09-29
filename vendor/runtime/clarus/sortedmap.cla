@@ -205,7 +205,9 @@ func rtSortedMapGrowVals(m: ptr, need: int) {
 // target: SortedMapNewPtr only guarantees "at least this many bytes," so a
 // little slack here is harmless, unlike an UNDER-sized box, which would
 // corrupt whatever heap memory follows it.
-const rtSortedMapBoxSize: int = 56
+// SE wave 3: the const itself now lives in the per-lane boxsize
+// companions (boxsize_c.cla keeps the host value above; boxsize_68k.cla
+// carries the exact 68k field sum) -- see boxsize_68k.cla's own comment.
 
 // rtSortedMapNew (rt_core.inc:622-636, `rt_map_new`) -- Plan 5c wave2a Task 4:
 // birth allocation is now entirely Clarus-owned, mirroring the C reference
@@ -400,6 +402,37 @@ func rtSortedMapClear(m: ptr) {
 
     rm = RtSortedMap(m)
     rm.count = 0
+}
+
+// rtSortedMapDropStorage (SE wave 1, `.release()`): keys and vals sized
+// to 0, count = cap = valcap = 0 -- the birth state; the box stays.
+func rtSortedMapDropStorage(m: ptr) {
+    var rm: RtSortedMap
+    var err: int
+
+    rm = RtSortedMap(m)
+    err = SortedMapSetHandleSize(rm.keys, 0)
+    err = SortedMapSetHandleSize(rm.vals, 0)
+    rm.count = 0
+    rm.cap = 0
+    rm.valcap = 0
+}
+
+// rtSortedMapShrink (SE wave 1, `.shrink()`): keys and vals trimmed to
+// count, cap = valcap = count. Never releases elements.
+func rtSortedMapShrink(m: ptr) {
+    var rm: RtSortedMap
+    var err: int
+
+    rm = RtSortedMap(m)
+    if rm.cap > rm.count {
+        err = SortedMapSetHandleSize(rm.keys, rm.count * SORTEDMAP_KEYBLOCK)
+        rm.cap = rm.count
+    }
+    if rm.valcap > rm.count {
+        err = SortedMapSetHandleSize(rm.vals, rm.count * rm.valsize)
+        rm.valcap = rm.count
+    }
 }
 
 // rtSortedMapKeyAt (rt_core.inc:735-739, `rt_map_key_at`): panics ("map key not
