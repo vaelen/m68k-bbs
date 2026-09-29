@@ -192,6 +192,15 @@ func gameNumberInput(input: string) {
         basicGameId = game.id
         startBasicFile(game.filename)
     }
+    case Builtin {
+        switch game.filename {
+        case "words" { wordsStart(game.id) }
+        else {
+            sendLine("No such built-in game.")
+            gotoScreen("games")
+        }
+        }
+    }
     else {
         sendLine(gameTypeName(game.type) + " games are not available yet.")
         gotoScreen("games")
@@ -367,4 +376,9 @@ func basicScreenInput(input: string) {
         basicKey(input[0])
     }
     basicPump()
+}
+
+func wordsStart(gameId: int) {    // replaced by games/words.cla
+    sendLine("Daily Word is coming soon.")
+    gotoScreen("games")
 }

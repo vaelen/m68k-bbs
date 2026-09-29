@@ -99,6 +99,14 @@ func loadUser(id: int): bool {
     return true
 }
 
+// A user's name without touching the session user; "" if no such
+// record (leaderboards name other callers with this).
+func userNameById(id: int): string {
+    var rec: text = dbFind(usersDb, id)
+    if rec.length != userRecordSize { return "" }
+    return dbExtractString(rec, uOffName)
+}
+
 // Store the session user as a new account. Returns the new user ID
 // (also set on user.id), or -1.
 func createUser(): int {

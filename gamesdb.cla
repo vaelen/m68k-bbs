@@ -28,6 +28,7 @@ enum GameType {
     Hermes22 "Hermes 2.2"
     Hermes31 "Hermes 3.1"
     Hermes35 "Hermes 3.5"
+    Builtin  "Built-in"
 }
 
 const gameRecordSize: int = 256
@@ -38,7 +39,8 @@ const gOffType: int = 192
 const gOffFlags: int = 193
 const gameFlagEnabled: int = 1
 const gameTypeBasicValue: int = 0   // int(Basic): a bare member needs an expected type
-const gameTypeMax: int = 6          // int(Hermes35)
+const gameTypeBuiltinValue: int = 7 // int(Builtin)
+const gameTypeMax: int = 7          // int(Builtin)
 
 record Game {
     id: int
@@ -83,6 +85,7 @@ func gameTypeName(t: GameType): string {
     case Hermes22 { return "Hermes 2.2" }
     case Hermes31 { return "Hermes 3.1" }
     case Hermes35 { return "Hermes 3.5" }
+    case Builtin  { return "Built-in" }
     }
     return "?"
 }

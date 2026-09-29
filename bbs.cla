@@ -662,7 +662,7 @@ func displayPrompt() {
     case "newareaaccess" { sendData("Access (A=all, S=sysop) [A]: ") }
     case "newgamename" { sendData("Game name: ") }
     case "newgamedesc" { sendData("Description: ") }
-    case "newgametype" { sendData("Type (B=BASIC) [B]: ") }
+    case "newgametype" { sendData("Type (B=BASIC, I=Built-in) [B]: ") }
     case "newgamefile" { sendData("File name: ") }
     case "sysopnets"   {
         if ftnEnabled { sendLine("FTN polling is ON.") } else { sendLine("FTN polling is OFF.") }

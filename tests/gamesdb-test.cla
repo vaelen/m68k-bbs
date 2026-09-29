@@ -73,13 +73,19 @@ on App.startCLI(args: list of string) {
     expect(game.name.length == 63, "name truncated to 63 chars")
 
     expect(gameTypeName(Basic) == "BASIC", "type name for the menu")
+
+    id1 = createGame("Daily Word", "Guess the word", "words", Builtin, true)
+    expect(loadGame(id1) and game.type == Builtin, "built-in type roundtrip")
+    rec = dbFind(gamesDb, id1)
+    expect(int(rec[gOffType]) == 7, "built-in type byte is 7")
+    expect(gameTypeName(Builtin) == "Built-in", "built-in type name")
     expect(gameTypeName(Hermes31) == "Hermes 3.1", "hermes type name")
     expect(gameTypeName(ZCode5) == "Z-code v5", "zcode type name")
 
     // persistence across close/open
     gamesClose()
     expect(gamesOpen(), "games db reopens")
-    expect(gameCount() == 3, "count survives reopen")
+    expect(gameCount() == 4, "count survives reopen")
     expect(loadGame(1), "records survive reopen")
     expect(game.name == "Star Trek", "name intact after reopen")
     gamesClose()

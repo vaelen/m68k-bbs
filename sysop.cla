@@ -1650,6 +1650,7 @@ func enabledName(flag: bool): string {
 func parseGameType(input: string): int {
     switch upperStr(input) {
     case "B" { return gameTypeBasicValue }
+    case "I" { return gameTypeBuiltinValue }
     }
     return -1
 }
@@ -1831,7 +1832,7 @@ func editGameValuePrompt() {
     switch editField {
     case 'N' { sendData("Name [" + game.name + "]: ") }
     case 'D' { sendData("Description [" + game.description + "]: ") }
-    case 'T' { sendData("Type (B=BASIC) [" + gameTypeName(game.type) + "]: ") }
+    case 'T' { sendData("Type (B=BASIC, I=Built-in) [" + gameTypeName(game.type) + "]: ") }
     case 'F' { sendData("File name [" + game.filename + "]: ") }
     }
 }
@@ -1874,7 +1875,7 @@ func editGameValue(input: string) {
         case 'T' {
             t = parseGameType(input)
             if t < 0 {
-                sendLine("B for BASIC.")
+                sendLine("B for BASIC, I for built-in.")
                 ok = false
             } else {
                 game.type = GameType(t)
@@ -1973,13 +1974,17 @@ func newGameType(input: string) {
     var t: int = gameTypeBasicValue
     if input != "" { t = parseGameType(input) }
     if t < 0 {
-        sendLine("B for BASIC.")
+        sendLine("B for BASIC, I for built-in.")
         displayPrompt()
         return
     }
     game.type = GameType(t)
     user.screen = "newgamefile"
-    sendLine("The file lives in the " + basicGamesFolder + " folder next to the application.")
+    if game.type == Builtin {
+        sendLine("Built-in games: enter the module name (words).")
+    } else {
+        sendLine("The file lives in the " + basicGamesFolder + " folder next to the application.")
+    }
     displayPrompt()
 }
 
