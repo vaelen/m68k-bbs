@@ -1,0 +1,67 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// CLI self-check for Daily Word's pure logic (games/wordslib.cla).
+// Run by scripts/test.sh from a scratch directory.
+// Exits 0 on pass, 1 on the first failure.
+
+include "../games/wordslib.cla"
+
+var failures: int = 0
+
+func expect(cond: bool, name: string) {
+    if cond {
+        log("PASS " + name)
+    } else {
+        log("FAIL " + name)
+        failures = failures + 1
+    }
+}
+
+func testScoring() {
+    expect(wordScore("abbey", "abbey") == "GGGGG", "all right")
+    expect(wordScore("crane", "abbey") == "..Y.Y", "letters elsewhere")
+    expect(wordScore("babes", "abbey") == "YYGG.", "duplicates: both b's used")
+    expect(wordScore("bbbbb", "abbey") == ".GG..", "duplicates: extra copies are gray")
+    expect(wordScore("lever", "eerie") == ".G.YY", "green claims its letter first")
+    expect(wordScore("fghij", "abbey") == ".....", "nothing")
+}
+
+func testShape() {
+    expect(wordsLower("CrAnE") == "crane", "lower")
+    expect(wordsUpper("crane") == "CRANE", "upper")
+    expect(wordsIsWord("crane"), "five letters")
+    expect(not wordsIsWord("cran"), "four letters")
+    expect(not wordsIsWord("cranes"), "six letters")
+    expect(not wordsIsWord("cr4ne"), "a digit")
+    expect(not wordsIsWord("CRANE"), "capitals are lowered by the caller first")
+}
+
+func testDays() {
+    expect(civilDays(1970, 1, 1) == 0, "epoch")
+    expect(civilDays(2000, 3, 1) == 11017, "2000-03-01")
+    expect(civilDays(2026, 10, 1) - civilDays(2026, 9, 30) == 1, "month boundary")
+    expect(civilDays(2027, 1, 1) - civilDays(2026, 12, 31) == 1, "year boundary")
+    expect(civilDays(2028, 3, 1) - civilDays(2028, 2, 28) == 2, "leap year has Feb 29")
+    expect(civilDays(2100, 3, 1) - civilDays(2100, 2, 28) == 1, "2100 is not a leap year")
+    expect(wordsIsoDays("2026-10-01") == civilDays(2026, 10, 1), "iso date")
+    expect(wordsIsoDays("2026/10/01") == -1, "wrong separators")
+    expect(wordsIsoDays("2026-13-01") == -1, "month 13")
+    expect(wordsIsoDays("2026-10-1") == -1, "short")
+    expect(wordsIsoDays("") == -1, "empty")
+    expect(wordsStampDays("10-01-26 00:00:05") == civilDays(2026, 10, 1), "dateTimeStr form")
+    expect(wordsStampDays("10-29-26 23:59:59") - wordsIsoDays("2026-10-01") + 1 == 29, "puzzle number")
+    expect(wordsStampDays("garbage") == -1, "bad stamp")
+}
+
+on App.startCLI(args: list of string) {
+    testScoring()
+    testShape()
+    testDays()
+    if failures > 0 {
+        log("words-test: FAILED")
+        quit 1
+    }
+    log("words-test: all passed")
+    quit
+}
