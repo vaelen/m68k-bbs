@@ -199,3 +199,144 @@ func wordsAnswerFor(path: string, day: int): string {
     f.close()
     return w
 }
+
+// --- Stats file --------------------------------------------------------
+// Sparse: one 64-byte big-endian record per player (not per account),
+// each starting with its user ID, in first-played order. Found by a
+// linear scan; the offset is then kept so every update is one write.
+// Only whole records count (size / 64), so a torn append is ignored
+// and overwritten by the next one. docs/daily-word.md "Stats file".
+
+const wordsRecSize: int = 64
+const wordsChunk: int = 4096          // whole records per read
+const wordsMaxGuesses: int = 6
+
+const wordsNone: int = 0
+const wordsPlaying: int = 1
+const wordsWon: int = 2
+const wordsLost: int = 3
+
+const wOffUser: int = 0       // i32
+const wOffDay: int = 4        // u16: the puzzle this game is for, 0 = none
+const wOffState: int = 6      // byte: wordsNone..wordsLost
+const wOffUsed: int = 7       // byte: guesses made
+const wOffGuesses: int = 8    // 6 x 5 letters
+const wOffFinished: int = 38  // i32: now() at the win or loss
+const wOffPlayed: int = 42    // u16
+const wOffWins: int = 44      // u16
+const wOffStreak: int = 46    // u16: stored; read through wordsLiveStreak
+const wOffBest: int = 48      // u16
+const wOffLastWin: int = 50   // u16: day of the last win, 0 = never
+const wOffDist: int = 52      // 6 x u16: wins in 1..6 guesses
+
+var wordsRec: text            // the caller's record
+
+func wordsBlank(userId: int): text {
+    var t: text
+    var i: int = 0
+    while i < wordsRecSize {
+        t.append("\x00")
+        i = i + 1
+    }
+    t.setIntAt(wOffUser, userId)
+    return t
+}
+
+// Load `userId`'s record into wordsRec: its byte offset, or -1 with
+// wordsRec a blank record for them.
+func wordsLoad(path: string, userId: int): int {
+    var f: filehandle = file.open(path)
+    var buf: text
+    var pos: int = 0
+    var end: int
+    var i: int
+    wordsRec = wordsBlank(userId)
+    if f == nil { return -1 }
+    end = (f.size() / wordsRecSize) * wordsRecSize
+    while pos < end {
+        if not f.readAt(pos, wordsChunk, buf) { break }
+        i = 0
+        while i + wordsRecSize <= buf.length and pos + i < end {
+            if buf.intAt(i + wOffUser) == userId {
+                wordsRec.clear()
+                wordsRec.append(buf[i, wordsRecSize])
+                f.close()
+                return pos + i
+            }
+            i = i + wordsRecSize
+        }
+        pos = pos + wordsChunk
+    }
+    f.close()
+    return -1
+}
+
+// Write wordsRec at `at`, or append it (over any torn tail) when
+// at < 0. The offset written, or -1.
+func wordsSave(path: string, at: int): int {
+    var f: filehandle = file.open(path)
+    var pos: int = at
+    var ok: bool
+    if f == nil { f = file.create(path, "BINA", "68BB") }
+    if f == nil { return -1 }
+    if pos < 0 { pos = (f.size() / wordsRecSize) * wordsRecSize }
+    ok = f.writeAt(pos, wordsRec)
+    if ok { ok = f.flush() }
+    f.close()
+    if not ok { return -1 }
+    return pos
+}
+
+// Start a fresh game for `day` unless wordsRec already holds it.
+func wordsBeginDay(day: int) {
+    var i: int = 0
+    if wordsRec.wordAt(wOffDay) == day { return }
+    wordsRec.setWordAt(wOffDay, day)
+    wordsRec[wOffState] = char(wordsPlaying)
+    wordsRec[wOffUsed] = char(0)
+    while i < wordsMaxGuesses * 5 {
+        wordsRec[wOffGuesses + i] = char(0)
+        i = i + 1
+    }
+}
+
+func wordsGuessAt(n: int): string {
+    return wordsRec[wOffGuesses + 5 * n, 5]
+}
+
+// Record `guess` against `answer`; a win or the sixth miss finishes
+// the game and updates the totals. `at` is now().
+func wordsAddGuess(guess: string, answer: string, at: int) {
+    var used: int = int(wordsRec[wOffUsed])
+    var day: int = wordsRec.wordAt(wOffDay)
+    var streak: int = 1
+    var i: int = 0
+    while i < 5 {
+        wordsRec[wOffGuesses + 5 * used + i] = guess[i]
+        i = i + 1
+    }
+    used = used + 1
+    wordsRec[wOffUsed] = char(used)
+    if guess == answer {
+        wordsRec[wOffState] = char(wordsWon)
+        if wordsRec.wordAt(wOffLastWin) == day - 1 { streak = wordsRec.wordAt(wOffStreak) + 1 }
+        wordsRec.setWordAt(wOffStreak, streak)
+        if streak > wordsRec.wordAt(wOffBest) { wordsRec.setWordAt(wOffBest, streak) }
+        wordsRec.setWordAt(wOffWins, wordsRec.wordAt(wOffWins) + 1)
+        wordsRec.setWordAt(wOffLastWin, day)
+        wordsRec.setWordAt(wOffDist + 2 * (used - 1), wordsRec.wordAt(wOffDist + 2 * (used - 1)) + 1)
+    } else {
+        if used < wordsMaxGuesses { return }
+        wordsRec[wOffState] = char(wordsLost)
+        wordsRec.setWordAt(wOffStreak, 0)
+    }
+    wordsRec.setWordAt(wOffPlayed, wordsRec.wordAt(wOffPlayed) + 1)
+    wordsRec.setIntAt(wOffFinished, at)
+}
+
+// A stored streak only counts while the last win was today or
+// yesterday: a skipped day breaks it without rewriting the record.
+func wordsLiveStreak(streak: int, lastWin: int, today: int): int {
+    if lastWin > 0 and lastWin >= today - 1 { return streak }
+    return 0
+}

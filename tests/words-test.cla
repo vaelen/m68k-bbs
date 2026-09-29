@@ -82,11 +82,91 @@ func testFiles() {
     expect(wordsFileCount("missing.txt") == 0, "missing file")
 }
 
+func testRecord() {
+    var at1: int
+    var at2: int
+    var f: filehandle
+    var junk: text
+
+    // a stranger has no record: blank, offset -1, and opening never writes
+    expect(wordsLoad("stats.dat", 7) == -1, "no file, no record")
+    expect(wordsRec.length == wordsRecSize and wordsRec.intAt(wOffUser) == 7, "blank record for the caller")
+    expect(not file.exists("stats.dat"), "loading never creates the file")
+
+    // day 1: miss, then win in 2
+    wordsBeginDay(1)
+    expect(int(wordsRec[wOffState]) == wordsPlaying, "a fresh game is playing")
+    wordsAddGuess("crane", "abbey", 100)
+    expect(int(wordsRec[wOffState]) == wordsPlaying and int(wordsRec[wOffUsed]) == 1, "a miss keeps playing")
+    at1 = wordsSave("stats.dat", -1)
+    expect(at1 == 0, "first player appended at 0")
+    wordsAddGuess("abbey", "abbey", 200)
+    expect(wordsSave("stats.dat", at1) == at1, "re-save in place")
+    f = file.open("stats.dat")
+    expect(f.size() == wordsRecSize, "re-saving never grows the file")
+    f.close()
+    expect(int(wordsRec[wOffState]) == wordsWon, "won")
+    expect(wordsGuessAt(0) == "crane" and wordsGuessAt(1) == "abbey", "guesses kept")
+    expect(wordsRec.wordAt(wOffPlayed) == 1 and wordsRec.wordAt(wOffWins) == 1, "totals")
+    expect(wordsRec.wordAt(wOffStreak) == 1 and wordsRec.wordAt(wOffBest) == 1, "first streak")
+    expect(wordsRec.wordAt(wOffDist + 2) == 1, "won in 2 counted")
+    expect(wordsRec.intAt(wOffFinished) == 200, "finish time")
+
+    // a second player appends after the first; both load back
+    wordsLoad("stats.dat", 9)
+    wordsBeginDay(1)
+    wordsAddGuess("crane", "abbey", 300)
+    at2 = wordsSave("stats.dat", -1)
+    expect(at2 == wordsRecSize, "second player appended")
+    expect(wordsLoad("stats.dat", 7) == 0 and wordsGuessAt(1) == "abbey", "first player found")
+    expect(wordsLoad("stats.dat", 9) == wordsRecSize, "second player found")
+
+    // day 2 continues the streak; day 4 (skipped 3) restarts it
+    wordsLoad("stats.dat", 7)
+    wordsBeginDay(2)
+    expect(int(wordsRec[wOffUsed]) == 0 and wordsGuessAt(0) == "\x00\x00\x00\x00\x00", "new day clears guesses")
+    wordsAddGuess("abbey", "abbey", 400)
+    expect(wordsRec.wordAt(wOffStreak) == 2 and wordsRec.wordAt(wOffBest) == 2, "streak continues")
+    expect(wordsLiveStreak(2, 2, 3) == 2, "live the day after")
+    expect(wordsLiveStreak(2, 2, 4) == 0, "broken after a skipped day")
+    wordsBeginDay(4)
+    wordsAddGuess("abbey", "abbey", 500)
+    expect(wordsRec.wordAt(wOffStreak) == 1 and wordsRec.wordAt(wOffBest) == 2, "streak restarts, best kept")
+    wordsBeginDay(4)
+    expect(int(wordsRec[wOffState]) == wordsWon, "same day: the finished game stays finished")
+
+    // six misses lose and zero the streak
+    wordsBeginDay(5)
+    wordsAddGuess("crane", "abbey", 1)
+    wordsAddGuess("crane", "abbey", 2)
+    wordsAddGuess("crane", "abbey", 3)
+    wordsAddGuess("crane", "abbey", 4)
+    wordsAddGuess("crane", "abbey", 5)
+    expect(int(wordsRec[wOffState]) == wordsPlaying, "five misses still playing")
+    wordsAddGuess("crane", "abbey", 6)
+    expect(int(wordsRec[wOffState]) == wordsLost, "sixth miss loses")
+    expect(wordsRec.wordAt(wOffStreak) == 0 and wordsRec.wordAt(wOffPlayed) == 4, "loss: streak 0, played counts it")
+
+    // a torn append: the partial tail is ignored and then overwritten
+    f = file.open("stats.dat")
+    junk.append("0123456789")
+    expect(f.writeAt(f.size(), junk), "simulate a torn append")
+    f.close()
+    expect(wordsLoad("stats.dat", 11) == -1, "the tail is not a record")
+    wordsBeginDay(1)
+    expect(wordsSave("stats.dat", -1) == 2 * wordsRecSize, "append lands on the tail")
+    f = file.open("stats.dat")
+    expect(f.size() == 3 * wordsRecSize, "tail overwritten, file whole again")
+    f.close()
+    expect(wordsLoad("stats.dat", 11) == 2 * wordsRecSize, "third player found")
+}
+
 on App.startCLI(args: list of string) {
     testScoring()
     testShape()
     testDays()
     testFiles()
+    testRecord()
     if failures > 0 {
         log("words-test: FAILED")
         quit 1
