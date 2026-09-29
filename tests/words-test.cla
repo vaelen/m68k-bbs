@@ -163,7 +163,12 @@ func testRecord() {
 
 // One player record straight into `path`.
 func addPlayer(path: string, id: int, day: int, state: int, used: int, fin: int, streak: int, best: int, lastWin: int, wins: int) {
+    var g: int = 0
     wordsRec = wordsBlank(id)
+    while g < used * 5 {
+        wordsRec[wOffGuesses + g] = 'a'
+        g = g + 1
+    }
     wordsRec.setWordAt(wOffDay, day)
     wordsRec[wOffState] = char(state)
     wordsRec[wOffUsed] = char(used)
@@ -260,6 +265,46 @@ func testRendering() {
     expect(cells[0] == "A" and cells[2] == "." and cells[3] == "D", "letters, ruled-out dots, untried letters")
 }
 
+func testHardening() {
+    var f: filehandle
+    var bad: text
+    // a hand-edited answer line is not an answer (never reaches wordScore)
+    expect(writeFile("caps.txt", "Crane\x0Dabbey\x0D"), "write answers with a capital")
+    expect(wordsAnswerFor("caps.txt", 1) == "", "capitalised answer refused")
+    expect(wordsAnswerFor("caps.txt", 2) == "abbey", "clean answer still read")
+
+    // a corrupt record loads with its game reset and its totals kept
+    bad = wordsBlank(21)
+    bad.setWordAt(wOffDay, 3)
+    bad[wOffState] = char(wordsPlaying)
+    bad[wOffUsed] = char(9)
+    bad.setWordAt(wOffWins, 5)
+    f = file.create("corrupt.dat", "BINA", "68BB")
+    expect(f.writeAt(0, bad), "write a record with used = 9")
+    bad = wordsBlank(22)
+    bad.setWordAt(wOffDay, 3)
+    bad[wOffState] = char(wordsPlaying)
+    bad[wOffUsed] = char(1)
+    expect(f.writeAt(wordsRecSize, bad), "write a record with a zero guess byte")
+    f.close()
+    expect(wordsLoad("corrupt.dat", 21) == 0, "corrupt record still found")
+    expect(wordsRec.wordAt(wOffDay) == 0 and wordsRec.wordAt(wOffWins) == 5, "used > 6: game reset, totals kept")
+    wordsBeginDay(3)
+    expect(int(wordsRec[wOffUsed]) == 0 and int(wordsRec[wOffState]) == wordsPlaying, "a fresh game after the reset")
+    wordsLoad("corrupt.dat", 22)
+    expect(wordsRec.wordAt(wOffDay) == 0, "non-letter guess byte: game reset")
+
+    // the append slot is known before writing, so a failed write can't orphan it
+    expect(wordsSlot("noslot.dat") == 0, "no file: slot 0")
+    expect(wordsSlot("corrupt.dat") == 2 * wordsRecSize, "slot after the whole records")
+    f = file.open("corrupt.dat")
+    bad.clear()
+    bad.append("torn")
+    expect(f.writeAt(f.size(), bad), "torn tail")
+    f.close()
+    expect(wordsSlot("corrupt.dat") == 2 * wordsRecSize, "slot ignores a torn tail")
+}
+
 on App.startCLI(args: list of string) {
     testScoring()
     testShape()
@@ -268,6 +313,7 @@ on App.startCLI(args: list of string) {
     testRecord()
     testBoards()
     testRendering()
+    testHardening()
     if failures > 0 {
         log("words-test: FAILED")
         quit 1

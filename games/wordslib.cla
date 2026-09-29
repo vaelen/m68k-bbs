@@ -188,7 +188,9 @@ func wordsFind(path: string, w: string): bool {
     return false
 }
 
-// Puzzle `day` (1-based) is line (day - 1) mod count.
+// Puzzle `day` (1-based) is line (day - 1) mod count; "" when that
+// line isn't five lowercase letters (a hand edit, a read error), so
+// nothing unchecked ever reaches wordScore.
 func wordsAnswerFor(path: string, day: int): string {
     var f: filehandle = file.open(path)
     var n: int
@@ -197,6 +199,7 @@ func wordsAnswerFor(path: string, day: int): string {
     n = wordsCountOpen(f)
     if n > 0 { w = wordsLineAt(f, (day - 1) mod n) }
     f.close()
+    if not wordsIsWord(w) { return "" }
     return w
 }
 
@@ -261,6 +264,7 @@ func wordsLoad(path: string, userId: int): int {
                 wordsRec.clear()
                 wordsRec.append(buf[i, wordsRecSize])
                 f.close()
+                if not wordsGameSane() { wordsRec.setWordAt(wOffDay, 0) }
                 return pos + i
             }
             i = i + wordsRecSize
@@ -269,6 +273,19 @@ func wordsLoad(path: string, userId: int): int {
     }
     f.close()
     return -1
+}
+
+// Where the next new record goes: after the last whole record, over
+// any torn tail. Callers adopt this offset BEFORE writing, so a failed
+// write or flush retries the same slot instead of appending a second
+// record for the same player.
+func wordsSlot(path: string): int {
+    var f: filehandle = file.open(path)
+    var n: int
+    if f == nil { return 0 }
+    n = (f.size() / wordsRecSize) * wordsRecSize
+    f.close()
+    return n
 }
 
 // Write wordsRec at `at`, or append it (over any torn tail) when
@@ -285,6 +302,23 @@ func wordsSave(path: string, at: int): int {
     f.close()
     if not ok { return -1 }
     return pos
+}
+
+// Whether wordsRec's game fields can be drawn and played on: a
+// hand-edited or torn record would otherwise index out of range in
+// wordScore or past the record. A failing record gets day 0, so
+// wordsBeginDay starts a fresh game; the totals are kept.
+func wordsGameSane(): bool {
+    var used: int = int(wordsRec[wOffUsed])
+    var state: int = int(wordsRec[wOffState])
+    var i: int = 0
+    if used > wordsMaxGuesses or state > wordsLost { return false }
+    if state == wordsPlaying and used >= wordsMaxGuesses { return false }
+    while i < used * 5 {
+        if wordsRec[wOffGuesses + i] < 'a' or wordsRec[wOffGuesses + i] > 'z' { return false }
+        i = i + 1
+    }
+    return true
 }
 
 // Start a fresh game for `day` unless wordsRec already holds it.

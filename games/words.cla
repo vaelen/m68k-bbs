@@ -33,6 +33,12 @@ func wordsStart(gameId: int) {
         return
     }
     wordsAnswer = wordsAnswerFor(wordsAnswerFile, wordsDayNum)
+    if wordsAnswer == "" {
+        log("Daily Word: line " + intStr(wordsDayNum) + " of " + wordsAnswerFile + " is not five lowercase letters")
+        sendLine("Daily Word is not set up.")
+        gotoScreen("games")
+        return
+    }
     wordsAt = wordsLoad(wordsStatsPath(false), user.id)
     wordsBeginDay(wordsDayNum)
     sendTitleBox("Daily Word #" + intStr(wordsDayNum))
@@ -109,7 +115,6 @@ func wordsPrompt() {
 
 func wordsGuessInput(input: string) {
     var g: string = wordsLower(trimStr(input))
-    var at: int
     if g == "" {
         gotoScreen("games")
         return
@@ -125,11 +130,9 @@ func wordsGuessInput(input: string) {
         return
     }
     wordsAddGuess(g, wordsAnswer, now())
-    at = wordsSave(wordsStatsPath(true), wordsAt)
-    if at < 0 {
+    if wordsAt < 0 { wordsAt = wordsSlot(wordsStatsPath(true)) }
+    if wordsSave(wordsStatsPath(true), wordsAt) < 0 {
         log("Daily Word: stats write failed: " + lastError.message)
-    } else {
-        wordsAt = at
     }
     wordsDrawGuess(int(wordsRec[wOffUsed]) - 1)
     wordsDrawAlphabet()
