@@ -228,6 +228,38 @@ func testBoards() {
     expect(today.count == 0 and streaks.count == 0, "no players yet")
 }
 
+func testRendering() {
+    var states: string
+    var cells: list of string
+    terminal = new Terminal
+    expect(wordsPaint('A', 'G') == "A", "no color: plain letter")
+    expect(wordsMarkText("G.Y..") == "  ^ . ? . .", "marker row")
+
+    terminal.color = true
+    terminal.ansi = true
+    terminal.type = ANSI
+    expect(wordsPaint('A', 'G') == backgroundSeq(Green) + colorSeq(Black) + "A" + clearBackgroundSeq + clearColorSeq, "ANSI right spot")
+    expect(wordsPaint('B', 'Y') == backgroundSeq(Yellow) + colorSeq(Black) + "B" + clearBackgroundSeq + clearColorSeq, "ANSI elsewhere")
+    expect(wordsPaint('C', '.') == colorSeq(BrightBlack) + "C" + clearColorSeq, "ANSI not in word")
+
+    terminal.type = PETSCII
+    terminal.ansi = false
+    expect(wordsPaint('A', 'G') == reverseVideo(true) + fg(Green) + "A" + reverseVideo(false) + fgOff(), "PETSCII right spot")
+
+    wordsRec = wordsBlank(1)
+    wordsBeginDay(1)
+    wordsAddGuess("crane", "abbey", 1)
+    wordsAddGuess("babes", "abbey", 2)
+    states = wordsLetterStates("abbey")
+    expect(states[0] == 'Y' and states[1] == 'G' and states[2] == '.', "a Y, b G, c ruled out")
+    expect(states[4] == 'G' and states[18] == '.' and states[25] == ' ', "e G, s ruled out, z untried")
+
+    terminal = new Terminal
+    wordsAlphabetCells(states, 0, 5, cells)
+    expect(cells.count == 5, "one cell per letter")
+    expect(cells[0] == "A" and cells[2] == "." and cells[3] == "D", "letters, ruled-out dots, untried letters")
+}
+
 on App.startCLI(args: list of string) {
     testScoring()
     testShape()
@@ -235,6 +267,7 @@ on App.startCLI(args: list of string) {
     testFiles()
     testRecord()
     testBoards()
+    testRendering()
     if failures > 0 {
         log("words-test: FAILED")
         quit 1

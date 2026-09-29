@@ -441,3 +441,95 @@ func wordsBoards(path: string, today: int, me: WordsRow, todayTop: list of Words
     }
     f.close()
 }
+
+// --- Rendering ---------------------------------------------------------
+// Color terminals color each letter; the rest get a marker row under
+// the guess (wordsMarkText). The helpers return "" when a terminal
+// lacks the feature, so one path serves every type.
+
+// One letter in its mark's colors (m: G, Y or .).
+func wordsPaint(c: char, m: char): string {
+    var l: string = string(c)
+    if not terminal.color { return l }
+    if terminal.type == PETSCII {
+        switch m {
+        case 'G' { return reverseVideo(true) + fg(Green) + l + reverseVideo(false) + fgOff() }
+        case 'Y' { return reverseVideo(true) + fg(Yellow) + l + reverseVideo(false) + fgOff() }
+        }
+        return fg(BrightBlack) + l + fgOff()
+    }
+    switch m {
+    case 'G' { return bg(Green) + fg(Black) + l + bgOff() + fgOff() }
+    case 'Y' { return bg(Yellow) + fg(Black) + l + bgOff() + fgOff() }
+    }
+    return fg(BrightBlack) + l + fgOff()
+}
+
+// "  ^ ? . . ^", aligned under a "  C R A N E" guess row.
+func wordsMarkText(marks: string): string {
+    var s: string = " "
+    var i: int = 0
+    while i < marks.length {
+        switch marks[i] {
+        case 'G' { s = s + " ^" }
+        case 'Y' { s = s + " ?" }
+        else     { s = s + " ." }
+        }
+        i = i + 1
+    }
+    return s
+}
+
+func wordsStateRank(c: char): int {
+    switch c {
+    case '.' { return 1 }
+    case 'Y' { return 2 }
+    case 'G' { return 3 }
+    }
+    return 0
+}
+
+// The best mark seen for each of a..z over wordsRec's guesses:
+// ' ' untried, '.' not in the word, 'Y', 'G'.
+func wordsLetterStates(answer: string): string {
+    var states: string = ""
+    var n: int = 0
+    var i: int
+    var k: int
+    var g: string
+    var marks: string
+    while n < 26 {
+        states = states + " "
+        n = n + 1
+    }
+    n = 0
+    while n < int(wordsRec[wOffUsed]) {
+        g = wordsGuessAt(n)
+        marks = wordScore(g, answer)
+        i = 0
+        while i < 5 {
+            k = int(g[i]) - int('a')
+            if wordsStateRank(marks[i]) > wordsStateRank(states[k]) { states[k] = marks[i] }
+            i = i + 1
+        }
+        n = n + 1
+    }
+    return states
+}
+
+// One display cell per letter lo..hi-1: "." when ruled out, else
+// the capital, painted when it is in the word.
+func wordsAlphabetCells(states: string, lo: int, hi: int, out: list of string) {
+    var k: int = lo
+    var c: char
+    out.clear()
+    while k < hi {
+        c = char(int('A') + k)
+        switch states[k] {
+        case ' ' { out.add(string(c)) }
+        case '.' { out.add(".") }
+        else     { out.add(wordsPaint(c, states[k])) }
+        }
+        k = k + 1
+    }
+}
