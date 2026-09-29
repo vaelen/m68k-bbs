@@ -348,6 +348,14 @@ func threadPosts(root: int, ids: list of int) {
     }
 }
 
+// False when the Mac's clock reads before 1972 (now() >= 0): every
+// real date is past the 2^31 wrap, so a cutoff from such a clock is
+// later than every post and expiry would delete them all. A System 6
+// General panel typed "26" gives 1926, which wiped the boards once.
+func clockValid(): bool {
+    return now() < 0
+}
+
 // Delete every post created before `cutoff` (Mac-epoch seconds; the
 // caller computes now() - keepDays * 86400). Walks the Created index
 // ascending and stops at the first date past the cutoff, so the cost

@@ -165,6 +165,7 @@ func maintStart(): bool {
     if maintaining { return false }
     maintBegin(false)
     maintLog("Starting.")
+    if not clockValid() { maintLog("Clock reads before 1972 - skipping expiry. Set the date.") }
     return true
 }
 
@@ -263,7 +264,7 @@ func maintOpenItem() {
         maintStep = msDone
         return
     }
-    if board.keepDays <= 0 {
+    if board.keepDays <= 0 or not clockValid() {
         maintHeapBegin()
         return
     }

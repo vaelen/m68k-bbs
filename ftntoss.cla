@@ -130,7 +130,7 @@ func tossEchomail(netId: int) {
         tossUnknown = tossUnknown + 1
         return
     }
-    if tagMatchKeepDays > 0 and tossCreated() < now() - tagMatchKeepDays * 86400 {
+    if tagMatchKeepDays > 0 and clockValid() and tossCreated() < now() - tagMatchKeepDays * 86400 {
         tossExpired = tossExpired + 1     // past the board's expiry: never stored
         return
     }
