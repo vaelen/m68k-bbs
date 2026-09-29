@@ -1,0 +1,323 @@
+// Copyright 2026, Andrew C. Young <andrew@vaelen.org>
+// SPDX-License-Identifier: MIT
+
+// Daily Word, the screens: a built-in game (GameType Builtin, module
+// "words"). Everyone gets the same word each day; six guesses; every
+// guess is saved before it is drawn, so hanging up never resets a
+// puzzle. docs/daily-word.md.
+
+include "wordslib.cla"
+
+var wordsGameId: int
+var wordsAt: int              // the caller's record offset in _stats, -1 = not written yet
+var wordsDayNum: int
+var wordsAnswer: string(5)
+
+func wordsStatsPath(write: bool): string {
+    return gameDataPath(wordsGameId, 0, "_stats", write, wordsFolder)
+}
+
+func wordsStart(gameId: int) {
+    var one: int = wordsIsoDays(config.wordsDayOne)
+    wordsGameId = gameId
+    if one < 0 or wordsFileCount(wordsAnswerFile) == 0 or wordsFileCount(wordsListFile) == 0 {
+        log("Daily Word: check wordsDayOne in Config.txt and the " + wordsFolder + " files")
+        sendLine("Daily Word is not set up.")
+        gotoScreen("games")
+        return
+    }
+    wordsDayNum = wordsStampDays(dateTimeStr(now())) - one + 1
+    if wordsDayNum < 1 {
+        sendLine("Daily Word starts on " + config.wordsDayOne + ".")
+        gotoScreen("games")
+        return
+    }
+    wordsAnswer = wordsAnswerFor(wordsAnswerFile, wordsDayNum)
+    wordsAt = wordsLoad(wordsStatsPath(false), user.id)
+    wordsBeginDay(wordsDayNum)
+    sendTitleBox("Daily Word #" + intStr(wordsDayNum))
+    if wordsRec.wordAt(wOffPlayed) == 0 and int(wordsRec[wOffUsed]) == 0 { wordsLegend() }
+    wordsDrawBoard()
+    if int(wordsRec[wOffState]) == wordsPlaying {
+        user.screen = "wordsguess"
+        displayPrompt()
+        return
+    }
+    wordsFinish()
+}
+
+func wordsLegend() {
+    sendLine("Guess the five-letter word in six tries.")
+    if terminal.color {
+        sendLine(wordsPaint('A', 'G') + " right spot")
+        sendLine(wordsPaint('B', 'Y') + " in the word, elsewhere")
+        sendLine(wordsPaint('C', '.') + " not in the word")
+    } else {
+        sendLine("^ right spot, ? elsewhere, . not in it")
+    }
+    sendLine("Enter on an empty line leaves; come back to finish.")
+    sendLine("")
+}
+
+func wordsDrawGuess(n: int) {
+    var g: string = wordsGuessAt(n)
+    var marks: string = wordScore(g, wordsAnswer)
+    var j: int = 0
+    sendData(" ")
+    while j < 5 {
+        sendData(" " + wordsPaint(char(int(g[j]) - 32), marks[j]))
+        j = j + 1
+    }
+    sendLine("")
+    if not terminal.color { sendLine(wordsMarkText(marks)) }
+}
+
+func wordsSendCells(states: string, lo: int, hi: int) {
+    var cells: list of string
+    wordsAlphabetCells(states, lo, hi, cells)
+    sendData(" ")
+    for c in cells {
+        sendData(" " + c)
+    }
+    sendLine("")
+}
+
+func wordsDrawAlphabet() {
+    var states: string = wordsLetterStates(wordsAnswer)
+    sendLine("")
+    if terminal.columns < minimumWideTerminalWidth {
+        wordsSendCells(states, 0, 13)
+        wordsSendCells(states, 13, 26)
+    } else {
+        wordsSendCells(states, 0, 26)
+    }
+    sendLine("")
+}
+
+func wordsDrawBoard() {
+    var n: int = 0
+    while n < int(wordsRec[wOffUsed]) {
+        wordsDrawGuess(n)
+        n = n + 1
+    }
+    if n > 0 { wordsDrawAlphabet() }
+}
+
+func wordsPrompt() {
+    sendData("Guess " + intStr(int(wordsRec[wOffUsed]) + 1) + "/" + intStr(wordsMaxGuesses) + ": ")
+}
+
+func wordsGuessInput(input: string) {
+    var g: string = wordsLower(trimStr(input))
+    var at: int
+    if g == "" {
+        gotoScreen("games")
+        return
+    }
+    if not wordsIsWord(g) {
+        sendLine("Five letters, please.")
+        displayPrompt()
+        return
+    }
+    if not wordsFind(wordsListFile, g) {
+        sendLine("Not in the word list.")
+        displayPrompt()
+        return
+    }
+    wordsAddGuess(g, wordsAnswer, now())
+    at = wordsSave(wordsStatsPath(true), wordsAt)
+    if at < 0 {
+        log("Daily Word: stats write failed: " + lastError.message)
+    } else {
+        wordsAt = at
+    }
+    wordsDrawGuess(int(wordsRec[wOffUsed]) - 1)
+    wordsDrawAlphabet()
+    if int(wordsRec[wOffState]) == wordsPlaying {
+        displayPrompt()
+        return
+    }
+    wordsFinish()
+}
+
+func wordsFinish() {
+    if int(wordsRec[wOffState]) == wordsWon {
+        sendLine("Solved in " + intStr(int(wordsRec[wOffUsed])) + "/" + intStr(wordsMaxGuesses) + "!")
+    } else {
+        sendLine("The word was " + wordsUpper(wordsAnswer) + ".")
+    }
+    wordsDrawStats()
+    showPause("wordsboards")
+}
+
+func wordsBar(n: int): string {
+    var s: string = ""
+    var i: int = 0
+    while i < n {
+        s = s + "#"
+        i = i + 1
+    }
+    return s
+}
+
+func wordsDrawStats() {
+    var played: int = wordsRec.wordAt(wOffPlayed)
+    var wins: int = wordsRec.wordAt(wOffWins)
+    var pct: int = 0
+    var most: int = 1
+    var wide: bool = terminal.columns >= minimumWideTerminalWidth
+    var room: int = terminal.columns - 10
+    var i: int = 0
+    var n: int
+    var line: string
+    if played > 0 { pct = wins * 100 / played }
+    if wide { room = terminal.columns - 22 }
+    while i < wordsMaxGuesses {
+        if wordsRec.wordAt(wOffDist + 2 * i) > most { most = wordsRec.wordAt(wOffDist + 2 * i) }
+        i = i + 1
+    }
+    sendLine("")
+    sendLine("Played " + intStr(played) + "  Win% " + intStr(pct) + "  Streak " + intStr(wordsLiveStreak(wordsRec.wordAt(wOffStreak), wordsRec.wordAt(wOffLastWin), wordsDayNum)) + "  Best " + intStr(wordsRec.wordAt(wOffBest)))
+    i = 0
+    while i < wordsMaxGuesses {
+        n = wordsRec.wordAt(wOffDist + 2 * i)
+        line = intStr(i + 1) + " | " + wordsBar(n * room / most) + " " + intStr(n)
+        if wide and int(wordsRec[wOffState]) == wordsWon and int(wordsRec[wOffUsed]) == i + 1 { line = line + "  <- today" }
+        sendLine(line)
+        i = i + 1
+    }
+}
+
+// --- Leaderboards ------------------------------------------------------
+
+// Today: # | Name | Guesses (79), Name | Guesses (39).
+func wordsTodayWidths(w: list of int) {
+    w.clear()
+    if terminal.columns < minimumWideTerminalWidth {
+        w.add(25)
+        w.add(7)
+        return
+    }
+    w.add(4)
+    w.add(58)
+    w.add(7)
+}
+
+// Streaks: # | Name | Streak | Best | Played | Win% (79), Name | Streak (39).
+func wordsStreakWidths(w: list of int) {
+    w.clear()
+    if terminal.columns < minimumWideTerminalWidth {
+        w.add(25)
+        w.add(7)
+        return
+    }
+    w.add(4)
+    w.add(33)
+    w.add(6)
+    w.add(6)
+    w.add(6)
+    w.add(5)
+}
+
+func wordsSendRow(cells: list of string, w: list of int, mine: bool) {
+    if mine {
+        sendLine(reverseVideo(true) + rowLine(cells, w) + reverseVideo(false))
+    } else {
+        sendLine(rowLine(cells, w))
+    }
+}
+
+func wordsSendEmpty(msg: string, w: list of int) {
+    var span: list of int
+    var cells: list of string
+    span.add(spanWidth(w))
+    cells.add(msg)
+    sendLine(rowLine(cells, span))
+    sendRule(BottomLeft, BottomCenter, BottomRight, span)
+}
+
+func wordsDrawToday(top: list of WordsRow, me: WordsRow) {
+    var w: list of int
+    var h: list of string
+    var cells: list of string
+    var i: int = 0
+    var name: string
+    var shown: bool = false
+    wordsTodayWidths(w)
+    if w.count == 3 { h.add("#") }
+    h.add("Name")
+    h.add("Guesses")
+    sendTableHeader("Today #" + intStr(wordsDayNum), h, w)
+    if top.count == 0 {
+        wordsSendEmpty("No solvers yet.", w)
+        return
+    }
+    while i < top.count {
+        name = userNameById(top[i].userId)
+        if name != "" {
+            cells.clear()
+            if w.count == 3 { cells.add(intStr(i + 1)) }
+            cells.add(name)
+            cells.add(intStr(top[i].used))
+            wordsSendRow(cells, w, top[i].userId == me.userId)
+            if top[i].userId == me.userId { shown = true }
+        }
+        i = i + 1
+    }
+    sendRule(BottomLeft, BottomCenter, BottomRight, w)
+    if wordsMyTodayRank > 0 and not shown { sendLine("You: #" + intStr(wordsMyTodayRank) + ", " + intStr(me.used) + " guesses") }
+}
+
+func wordsDrawStreaks(top: list of WordsRow, me: WordsRow) {
+    var w: list of int
+    var h: list of string
+    var cells: list of string
+    var i: int = 0
+    var name: string
+    var shown: bool = false
+    var pct: int
+    wordsStreakWidths(w)
+    if w.count == 6 { h.add("#") }
+    h.add("Name")
+    h.add("Streak")
+    if w.count == 6 {
+        h.add("Best")
+        h.add("Played")
+        h.add("Win%")
+    }
+    sendTableHeader("Streaks", h, w)
+    if top.count == 0 {
+        wordsSendEmpty("No winners yet.", w)
+        return
+    }
+    while i < top.count {
+        name = userNameById(top[i].userId)
+        if name != "" {
+            cells.clear()
+            if w.count == 6 { cells.add(intStr(i + 1)) }
+            cells.add(name)
+            cells.add(intStr(top[i].streak))
+            if w.count == 6 {
+                pct = 0
+                if top[i].played > 0 { pct = top[i].wins * 100 / top[i].played }
+                cells.add(intStr(top[i].best))
+                cells.add(intStr(top[i].played))
+                cells.add(intStr(pct))
+            }
+            wordsSendRow(cells, w, top[i].userId == me.userId)
+            if top[i].userId == me.userId { shown = true }
+        }
+        i = i + 1
+    }
+    sendRule(BottomLeft, BottomCenter, BottomRight, w)
+    if wordsMyStreakRank > 0 and not shown { sendLine("You: #" + intStr(wordsMyStreakRank) + ", streak " + intStr(me.streak)) }
+}
+
+func wordsDrawBoards() {
+    var todayTop: list of WordsRow
+    var streakTop: list of WordsRow
+    var me: WordsRow = wordsRowFrom(wordsRec, 0, wordsDayNum)
+    wordsBoards(wordsStatsPath(false), wordsDayNum, me, todayTop, streakTop)
+    wordsDrawToday(todayTop, me)
+    wordsDrawStreaks(streakTop, me)
+}

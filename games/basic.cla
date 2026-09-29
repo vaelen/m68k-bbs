@@ -377,8 +377,3 @@ func basicScreenInput(input: string) {
     }
     basicPump()
 }
-
-func wordsStart(gameId: int) {    // replaced by games/words.cla
-    sendLine("Daily Word is coming soon.")
-    gotoScreen("games")
-}

@@ -31,6 +31,7 @@ include "wall.cla"
 include "motd.cla"
 include "screens.cla"
 include "games/basic.cla"
+include "games/words.cla"
 include "xmodem.cla"
 include "zmodem.cla"
 include "ftntoss.cla"
@@ -581,7 +582,7 @@ func lineScreen(s: string): bool {
     case "upname", "updesc", "editfiledesc" { return true }
     case "shownet", "editnetid", "editnetval", "delnetid", "newnetname", "areafixreq" { return true }
     case "wallentry" { return true }
-    case "basicline", "gamenum" { return true }
+    case "basicline", "gamenum", "wordsguess" { return true }
     }
     return false
 }
@@ -689,6 +690,7 @@ func displayPrompt() {
     case "wallask"   { sendData("Sign the wall? (Y/[N]) ") }
     case "wallentry" { sendData("Your message (" + intStr(wallMessageMax) + " chars max): ") }
     case "gamenum"   { sendData("Game number: ") }
+    case "wordsguess" { wordsPrompt() }
     case "basic", "basicline" { }     // the interpreter prints its own prompts
     }
 }
@@ -818,6 +820,7 @@ func processInput(input: string) {
     case "main"        { mainChoice(input) }
     case "games"       { gamesChoice(input) }
     case "gamenum"     { gameNumberInput(input) }
+    case "wordsguess"  { wordsGuessInput(input) }
     case "basic", "basicline" { basicScreenInput(input) }
     case "sysop"       { sysopChoice(input) }
     case "sysopboards" { sysopBoardsChoice(input) }
@@ -1112,6 +1115,11 @@ func pauseChoice(input: string) {
         startWall()
     }
     case "counts" { gotoScreen("main") }
+    case "wordsboards" {
+        wordsDrawBoards()
+        showPause("games")
+    }
+    case "games" { gotoScreen("games") }
     else          { gotoScreen("main") }
     }
 }
