@@ -20,7 +20,7 @@ record ID is the game ID and the menu order. 256-byte records:
 | 193 | flags, 1 byte: bit 0 = enabled (listed on the Games menu) |
 | 194+ | reserved, zero |
 
-`enum GameType { Basic, ZCode3, ZCode5, Native, Hermes22, Hermes31, Hermes35 }` — the
+`enum GameType { Basic, ZCode3, ZCode5, Native, Hermes22, Hermes31, Hermes35, Builtin }` — the
 member value is the on-disk byte, so members are appended, never
 renumbered; a byte no member owns loads as `Basic` (`gameTypeFromByte`)
 rather than raising `GameType()`'s runtime error. The type says how
@@ -28,8 +28,11 @@ the game runs and where its file lives: `Basic` = `:BASIC:<filename>`
 run by the interpreter (stage 2 below); `ZCode3`/`ZCode5` = a story
 file for the Z-machine interpreter to come; `Native` and the `Hermes*`
 versions = a code resource in `:Externals:` (stages 1 and 3, not yet
-implemented — picking one says so and returns to the menu). Folding the
-Hermes API version into the type saves a column.
+implemented — picking one says so and returns to the menu); `Builtin`
+(byte 7) = a game compiled into the app, its `filename` naming the
+module (`words` = Daily Word, `docs/daily-word.md`; the New Game
+wizard's type `I`). Folding the Hermes API version into the type saves
+a column.
 
 API, the `areasdb.cla` shape: `gamesOpen`/`gamesClose`, `createGame`,
 `loadGame(id)` into the global `game`, `saveGame`, `gameCount`,
@@ -92,7 +95,9 @@ Three stages, in development order:
    new one rebuilds the app. Needed anyway as the floor for whatever
    ships first, and the model every later stage plugs into (a game is
    a screen-state machine driven by `processInput`, like every other
-   screen).
+   screen). *Started 2026-09-29: the `Builtin` type dispatches on the
+   row's `filename` in `gameNumberInput` rather than a separate table;
+   the first is Daily Word (`docs/daily-word.md`).*
 2. **BASIC games via a native Clarus BASIC.** *Shipped 2026-08-28:
    `basic/basic.cla` and `games/basic.cla`, see `docs/basic.md`; the
    Games database replaced the folder listing on 2026-08-30.* A tokenizer plus

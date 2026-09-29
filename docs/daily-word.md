@@ -1,10 +1,10 @@
-# Daily Word — design
+# Daily Word
 
 A Wordle-style daily puzzle with leaderboards, and the first **built-in
 Clarus game** (stage 1 of `docs/games.md`). Every caller gets the same
 five-letter word each day and has six guesses. Results feed a
-per-player stats record and two leaderboards. Status: design only,
-2026-09-29.
+per-player stats record and two leaderboards. Status: implemented
+2026-09-29 (host-lane tested; not yet played in Snow).
 
 Why this game: it's turn-based, so it works over any line speed and on
 every terminal type (ANSI, VT100, ASCII, PETSCII, 40 or 80 columns).
@@ -16,9 +16,11 @@ single-line BBS.
 
 | file                     | what                                                                                     |
 |--------------------------|------------------------------------------------------------------------------------------|
-| `games/words.cla`        | the game: screens, scoring, stats file, leaderboards (~350 lines)                        |
-| `tests/words-test.cla`   | host-lane tests: scoring, day number, word lookup against a fixture list                 |
-| `scripts/wordlist.py`    | one-off generator: `~/repos/cinquel/words.c` → `Words.txt` + `Answers.txt`               |
+| `games/wordslib.cla`     | the pure parts: scoring, day number, word files, stats record, ranking, letter rendering |
+| `games/words.cla`        | the screens: guess prompt, board, personal stats, leaderboard tables                     |
+| `tests/words-test.cla`   | host-lane tests for `wordslib.cla`                                                       |
+| `scripts/wordlist.py`    | generator: `~/repos/cinquel/words.c` → `Words/Words.txt` + `Words/Answers.txt` (committed) |
+| `usersdb.cla`            | `userNameById`: a leaderboard name without `loadUser` overwriting the session user        |
 | `gamesdb.cla`            | new `GameType` member `Builtin` (byte 7, appended)                                       |
 | `games/basic.cla`        | `gameNumberInput` gets a `Builtin` case that dispatches on `game.filename`               |
 | `sysop.cla`              | the New Game wizard / edit card type prompt accepts `I` (Built-in) as well as `B`        |
@@ -88,15 +90,17 @@ era/day-of-era formula, all small positive ints), and the difference
 is the puzzle number:
 
 ```
-func civilDays(y: int, m: int, d: int): int      // days since 2000-03-01
+func civilDays(y: int, m: int, d: int): int      // days since 1970-01-01
 func wordsDay(): int                             // today - dayOne + 1
 ```
 
 "Today" comes from `dateTimeStr(now())` (`mm-dd-yy`, local time, so
 it rolls over at local midnight; the year is `2000 + yy`). The config
 value is parsed as `yyyy-mm-dd`. It works the same on both lanes, needs
-no Toolbox date calls and sidesteps `now()` being negative. A malformed
-value logs once and falls back to the default.
+no Toolbox date calls and sidesteps `now()` being negative. A value
+`wordsIsoDays` can't parse (or missing/mangled word files) logs a
+line and the game says "Daily Word is not set up." `Config.txt` only
+checks the `dddd-dd-dd` shape when it loads.
 
 - `wordsDay() < 1` → "Daily Word starts on 2026-10-01." and back to
   the menu.
@@ -288,12 +292,14 @@ finished board and the leaderboards; that is the only way to see them.
 ## Build order
 
 1. `scripts/wordlist.py` → both files; eyeball `Answers.txt`.
-2. `wordScore`, `civilDays`/`wordsDay`, `wordFind` (binary search) +
-   `tests/words-test.cla` (fixture: a 20-word sorted list).
-3. `GameType.Builtin`, the dispatch case, the wizard's `I`.
-4. The game screens and the sparse stats file (scan, append, update
-   in place); play it on the host lane.
-5. Leaderboards.
+2. `wordScore`, `civilDays`/`wordsIsoDays`/`wordsStampDays`,
+   `wordsFind` (binary search) + `tests/words-test.cla`.
+3. The sparse stats file (scan, append, update in place), then
+   leaderboard ranking and letter rendering, all in `wordslib.cla`.
+4. `GameType.Builtin`, the dispatch case, the wizard's `I`,
+   `userNameById`.
+5. The screens (`games/words.cla`). `bbs.cla` can't be built on the
+   host lane, so they're checked by the 68k build.
 6. Deploy to Snow, clean databases per CLAUDE.md, set `wordsDayOne`
    to a past date, and play a few days by moving the Mac clock
    forward (the streak and day rollover are the parts worth watching).
