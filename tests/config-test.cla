@@ -64,6 +64,15 @@ on App.startCLI(args: list of string) {
     config.maintenanceHour = 23
     expect(configSave() and configLoad() and config.maintenanceHour == 23, "save/load roundtrip")
 
+    expect(writeConfig("idleSeconds=1\n"), "write a config without day one")
+    expect(configLoad() and config.wordsDayOne == "2026-10-01", "default Daily Word day one")
+    expect(writeConfig("wordsDayOne=2026-09-15\n"), "write a day one")
+    expect(configLoad() and config.wordsDayOne == "2026-09-15", "day one parsed")
+    expect(writeConfig("wordsDayOne=Sept 15\n"), "write a malformed day one")
+    expect(configLoad() and config.wordsDayOne == "2026-10-01", "malformed day one keeps the default")
+    expect(writeConfig("wordsDayOne=2026-09-15\n"), "write a day one again")
+    expect(configLoad() and configSave() and configLoad() and config.wordsDayOne == "2026-09-15", "day one survives a save")
+
     if failures > 0 {
         log("config-test: FAILED")
         quit 1
