@@ -161,12 +161,80 @@ func testRecord() {
     expect(wordsLoad("stats.dat", 11) == 2 * wordsRecSize, "third player found")
 }
 
+// One player record straight into `path`.
+func addPlayer(path: string, id: int, day: int, state: int, used: int, fin: int, streak: int, best: int, lastWin: int, wins: int) {
+    wordsRec = wordsBlank(id)
+    wordsRec.setWordAt(wOffDay, day)
+    wordsRec[wOffState] = char(state)
+    wordsRec[wOffUsed] = char(used)
+    wordsRec.setIntAt(wOffFinished, fin)
+    wordsRec.setWordAt(wOffStreak, streak)
+    wordsRec.setWordAt(wOffBest, best)
+    wordsRec.setWordAt(wOffLastWin, lastWin)
+    wordsRec.setWordAt(wOffWins, wins)
+    wordsRec.setWordAt(wOffPlayed, wins)
+    wordsSave(path, -1)
+}
+
+func testBoards() {
+    var today: list of WordsRow
+    var streaks: list of WordsRow
+    var me: WordsRow
+    var i: int = 0
+    // day 10. id: solved today in N guesses at time T, stored streak/best/lastWin
+    addPlayer("board.dat", 1, 10, wordsWon, 4, 50, 3, 3, 10, 3)
+    addPlayer("board.dat", 2, 10, wordsWon, 3, 90, 7, 7, 10, 7)
+    addPlayer("board.dat", 3, 10, wordsWon, 3, 60, 1, 9, 10, 20)
+    addPlayer("board.dat", 4, 10, wordsLost, 6, 70, 0, 2, 8, 5)     // lost today, best 2
+    addPlayer("board.dat", 5, 9, wordsWon, 2, 10, 5, 5, 9, 5)       // won yesterday: live streak 5
+    addPlayer("board.dat", 6, 7, wordsWon, 2, 10, 8, 8, 7, 8)       // stale: live streak 0, best 8
+    addPlayer("board.dat", 7, 10, wordsPlaying, 2, 0, 0, 0, 0, 0)   // mid-game, never won: on neither
+
+    wordsLoad("board.dat", 1)
+    me = wordsRowFrom(wordsRec, 0, 10)
+    wordsBoards("board.dat", 10, me, today, streaks)
+
+    expect(today.count == 3, "today: the three winners only")
+    expect(today[0].userId == 3 and today[1].userId == 2 and today[2].userId == 1, "today: fewer guesses, then earlier finish")
+    expect(wordsMyTodayRank == 3, "my rank today")
+
+    expect(streaks.count == 6, "streaks: everyone with a live streak or a best")
+    expect(streaks[0].userId == 2, "longest live streak first")
+    expect(streaks[1].userId == 5, "a win yesterday keeps the streak live")
+    expect(streaks[2].userId == 1, "then 3")
+    expect(streaks[3].userId == 3, "live 1 ties broken by best")
+    expect(streaks[4].userId == 6 and streaks[4].streak == 0, "stale streak reads 0, ranked by best")
+    expect(streaks[5].userId == 4, "lost today, best 2")
+    expect(wordsMyStreakRank == 3, "my streak rank")
+
+    // top-N cut: 12 more winners, the list stops at 10 and my rank still counts
+    i = 0
+    while i < 12 {
+        addPlayer("board.dat", 100 + i, 10, wordsWon, 1, i, 1, 1, 10, 1)
+        i = i + 1
+    }
+    wordsBoards("board.dat", 10, me, today, streaks)
+    expect(today.count == wordsTopN, "today capped at 10")
+    expect(wordsMyTodayRank == 15, "rank counts past the cut")
+
+    // a player with no record is on neither board
+    wordsLoad("board.dat", 999)
+    me = wordsRowFrom(wordsRec, 0, 10)
+    wordsBoards("board.dat", 10, me, today, streaks)
+    expect(wordsMyTodayRank == 0 and wordsMyStreakRank == 0, "no record, no rank")
+
+    // no file at all
+    wordsBoards("none.dat", 10, me, today, streaks)
+    expect(today.count == 0 and streaks.count == 0, "no players yet")
+}
+
 on App.startCLI(args: list of string) {
     testScoring()
     testShape()
     testDays()
     testFiles()
     testRecord()
+    testBoards()
     if failures > 0 {
         log("words-test: FAILED")
         quit 1

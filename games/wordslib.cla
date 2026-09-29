@@ -340,3 +340,104 @@ func wordsLiveStreak(streak: int, lastWin: int, today: int): int {
     if lastWin > 0 and lastWin >= today - 1 { return streak }
     return 0
 }
+
+// --- Leaderboards ------------------------------------------------------
+// One pass over the stats file keeps the top 10 of each board by
+// insertion and counts who ranks above the caller.
+
+const wordsTopN: int = 10
+
+record WordsRow {
+    userId: int
+    used: int
+    finishedAt: int
+    streak: int           // live
+    best: int
+    played: int
+    wins: int
+    solvedToday: bool
+}
+
+var wordsMyTodayRank: int     // 1-based; 0 = not on the board
+var wordsMyStreakRank: int
+
+func wordsRowFrom(buf: text, i: int, today: int): WordsRow {
+    var r: WordsRow
+    r.userId = buf.intAt(i + wOffUser)
+    r.used = int(buf[i + wOffUsed])
+    r.finishedAt = buf.intAt(i + wOffFinished)
+    r.streak = wordsLiveStreak(buf.wordAt(i + wOffStreak), buf.wordAt(i + wOffLastWin), today)
+    r.best = buf.wordAt(i + wOffBest)
+    r.played = buf.wordAt(i + wOffPlayed)
+    r.wins = buf.wordAt(i + wOffWins)
+    r.solvedToday = buf.wordAt(i + wOffDay) == today and int(buf[i + wOffState]) == wordsWon
+    return r
+}
+
+// Today: fewer guesses, then the earlier finish (same-day now()
+// values order correctly). Streaks: live streak, best, then wins.
+func wordsBetter(a: WordsRow, b: WordsRow, byStreak: bool): bool {
+    if byStreak {
+        if a.streak != b.streak { return a.streak > b.streak }
+        if a.best != b.best { return a.best > b.best }
+        return a.wins > b.wins
+    }
+    if a.used != b.used { return a.used < b.used }
+    return a.finishedAt < b.finishedAt
+}
+
+func wordsInsert(top: list of WordsRow, r: WordsRow, byStreak: bool) {
+    var i: int = top.count
+    top.add(r)
+    while i > 0 and wordsBetter(r, top[i - 1], byStreak) {
+        top[i] = top[i - 1]
+        i = i - 1
+    }
+    top[i] = r
+    if top.count > wordsTopN { top.pop() }
+}
+
+func wordsOnStreakBoard(r: WordsRow): bool {
+    return r.streak > 0 or r.best > 0
+}
+
+// ponytail: ranks count records of deleted accounts (the draw skips
+// their names); filter with userNameById in the scan if that shows.
+func wordsBoards(path: string, today: int, me: WordsRow, todayTop: list of WordsRow, streakTop: list of WordsRow) {
+    var f: filehandle = file.open(path)
+    var buf: text
+    var pos: int = 0
+    var end: int
+    var i: int
+    var r: WordsRow
+    todayTop.clear()
+    streakTop.clear()
+    wordsMyTodayRank = 0
+    wordsMyStreakRank = 0
+    if me.solvedToday { wordsMyTodayRank = 1 }
+    if wordsOnStreakBoard(me) { wordsMyStreakRank = 1 }
+    if f == nil { return }
+    end = (f.size() / wordsRecSize) * wordsRecSize
+    while pos < end {
+        if not f.readAt(pos, wordsChunk, buf) { break }
+        i = 0
+        while i + wordsRecSize <= buf.length and pos + i < end {
+            r = wordsRowFrom(buf, i, today)
+            if r.solvedToday {
+                wordsInsert(todayTop, r, false)
+                if wordsMyTodayRank > 0 and r.userId != me.userId and wordsBetter(r, me, false) {
+                    wordsMyTodayRank = wordsMyTodayRank + 1
+                }
+            }
+            if wordsOnStreakBoard(r) {
+                wordsInsert(streakTop, r, true)
+                if wordsMyStreakRank > 0 and r.userId != me.userId and wordsBetter(r, me, true) {
+                    wordsMyStreakRank = wordsMyStreakRank + 1
+                }
+            }
+            i = i + wordsRecSize
+        }
+        pos = pos + wordsChunk
+    }
+    f.close()
+}
