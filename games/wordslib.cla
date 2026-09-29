@@ -128,3 +128,74 @@ func wordsStampDays(stamp: string): int {
     if m < 1 or m > 12 or d < 1 or d > 31 or y < 0 { return -1 }
     return civilDays(2000 + y, m, d)
 }
+
+// --- Word files --------------------------------------------------------
+// Fixed 6-byte lines (five lowercase letters + CR), so line n is at
+// byte 6 * n and nothing is ever loaded whole.
+
+const wordsFolder: string = ":Words"
+const wordsListFile: string = ":Words:Words.txt"      // every allowed guess, sorted
+const wordsAnswerFile: string = ":Words:Answers.txt"  // one answer per day, shuffled
+const wordsLineSize: int = 6
+
+// Lines in an open word file, or 0 when it is empty or mangled.
+func wordsCountOpen(f: filehandle): int {
+    var n: int = f.size()
+    if n == 0 or n mod wordsLineSize != 0 { return 0 }
+    return n / wordsLineSize
+}
+
+func wordsFileCount(path: string): int {
+    var f: filehandle = file.open(path)
+    var n: int
+    if f == nil { return 0 }
+    n = wordsCountOpen(f)
+    f.close()
+    return n
+}
+
+// Line i without its CR, or "" on a read error.
+func wordsLineAt(f: filehandle, i: int): string {
+    var t: text
+    if not f.readAt(i * wordsLineSize, 5, t) { return "" }
+    if t.length != 5 { return "" }
+    return t[0, 5]
+}
+
+// Binary search: ~13 six-byte reads for the full list.
+func wordsFind(path: string, w: string): bool {
+    var f: filehandle = file.open(path)
+    var lo: int = 0
+    var hi: int
+    var mid: int
+    var s: string
+    if f == nil { return false }
+    hi = wordsCountOpen(f) - 1
+    while lo <= hi {
+        mid = (lo + hi) / 2
+        s = wordsLineAt(f, mid)
+        if s == w {
+            f.close()
+            return true
+        }
+        if s < w {
+            lo = mid + 1
+        } else {
+            hi = mid - 1
+        }
+    }
+    f.close()
+    return false
+}
+
+// Puzzle `day` (1-based) is line (day - 1) mod count.
+func wordsAnswerFor(path: string, day: int): string {
+    var f: filehandle = file.open(path)
+    var n: int
+    var w: string = ""
+    if f == nil { return "" }
+    n = wordsCountOpen(f)
+    if n > 0 { w = wordsLineAt(f, (day - 1) mod n) }
+    f.close()
+    return w
+}

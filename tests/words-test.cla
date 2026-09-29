@@ -54,10 +54,39 @@ func testDays() {
     expect(wordsStampDays("garbage") == -1, "bad stamp")
 }
 
+func writeFile(path: string, body: string): bool {
+    var f: filehandle = file.create(path, "TEXT", "ttxt")
+    var ok: bool
+    if f == nil { return false }
+    ok = f.writeAt(0, body)
+    f.close()
+    return ok
+}
+
+func testFiles() {
+    expect(writeFile("list.txt", "abbey\x0Dcrane\x0Dlever\x0Dmoose\x0Dzebra\x0D"), "write a sorted list")
+    expect(wordsFileCount("list.txt") == 5, "five lines")
+    expect(wordsFind("list.txt", "abbey"), "first word")
+    expect(wordsFind("list.txt", "lever"), "middle word")
+    expect(wordsFind("list.txt", "zebra"), "last word")
+    expect(not wordsFind("list.txt", "aaaaa"), "before the first")
+    expect(not wordsFind("list.txt", "llama"), "between words")
+    expect(not wordsFind("list.txt", "zzzzz"), "after the last")
+    expect(wordsAnswerFor("list.txt", 1) == "abbey", "day 1 is line 0")
+    expect(wordsAnswerFor("list.txt", 5) == "zebra", "day 5 is line 4")
+    expect(wordsAnswerFor("list.txt", 6) == "abbey", "the cycle wraps")
+    expect(writeFile("bad.txt", "abbey\x0Dcran\x0D"), "write a mangled list")
+    expect(wordsFileCount("bad.txt") == 0, "size not a multiple of 6 counts as unusable")
+    expect(not wordsFind("bad.txt", "abbey"), "no lookups in a mangled list")
+    expect(wordsAnswerFor("bad.txt", 1) == "", "no answer from a mangled list")
+    expect(wordsFileCount("missing.txt") == 0, "missing file")
+}
+
 on App.startCLI(args: list of string) {
     testScoring()
     testShape()
     testDays()
+    testFiles()
     if failures > 0 {
         log("words-test: FAILED")
         quit 1
