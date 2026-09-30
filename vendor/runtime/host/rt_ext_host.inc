@@ -140,6 +140,27 @@ void rt_ext_MemProbe(const uint8_t *phase) {
     rtm_dump(buf);
 }
 
+/* rt_ext_BakeReadLog: host body of clarusc/bake.cla's BakeReadLog (SE
+ * wave 4 Task 6) -- one `bakeread: ID BYTES` line on stderr per library
+ * read when CLARUS_BAKE_READLOG=1 (tests/bake/lazyread.sh), else silent.
+ * The 68k lane resolves the extern to bake.cla's no-op nat_BakeReadLog. */
+void rt_ext_BakeReadLog(int32_t id, int32_t bytes) {
+    const char *v = getenv("CLARUS_BAKE_READLOG");
+    if (v && strcmp(v, "1") == 0)
+        fprintf(stderr, "bakeread: %ld %ld\n", (long)id, (long)bytes);
+}
+
+/* rt_ext_FreeGlobalsDump: host body of clarusc/cg68k.cla's FreeGlobalsDump
+ * (SE wave 5) -- one `freeglobals: SEG IDX A5OFF KIND` line on stderr per
+ * cg_free_globals table entry when CLARUS_FREEGLOBALS_DUMP=1
+ * (tests/cg68k/freeglobals.sh), else silent. The 68k lane resolves the
+ * extern to cg68k.cla's no-op nat_FreeGlobalsDump. */
+void rt_ext_FreeGlobalsDump(int32_t seg, int32_t idx, int32_t off, int32_t kind) {
+    const char *v = getenv("CLARUS_FREEGLOBALS_DUMP");
+    if (v && strcmp(v, "1") == 0)
+        fprintf(stderr, "freeglobals: %ld %ld %ld %ld\n", (long)seg, (long)idx, (long)off, (long)kind);
+}
+
 /* rt_ext_CoreSetLastErr: core.cla's own extern name (Plan native-5d Task
  * 12.5, lastError storage-inversion fix) -- same "own prefixed name" and
  * str255-to-NUL-terminated-C-string conversion shape as rt_ext_CorePanic
@@ -527,5 +548,16 @@ int32_t rt_ext_DateToSeconds(void *d) {
 /* rt_ext_UiTraceOn: uiscript.cla's `external func UiTraceOn(): bool`,
  * always on (the host has no UI lane; kept in step with the mac lane). */
 int32_t rt_ext_UiTraceOn(void) { return 1; }
+
+/* rt_ext_DrvStackPtr: host body of clarusc/drive.cla's `inline sp`
+ * extern (SE wave 5). The host has no 68k stack to guard, so 0 tells
+ * drvStackGuard to return at once. rt_ext_DrvStackForce: the TESTONLY
+ * CLARUS_STACKGUARD_FORCE=N (tests/bake/stackguard.sh), 0 when unset;
+ * the 68k lane resolves it to drive.cla's nat_DrvStackForce. */
+void *rt_ext_DrvStackPtr(void) { return NULL; }
+int32_t rt_ext_DrvStackForce(void) {
+    const char *v = getenv("CLARUS_STACKGUARD_FORCE");
+    return v ? (int32_t)atol(v) : 0;
+}
 
 #endif /* CLARUS_RT_EXT_HOST_INC */

@@ -7,7 +7,7 @@ callers over the Mac's modem serial port.
 
 Clarus is a small, compiled, event-driven language for native System 6/7
 Mac apps. The normative spec is `docs/clarus-language-reference.md`, a pinned
-copy of the compiler repo's (`clarus-src/` → `~/repos/clarus`) matching
+copy of the compiler repo's (`../clarus`) matching
 the pinned toolchain below.
 
 Key points:
@@ -40,7 +40,7 @@ Key points:
 
 ## Compiler
 
-The compiler is `clarusc` (self-hosted, in `clarus-src/clarusc/`). This
+The compiler is `clarusc` (self-hosted, in `../clarus/clarusc/`). This
 project uses a **fully pinned toolchain**, so work here continues even
 while the compiler repo is mid-change:
 
@@ -52,7 +52,7 @@ Refresh the pin deliberately (all pieces together — a pinned binary with
 a newer runtime can mismatch). `build-run/clarusc` is a cached bootstrap
 that can lag `clarusc/clarusc.c` (symptom: `undefined: rt...` in a
 vendored runtime file), so rebuild it first:
-`(cd clarus-src && cc -O1 -Iruntime/host -o build-run/clarusc clarusc/clarusc.c runtime/host/rt.c) && cp clarus-src/build-run/clarusc bin/clarusc && cp clarus-src/runtime/clarus/*.cla vendor/runtime/clarus/ && cp clarus-src/runtime/host/rt* vendor/runtime/host/ && cp clarus-src/toolbox/*.cla vendor/toolbox/ && cp clarus-src/docs/clarus-language-reference.md docs/`
+`(cd ../clarus && cc -O1 -Iruntime/host -o build-run/clarusc clarusc/clarusc.c runtime/host/rt.c) && cp ../clarus/build-run/clarusc bin/clarusc && cp ../clarus/runtime/clarus/*.cla vendor/runtime/clarus/ && cp ../clarus/runtime/host/rt* vendor/runtime/host/ && cp ../clarus/toolbox/*.cla vendor/toolbox/ && cp ../clarus/docs/clarus-language-reference.md ../clarus/docs/clarus-language-changelog.md docs/`
 
 ```sh
 bin/clarusc --rtdir vendor/runtime/clarus/ bbs.cla   # check only
@@ -65,7 +65,7 @@ Always pass `--rtdir vendor/runtime/clarus/` (the scripts do): the
 pinned binary can't find the runtime on its own from this repo, and
 `include "toolbox/..."` resolves against the rtdir's `../../toolbox/`
 sibling — i.e. `vendor/toolbox/`. The live-repo wrapper scripts
-(`clarus-src/scripts/build-68k.sh`, `clarus-run.sh`) still work but
+(`../clarus/scripts/build-68k.sh`, `clarus-run.sh`) still work but
 bootstrap the live compiler — only reach for them when testing new
 compiler features. (The old `./clarus` symlink to the frozen Go host
 compiler was removed — it predates `app` sections and `App.log`; don't
