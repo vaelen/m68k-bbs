@@ -389,7 +389,8 @@ inputChar (bbs.cla) → processInput`.
   empty input. Logoff paces `+++` / `ATH` through a `every 30 ticks`
   timer (`hangupPhase`) to honor the Hayes guard time; the resulting
   NO CARRIER resets the session. An idle caller is hung up after
-  `config.idleSeconds` (default 300, 0 = off; Sysop Config `I`):
+  `config.idleSeconds` (default 300, 0 = off; Sysop Config `I`; 60 s
+  at most, even when off, until `user.authenticated`):
   `idleHalfSecs` ticks in the 30-tick timer — paused during transfers,
   FTN polls and hang-up — and resets on any received byte; a caps-only,
   no-capital-C warning goes out a minute before. `modemReset()` (startup via

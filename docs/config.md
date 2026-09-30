@@ -16,7 +16,7 @@ written out at launch so the keys are there to edit.
 | `modemInit` | `AT&FE1Q0V1X4&C1&D2S0=0` | Modem init string, sent (after a paced hang-up) at startup and from `Maintenance > Initialize Modem`; explicitly empty = send none |
 | `modemSpeed` | 57600 | Serial port bps (300/1200/2400/4800/9600/19200/57600); the Modem menu edits it |
 | `modemPort` | `modem` | `modem` or `printer` — which serial port the BBS answers; the Modem menu edits it |
-| `idleSeconds` | 300 | Hang up a caller idle (no bytes received) this many seconds; 0 = never. A one-minute warning is sent when the timeout is over 60 s; transfers and FTN polls are exempt |
+| `idleSeconds` | 300 | Hang up a caller idle (no bytes received) this many seconds; 0 = never. A one-minute warning is sent when the timeout is over 60 s; transfers and FTN polls are exempt. Before login (terminal pick, username, password, signup) the limit is 60 s, even when this is 0 |
 
 `configLoad()` runs at launch (before the databases open); `configSave()`
 rewrites the whole file. The live values are `config.<field>`.

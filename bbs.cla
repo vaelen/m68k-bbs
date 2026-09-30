@@ -1303,6 +1303,7 @@ every 2 ticks {
 }
 
 every 30 ticks {
+    var idleLimit: int = config.idleSeconds
     if ftnPolling { emsiTick() }
     if tossing and not isConnected and not ftnPolling and not maintaining {
         tossTick()               // one packet open / one message / one delete
@@ -1317,18 +1318,21 @@ every 30 ticks {
         if ftnPolling { log("FTN: session in progress.") }
     }
     if user.screen == "xfer" { xferTick() }
-    if isConnected and not ftnPolling and hangupPhase == 0 and config.idleSeconds > 0 and user.screen != "xfer" {
+    // before login (terminal pick, username, password, signup) bots
+    // tend to sit idle, so the limit is a minute even with idle off
+    if not user.authenticated and (idleLimit == 0 or idleLimit > 60) { idleLimit = 60 }
+    if isConnected and not ftnPolling and hangupPhase == 0 and idleLimit > 0 and user.screen != "xfer" {
         // messages are caps-only (pre-terminal-pick callers) and avoid
         // the capital-C byte (docs/file-transfers.md, "Text around a
         // transfer")
         idleHalfSecs = idleHalfSecs + 1
-        if config.idleSeconds > 60 and idleHalfSecs == (config.idleSeconds - 60) * 2 {
+        if idleLimit > 60 and idleHalfSecs == (idleLimit - 60) * 2 {
             sendLine("")
             sendLine("\x07YOU WILL BE LOGGED OFF IN ONE MINUTE UNLESS YOU PRESS A KEY.")
         }
-        if idleHalfSecs >= config.idleSeconds * 2 {
+        if idleHalfSecs >= idleLimit * 2 {
             idleHalfSecs = 0
-            log("Caller idle " + intStr(config.idleSeconds) + "s: hanging up.")
+            log("Caller idle " + intStr(idleLimit) + "s: hanging up.")
             sendLine("")
             sendLine("IDLE TIMEOUT. GOODBYE.")
             user.screen = "probe"    // swallows input until the line drops
