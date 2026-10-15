@@ -61,12 +61,16 @@ record Network {
 }
 
 var networksDb: Database
+var networksUsed: int = 0    // TickCount of the last networksHandle()
 var network: Network    // last loaded network
 
+// Open the Networks database, creating it on first run. Callers use
+// networksHandle(): the database is held only while in use (vDB's on-demand
+// rule -- every open file is an FCB, docs/vdb-clarus.md).
 func networksOpen(): bool {
     networksDb = dbOpen("Networks", "68BB")
-    if dbIsOpen(networksDb) { return true }
-    networksDb = dbCreate("Networks", networkRecordSize, "68BB")
+    if not dbIsOpen(networksDb) { networksDb = dbCreate("Networks", networkRecordSize, "68BB") }
+    networksUsed = TickCount()
     return dbIsOpen(networksDb)
 }
 
@@ -75,13 +79,25 @@ func networksClose() {
     networksDb = new Database
 }
 
+// The open database, opened if need be (a closed handle on failure).
+func networksHandle(): Database {
+    if not dbIsOpen(networksDb) { networksOpen() }
+    networksUsed = TickCount()
+    return networksDb
+}
+
+// Close it once unused for dbIdleTicks (the 30-tick timer calls this).
+func networksIdleClose() {
+    if dbIsOpen(networksDb) and TickCount() - networksUsed > dbIdleTicks { networksClose() }
+}
+
 func networkCount(): int {
-    return dbRecordCount(networksDb)
+    return dbRecordCount(networksHandle())
 }
 
 // For enumerating networks: loop loadNetwork over 1 .. networksNextId()-1.
 func networksNextId(): int {
-    return dbNextRecordId(networksDb)
+    return dbNextRecordId(networksHandle())
 }
 
 // Zero-pad t to `off`, then append s as a Pascal field (clamped to max).
@@ -122,17 +138,17 @@ func packNetwork(n: Network): text {
 
 // Returns the new network ID, or -1.
 func createNetwork(n: Network): int {
-    return dbAdd(networksDb, packNetwork(n))
+    return dbAdd(networksHandle(), packNetwork(n))
 }
 
 // Write the global `network` back to its record.
 func saveNetwork(): bool {
     if network.id < 1 { return false }
-    return dbUpdate(networksDb, network.id, packNetwork(network))
+    return dbUpdate(networksHandle(), network.id, packNetwork(network))
 }
 
 func loadNetwork(id: int): bool {
-    var rec: text = dbFind(networksDb, id)
+    var rec: text = dbFind(networksHandle(), id)
     var u: int
     if rec.length != networkRecordSize { return false }
     network.id = id

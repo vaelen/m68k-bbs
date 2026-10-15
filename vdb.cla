@@ -47,7 +47,6 @@ record Database {
     name: string
     creator: string(4)
     data: filehandle
-    journal: filehandle
     index: filehandle
 }
 
@@ -542,25 +541,57 @@ func dbJournalEntry(op: int, pageNum: int, id: int, status: int, data: text, off
     return e
 }
 
-func dbAppendJournal(db: Database, e: text): bool {
-    var j: filehandle = db.journal
-    return j.append(e)
+// NAME.JNL is opened per transaction, never held: every open file
+// takes a File Manager FCB, and System 6 has 40 for the whole Mac
+// (4 x the boot blocks' bbCntFCBs, which can't be relied on to be
+// raised) -- seven resident journals starved the board opens of a
+// poll's scan ("create failed", 2026-10-15). dbJournaled says this
+// transaction wrote it, so commit and rollback only reopen it then.
+var dbJournaled: bool = false
+
+// Owners of rarely used databases (Areas, Games, Wall, Networks) hold
+// them open only on demand: xHandle() opens and stamps, xIdleClose()
+// closes after this many ticks unused.
+const dbIdleTicks: int = 600
+
+// Append entries to the journal and flush, creating it if missing.
+func dbJournalWrite(db: Database, e: text): bool {
+    var j: filehandle = file.open(db.name + ".JNL")
+    var creator: string = db.creator    // a string(4) field won't pass to file.create
+    var ok: bool
+    if j == nil { j = file.create(db.name + ".JNL", "VDBj", creator) }
+    if j == nil { return false }
+    dbJournaled = true
+    ok = j.append(e) and j.flush()
+    j.close()
+    return ok
+}
+
+// Empty the journal, if this transaction wrote one.
+func dbJournalClear(db: Database): bool {
+    var j: filehandle
+    var ok: bool
+    if not dbJournaled { return true }
+    j = file.open(db.name + ".JNL")
+    if j == nil { return false }
+    ok = j.size() == 0 or j.setSize(0)
+    j.close()
+    if ok { dbJournaled = false }
+    return ok
 }
 
 // Journal one entry per page of a record write (add or update).
 func dbJournalRecord(db: Database, op: int, firstPage: int, id: int, data: text, pages: int): bool {
-    var j: filehandle = db.journal
+    var e: text
     var i: int = 0
     var status: int
     while i < pages {
         status = psContinuation
         if i == 0 { status = psActive }
-        if not dbAppendJournal(db, dbJournalEntry(op, firstPage + i, id, status, data, i * dbPageDataSize)) {
-            return false
-        }
+        e.append(dbJournalEntry(op, firstPage + i, id, status, data, i * dbPageDataSize))
         i = i + 1
     }
-    return j.flush()
+    return dbJournalWrite(db, e)
 }
 
 func dbSetPending(db: Database, hdr: text, pending: bool): bool {
@@ -572,16 +603,13 @@ func dbSetPending(db: Database, hdr: text, pending: bool): bool {
 // Clear the pending flag and empty the journal. `hdr` carries any
 // counter updates the operation made.
 func dbCommit(db: Database, hdr: text): bool {
-    var j: filehandle = db.journal
     if not dbSetPending(db, hdr, false) { return false }
-    if j.size() == 0 { return true }        // dbDeleteMany journals nothing
-    return j.setSize(0)
+    return dbJournalClear(db)
 }
 
 func dbRollback(db: Database, hdr: text) {
-    var j: filehandle = db.journal
     dbSetPending(db, hdr, false)
-    j.setSize(0)
+    dbJournalClear(db)
 }
 
 // Rebuild the primary index from the data file. If a record ID shows
@@ -638,29 +666,42 @@ func dbRebuildPrimary(db: Database, pages: int): bool {
 // Entries with bad checksums are skipped.
 func dbReplayJournal(db: Database): bool {
     var f: filehandle = db.data
-    var j: filehandle = db.journal
+    var j: filehandle = file.open(db.name + ".JNL")
     var hdr: text
     var e: text
     var page: text
-    var entries: int
+    var entries: int = 0
     var i: int = 0
     var op: int
     var base: int
-    entries = j.size() / dbJournalEntrySize
+    if j != nil {
+        entries = j.size() / dbJournalEntrySize
+        dbJournaled = true                  // the commit below empties it
+    }
     while i < entries {
-        if not j.readAt(i * dbJournalEntrySize, dbJournalEntrySize, e) { return false }
+        if not j.readAt(i * dbJournalEntrySize, dbJournalEntrySize, e) {
+            j.close()
+            return false
+        }
         if e.length == dbJournalEntrySize and e.crc16(0, 0, 516) == e.wordAt(516) {
             op = int(e[0])
             if op == joUpdate or op == joAdd {
                 page = dbBuildPage(e.intAt(5), int(e[515]), e.textAt(9, dbPageDataSize), 0)
-                if not f.writeAt(e.intAt(1) * dbPageSize, page) { return false }
+                if not f.writeAt(e.intAt(1) * dbPageSize, page) {
+                    j.close()
+                    return false
+                }
             }
             if op == joDelete {
-                if not f.writeAt(e.intAt(1) * dbPageSize + 4, "\x00") { return false }
+                if not f.writeAt(e.intAt(1) * dbPageSize + 4, "\x00") {
+                    j.close()
+                    return false
+                }
             }
         }
         i = i + 1
     }
+    if j != nil { j.close() }
     if not dbReadHeader(db, hdr) { return false }
     if not dbRebuildPrimary(db, dbPagesNeeded(hdr.wordAt(8))) { return false }
     // recount: an interrupted delete may have freed pages the header
@@ -682,7 +723,7 @@ func dbReplayJournal(db: Database): bool {
 
 // --- Open / create / close -------------------------------------------
 
-// Create NAME.DAT, NAME.IDX, and NAME.JNL. recordSize is fixed for
+// Create NAME.DAT and NAME.IDX (NAME.JNL appears on the first write). recordSize is fixed for
 // the database's life (1-65535 bytes). Returns a closed (all-nil)
 // Database on failure.
 func dbCreate(name: string, recordSize: int, creator: string): Database {
@@ -700,6 +741,8 @@ func dbCreate(name: string, recordSize: int, creator: string): Database {
         log("vdb: " + name + ".DAT exists but did not open; not recreating it")
         return none
     }
+    // a journal left from a deleted database would replay onto this one
+    if file.exists(name + ".JNL") { file.delete(name + ".JNL") }
     db.name = name
     db.creator = creator
     db.data = file.create(name + ".DAT", "VDBd", creator)
@@ -724,11 +767,6 @@ func dbCreate(name: string, recordSize: int, creator: string): Database {
         return none
     }
     db.index = idx
-    db.journal = file.create(name + ".JNL", "VDBj", creator)
-    if db.journal == nil {
-        dbClose(db)
-        return none
-    }
     return db
 }
 
@@ -745,14 +783,6 @@ func dbOpen(name: string, creator: string): Database {
     db.data = file.open(name + ".DAT")
     if db.data == nil { return none }
     if not dbReadHeader(db, hdr) {
-        dbClose(db)
-        return none
-    }
-    db.journal = file.open(name + ".JNL")
-    if db.journal == nil {
-        db.journal = file.create(name + ".JNL", "VDBj", creator)
-    }
-    if db.journal == nil {
         dbClose(db)
         return none
     }
@@ -774,14 +804,12 @@ func dbOpen(name: string, creator: string): Database {
 
 func dbClose(db: Database) {
     var f: filehandle = db.data
-    var j: filehandle = db.journal
     var idx: filehandle = db.index
     dbHdrCacheDrop(db.name)
     if f != nil {
         f.flush()
         f.close()
     }
-    if j != nil { j.close() }
     if idx != nil { idx.close() }
 }
 
@@ -917,7 +945,6 @@ func dbDelete(db: Database, id: int): bool {
     var hdr: text
     var e: text
     var oldRec: text
-    var j: filehandle
     var firstPage: int
     var pages: int
     var size: int
@@ -932,9 +959,8 @@ func dbDelete(db: Database, id: int): bool {
     pages = dbPagesNeeded(size)
     dbTime(dtLookup)
     if not dbSetPending(db, hdr, true) { return false }
-    j = db.journal
     e = dbJournalEntry(joDelete, firstPage, id, psEmpty, e, 0)
-    if not dbAppendJournal(db, e) or not j.flush() {
+    if not dbJournalWrite(db, e) {
         dbRollback(db, hdr)
         return false
     }

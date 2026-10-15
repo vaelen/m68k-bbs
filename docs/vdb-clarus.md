@@ -202,6 +202,15 @@ tree is rebuilt (the same lazy model as emptied leaves).
 A sequence of fixed 518-byte entries, appended in order, truncated to
 0 on commit. Protocol and replay rules: `docs/vdb.md`.
 
+The journal is **not held open** (2026-10-15): a transaction opens it to
+append + flush, and commit/rollback reopen it to truncate only when that
+transaction wrote it (`dbJournaled`). Every open file costs a File
+Manager FCB, and System 6 has 40 for the whole Mac (4 x the boot
+blocks' `bbCntFCBs`, not something the BBS can count on raising); with
+seven resident databases, held journals left a poll's scan unable to
+open board heaps (tmfoErr, logged as "create failed"). The file is
+created on first write; `dbCreate` deletes a stale one.
+
 | Offset | Size | Field | Notes |
 |-------:|-----:|-------|-------|
 | 0 | 1 | operation | 0 = none, 1 = update, 2 = delete, 3 = add |

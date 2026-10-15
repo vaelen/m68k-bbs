@@ -719,13 +719,10 @@ func drawTerminalMenu() {
     sendLine("(SELECT 5 OR 6 FOR LINE PRINTERS, ETC.)")
 }
 
-// Unread mail and (for approvers) pending uploads, right above the
-// main-menu prompt.
+// Pending uploads (for approvers), right above the main-menu prompt.
+// Unread mail shows on the menu's own M line, not here as well.
 func sendMainCounts() {
     var pf: int = 0
-    if unreadCount(user.id) > 0 {
-        sendLine("You have " + intStr(unreadCount(user.id)) + " new message(s).")
-    }
     if hasPermission(ApproveUploads) {
         pf = pendingFileCount()
         if pf > 0 {
@@ -735,12 +732,13 @@ func sendMainCounts() {
 }
 
 func drawMainMenu() {
+    var unread: int = unreadCount(user.id)
     sendTitleBox("Main Menu")
     sendLine("")
     sendLine("B) Bulletin Boards")
     sendLine("F) File Areas")
-    if unreadCount(user.id) > 0 {
-        sendLine("M) Mail (" + intStr(unreadCount(user.id)) + " new)")
+    if unread > 0 {
+        sendLine("M) Mail (" + intStr(unread) + " new)")
     } else {
         sendLine("M) Mail")
     }
@@ -1305,6 +1303,10 @@ every 2 ticks {
 every 30 ticks {
     var idleLimit: int = config.idleSeconds
     if ftnPolling { emsiTick() }
+    areasIdleClose()                 // the on-demand databases: back to no open files
+    gamesIdleClose()
+    wallIdleClose()
+    networksIdleClose()
     if tossing and not isConnected and not ftnPolling and not maintaining {
         tossTick()               // one packet open / one message / one delete
         if not tossing { ftnNext() }

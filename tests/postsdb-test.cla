@@ -113,7 +113,7 @@ func deleteManyTests() {
     }
     postsByCreatedEnd()
     expect(n == 7, "Created index updated")
-    expect(postsDb.journal.size() == 0, "journal truncated at commit")
+    expect(file.info(":Boards:BRD01.JNL").size == 0, "journal truncated at commit")
     postsClose()
     expect(postsOpen(6) and postCount() == 7 and not loadPost(2) and postBody(10) == "body", "persists across reopen")
     // a crash part-way through a batch: pending set, one record's pages

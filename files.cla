@@ -67,8 +67,8 @@ func drawAreaPicker() {
         cells.add("Description")
     }
     sendTableHeader("File Areas", cells, w)
-    if dbScanStart(areasDb, cur, 1, false) {
-        id = dbScanNext(areasDb, cur, rec)
+    if dbScanStart(areasHandle(), cur, 1, false) {
+        id = dbScanNext(areasHandle(), cur, rec)
         while id != 0 {
             if areaVisible(rec) {
                 cells.clear()
@@ -79,7 +79,7 @@ func drawAreaPicker() {
                 }
                 sendLine(rowLine(cells, w))
             }
-            id = dbScanNext(areasDb, cur, rec)
+            id = dbScanNext(areasHandle(), cur, rec)
         }
     }
     sendRule(BottomLeft, BottomCenter, BottomRight, w)
@@ -112,7 +112,7 @@ func areaNumInput(input: string) {
         return
     }
     id = parseIntStr(input)
-    if id >= 1 { rec = dbFind(areasDb, id) }
+    if id >= 1 { rec = dbFind(areasHandle(), id) }
     if rec.length != areaRecordSize or not areaVisible(rec) {
         sendLine("No such area.")
         displayPrompt()

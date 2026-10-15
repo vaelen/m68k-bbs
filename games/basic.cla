@@ -126,11 +126,11 @@ func loadGameIds() {
     var rec: text
     var id: int
     gameIds.clear()
-    if not dbScanStart(gamesDb, cur, 1, false) { return }
-    id = dbScanNext(gamesDb, cur, rec)
+    if not dbScanStart(gamesHandle(), cur, 1, false) { return }
+    id = dbScanNext(gamesHandle(), cur, rec)
     while id != 0 {
         if loadGame(id) and game.enabled { gameIds.add(id) }
-        id = dbScanNext(gamesDb, cur, rec)
+        id = dbScanNext(gamesHandle(), cur, rec)
     }
 }
 

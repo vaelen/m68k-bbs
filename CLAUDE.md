@@ -204,7 +204,9 @@ inputChar (bbs.cla) → processInput`.
   parent path, no format change; `btScanValues` gives the current key's
   values from the cursor's leaf copy — use it, not a `btFind` per key); `vdb.cla` — journaled page database
   with secondary indexes on top of it (formats: `docs/vdb-clarus.md`;
-  design: `docs/vdb.md`), a cached header page (module map, refreshed
+  design: `docs/vdb.md`), the `.JNL` opened only per transaction (never held -- System 6 has 40
+  FCBs for the whole Mac, and held handles starved board opens), a
+  cached header page (module map, refreshed
   by every `dbWriteHeader`, dropped on open/close), and the scan API
   every enumerating screen uses (`dbScanStart`/`dbScanNext`/
   `dbScanSkip`; cursors live inside one event handler, never write to
@@ -268,7 +270,12 @@ inputChar (bbs.cla) → processInput`.
   address/session, packet and AreaFix passwords/AreaFix robot/dial
   string/UTC offset/poll interval/flags bit 0 = enabled/lastPoll/
   lastResult; `findNetworkByZone`, `findNetworkByName`;
-  `docs/fidonet.md`). `areasdb.cla` — the "Areas" database (256-byte
+  `docs/fidonet.md`). The Areas, Games, Wall and
+  Networks databases are opened on demand: call sites go through
+  `areasHandle()`/`gamesHandle()`/`wallHandle()`/`networksHandle()`
+  (opens if closed, stamps `TickCount`), and the 30-tick timer's
+  `*IdleClose()` closes each after `dbIdleTicks` (10 s) unused -- never
+  pass `areasDb` etc. directly. `areasdb.cla` — the "Areas" database (256-byte
   records: name/description/folder path/access byte, record ID =
   area ID). `filesdb.cla` — one area's file entries at a time
   (`filesOpen(areaId)`): header records in `:Areas:ARE<nn>.*` (filename
@@ -369,9 +376,10 @@ inputChar (bbs.cla) → processInput`.
   `pause` (both skipped when `motdText` is empty) → main menu
   (`returning`/`previousSeen` carry the banner across). The main menu
   opens with a `sendTitleBox("Main Menu")` (a closed one-row box at
-  table width) and its prompt is preceded by `sendMainCounts` — "You
-  have N new message(s)" plus, for approvers, "N file(s) are awaiting
-  approval." via `pendingFileCount`. `showPause(next)` parks on the
+  table width) and shows unread mail on its `M) Mail (N new)` line; the
+  prompt is preceded by `sendMainCounts` — for approvers only, "N
+  file(s) are awaiting approval." via `pendingFileCount` (no mail
+  count there, so it isn't checked twice). `showPause(next)` parks on the
   input-swallowing `"pause"` screen and `pauseChoice` runs
   `pauseNext`. Main-menu `W` runs the wall (`wallFromMenu`, back to
   main after), `D` shows the MOTD then a pause, `G` opens the `games`

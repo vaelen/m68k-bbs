@@ -46,7 +46,7 @@ on App.startCLI(args: list of string) {
     expect(not game.enabled, "disabled roundtrip")
 
     // the on-disk byte is the enum's value
-    rec = dbFind(gamesDb, id2)
+    rec = dbFind(gamesHandle(), id2)
     expect(int(rec[gOffType]) == 4, "type byte is the enum value")
 
     // edit through the global and save
@@ -61,9 +61,9 @@ on App.startCLI(args: list of string) {
     expect(game.enabled, "enabled edit persisted")
 
     // a type byte no enum member owns loads as Basic rather than crashing
-    rec = dbFind(gamesDb, id2)
+    rec = dbFind(gamesHandle(), id2)
     rec[gOffType] = char(200)
-    expect(dbUpdate(gamesDb, id2, rec), "write an unknown type byte")
+    expect(dbUpdate(gamesHandle(), id2, rec), "write an unknown type byte")
     expect(loadGame(id2), "unknown type still loads")
     expect(game.type == Basic, "unknown type reads as Basic")
 
@@ -76,7 +76,7 @@ on App.startCLI(args: list of string) {
 
     id1 = createGame("Daily Word", "Guess the word", "words", Builtin, true)
     expect(loadGame(id1) and game.type == Builtin, "built-in type roundtrip")
-    rec = dbFind(gamesDb, id1)
+    rec = dbFind(gamesHandle(), id1)
     expect(int(rec[gOffType]) == 7, "built-in type byte is 7")
     expect(gameTypeName(Builtin) == "Built-in", "built-in type name")
     expect(gameTypeName(Hermes31) == "Hermes 3.1", "hermes type name")

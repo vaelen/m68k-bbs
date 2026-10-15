@@ -40,7 +40,7 @@ on App.startCLI(args: list of string) {
     n.flags = netFlagEnabled
     id = createNetwork(n)
     expect(id == 1, "first network created")
-    rec = dbFind(networksDb, 1)
+    rec = dbFind(networksHandle(), 1)
     expect(rec.length == networkRecordSize, "record is 256 bytes")
     expect(rec.wordAt(nOffAddr) == 21 and rec.wordAt(nOffAddr + 4) == 141, "address packed at 64")
     expect(rec.wordAt(nOffUplink + 4) == 100, "uplink packed at 72")

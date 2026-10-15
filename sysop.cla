@@ -1302,8 +1302,8 @@ func drawAreaListPage() {
     }
     sendTableHeader("File Areas", cells, w)
 
-    if dbScanStart(areasDb, cur, listFromId, false) {
-        id = dbScanNext(areasDb, cur, rec)
+    if dbScanStart(areasHandle(), cur, listFromId, false) {
+        id = dbScanNext(areasHandle(), cur, rec)
         while id != 0 and shown < pageRows {
             cells.clear()
             cells.add(intStr(id))
@@ -1316,13 +1316,13 @@ func drawAreaListPage() {
             shown = shown + 1
             listFromId = id + 1
             if shown < pageRows {
-                id = dbScanNext(areasDb, cur, rec)
+                id = dbScanNext(areasHandle(), cur, rec)
             } else {
                 id = 0
             }
         }
     }
-    finishListPage(areasDb, "sysopareas", w)
+    finishListPage(areasHandle(), "sysopareas", w)
 }
 
 func startShowArea() {
@@ -1521,7 +1521,7 @@ func delAreaIdInput(input: string) {
 
 func delAreaConfirm(input: string) {
     if upperStr(input) == "Y" {
-        if dbDelete(areasDb, area.id) {
+        if dbDelete(areasHandle(), area.id) {
             sendLine("Area deleted.")
         } else {
             sendLine("Delete failed: " + lastError.message)
@@ -1703,8 +1703,8 @@ func drawGameListPage() {
     }
     sendTableHeader("Games", cells, w)
 
-    if dbScanStart(gamesDb, cur, listFromId, false) {
-        id = dbScanNext(gamesDb, cur, rec)
+    if dbScanStart(gamesHandle(), cur, listFromId, false) {
+        id = dbScanNext(gamesHandle(), cur, rec)
         while id != 0 and shown < pageRows {
             if loadGame(id) {
                 cells.clear()
@@ -1720,13 +1720,13 @@ func drawGameListPage() {
             }
             listFromId = id + 1
             if shown < pageRows {
-                id = dbScanNext(gamesDb, cur, rec)
+                id = dbScanNext(gamesHandle(), cur, rec)
             } else {
                 id = 0
             }
         }
     }
-    finishListPage(gamesDb, "sysopgames", w)
+    finishListPage(gamesHandle(), "sysopgames", w)
 }
 
 func startShowGame() {
@@ -1919,7 +1919,7 @@ func delGameIdInput(input: string) {
 
 func delGameConfirm(input: string) {
     if upperStr(input) == "Y" {
-        if dbDelete(gamesDb, game.id) {
+        if dbDelete(gamesHandle(), game.id) {
             sendLine("Game deleted.")
         } else {
             sendLine("Delete failed: " + lastError.message)
@@ -2102,8 +2102,8 @@ func drawNetListPage() {
         cells.add("Last poll")
     }
     sendTableHeader("Networks", cells, w)
-    if dbScanStart(networksDb, cur, listFromId, false) {
-        id = dbScanNext(networksDb, cur, rec)
+    if dbScanStart(networksHandle(), cur, listFromId, false) {
+        id = dbScanNext(networksHandle(), cur, rec)
         while id != 0 and shown < pageRows {
             cells.clear()
             cells.add(intStr(id))
@@ -2117,13 +2117,13 @@ func drawNetListPage() {
             shown = shown + 1
             listFromId = id + 1
             if shown < pageRows {
-                id = dbScanNext(networksDb, cur, rec)
+                id = dbScanNext(networksHandle(), cur, rec)
             } else {
                 id = 0
             }
         }
     }
-    finishListPage(networksDb, "sysopnets", w)
+    finishListPage(networksHandle(), "sysopnets", w)
 }
 
 // ID or name; loads the network. Empty input -> 0 (cancel), unknown -> -1.
@@ -2410,7 +2410,7 @@ func delNetIdInput(input: string) {
 // networkId; they simply never match a network at scan time.
 func delNetConfirm(input: string) {
     if upperStr(input) == "Y" {
-        if dbDelete(networksDb, network.id) {
+        if dbDelete(networksHandle(), network.id) {
             sendLine("Network deleted.")
         } else {
             sendLine("Delete failed: " + lastError.message)

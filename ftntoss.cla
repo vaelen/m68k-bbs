@@ -135,7 +135,7 @@ func tossEchomail(netId: int) {
         return
     }
     if postsBoardId != bid and not postsOpen(bid) {
-        log("Toss: cannot open board " + string(bid) + ": " + lastError.message)
+        log("Toss: cannot open board " + string(bid) + ": " + lastError.message + " (" + string(lastError.code) + ")")
         return
     }
     crc = msgIdCrc(pktMsg.msgid)
@@ -352,7 +352,7 @@ func scanBoard() {
     var localSeen: bool = false
     var m: PktMsg
     if not postsOpen(board.id) {
-        log("Scan: cannot open board " + string(board.id) + ": " + lastError.message)
+        log("Scan: cannot open board " + string(board.id) + ": " + lastError.message + " (" + string(lastError.code) + ")")
         return
     }
     last = postsNextId()

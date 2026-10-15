@@ -156,8 +156,9 @@ on App.startCLI(args: list of string) {
     r = dbFind(db, id1)
     expect(r[0, 4] == "bbbb", "valid journal entry replayed")
     expect(r[0, 4] != "cccc", "corrupted journal entry skipped")
-    f = db.journal
+    f = file.open("VDBT3.JNL")
     expect(f.size() == 0, "journal truncated after replay")
+    f.close()
     id2 = dbAdd(db, "dddd")
     r = dbFind(db, id2)
     expect(r[0, 4] == "dddd", "database usable after recovery")

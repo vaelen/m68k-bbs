@@ -33,13 +33,16 @@ record Area {
 }
 
 var areasDb: Database
+var areasUsed: int = 0    // TickCount of the last areasHandle()
 var area: Area      // last loaded area
 
-// Open the Areas database, creating it on first run.
+// Open the Areas database, creating it on first run. Callers use
+// areasHandle(): the database is held only while in use (vDB's on-demand
+// rule -- every open file is an FCB, docs/vdb-clarus.md).
 func areasOpen(): bool {
     areasDb = dbOpen("Areas", "68BB")
-    if dbIsOpen(areasDb) { return true }
-    areasDb = dbCreate("Areas", areaRecordSize, "68BB")
+    if not dbIsOpen(areasDb) { areasDb = dbCreate("Areas", areaRecordSize, "68BB") }
+    areasUsed = TickCount()
     return dbIsOpen(areasDb)
 }
 
@@ -48,13 +51,25 @@ func areasClose() {
     areasDb = new Database
 }
 
+// The open database, opened if need be (a closed handle on failure).
+func areasHandle(): Database {
+    if not dbIsOpen(areasDb) { areasOpen() }
+    areasUsed = TickCount()
+    return areasDb
+}
+
+// Close it once unused for dbIdleTicks (the 30-tick timer calls this).
+func areasIdleClose() {
+    if dbIsOpen(areasDb) and TickCount() - areasUsed > dbIdleTicks { areasClose() }
+}
+
 func areaCount(): int {
-    return dbRecordCount(areasDb)
+    return dbRecordCount(areasHandle())
 }
 
 // For enumerating areas: loop loadArea over 1 .. areasNextId()-1.
 func areasNextId(): int {
-    return dbNextRecordId(areasDb)
+    return dbNextRecordId(areasHandle())
 }
 
 // Serialize area fields into a record image (dbAdd/dbUpdate zero-pad
@@ -88,18 +103,18 @@ func packArea(name: string, description: string, folder: string, access: char): 
 
 // Create an area; returns the new area ID, or -1.
 func createArea(name: string, description: string, folder: string, access: char): int {
-    return dbAdd(areasDb, packArea(name, description, folder, access))
+    return dbAdd(areasHandle(), packArea(name, description, folder, access))
 }
 
 // Write the global `area` back to its record.
 func saveArea(): bool {
     if area.id < 1 { return false }
-    return dbUpdate(areasDb, area.id, packArea(area.name, area.description, area.folder, area.access))
+    return dbUpdate(areasHandle(), area.id, packArea(area.name, area.description, area.folder, area.access))
 }
 
 // Load area `id` into the global `area`.
 func loadArea(id: int): bool {
-    var rec: text = dbFind(areasDb, id)
+    var rec: text = dbFind(areasHandle(), id)
     if rec.length != areaRecordSize { return false }
     area.id = id
     area.name = dbExtractString(rec, aOffName)

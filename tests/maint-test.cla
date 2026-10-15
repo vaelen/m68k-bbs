@@ -117,7 +117,7 @@ func runTests() {
     expect(not maintStart(), "maintenance refused during compaction")
     steps = run()
     expect(not maintaining and not compacting and not rejectCallers, "compaction finished")
-    expect(dbLastCompacted(boardsDb) != 0 and dbLastCompacted(mailDb) != 0 and dbLastCompacted(wallDb) != 0, "fixed databases compacted")
+    expect(dbLastCompacted(boardsDb) != 0 and dbLastCompacted(mailDb) != 0 and dbLastCompacted(wallHandle()) != 0, "fixed databases compacted")
     expect(postsOpen(1) and dbLastCompacted(postsDb) != 0 and postCount() == 1, "board headers compacted")
     postsClose()
     expect(file.info(":Boards:BRD01.MSG").size == orphaned, "compaction leaves heaps alone")

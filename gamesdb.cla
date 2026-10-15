@@ -52,13 +52,16 @@ record Game {
 }
 
 var gamesDb: Database
+var gamesUsed: int = 0    // TickCount of the last gamesHandle()
 var game: Game      // last loaded game
 
-// Open the Games database, creating it on first run.
+// Open the Games database, creating it on first run. Callers use
+// gamesHandle(): the database is held only while in use (vDB's on-demand
+// rule -- every open file is an FCB, docs/vdb-clarus.md).
 func gamesOpen(): bool {
     gamesDb = dbOpen("Games", "68BB")
-    if dbIsOpen(gamesDb) { return true }
-    gamesDb = dbCreate("Games", gameRecordSize, "68BB")
+    if not dbIsOpen(gamesDb) { gamesDb = dbCreate("Games", gameRecordSize, "68BB") }
+    gamesUsed = TickCount()
     return dbIsOpen(gamesDb)
 }
 
@@ -67,13 +70,25 @@ func gamesClose() {
     gamesDb = new Database
 }
 
+// The open database, opened if need be (a closed handle on failure).
+func gamesHandle(): Database {
+    if not dbIsOpen(gamesDb) { gamesOpen() }
+    gamesUsed = TickCount()
+    return gamesDb
+}
+
+// Close it once unused for dbIdleTicks (the 30-tick timer calls this).
+func gamesIdleClose() {
+    if dbIsOpen(gamesDb) and TickCount() - gamesUsed > dbIdleTicks { gamesClose() }
+}
+
 func gameCount(): int {
-    return dbRecordCount(gamesDb)
+    return dbRecordCount(gamesHandle())
 }
 
 // For enumerating games: loop loadGame over 1 .. gamesNextId()-1.
 func gamesNextId(): int {
-    return dbNextRecordId(gamesDb)
+    return dbNextRecordId(gamesHandle())
 }
 
 func gameTypeName(t: GameType): string {
@@ -122,13 +137,13 @@ func packGame(name: string, description: string, filename: string, t: GameType, 
 
 // Create a game; returns the new game ID, or -1.
 func createGame(name: string, description: string, filename: string, t: GameType, enabled: bool): int {
-    return dbAdd(gamesDb, packGame(name, description, filename, t, enabled))
+    return dbAdd(gamesHandle(), packGame(name, description, filename, t, enabled))
 }
 
 // Write the global `game` back to its record.
 func saveGame(): bool {
     if game.id < 1 { return false }
-    return dbUpdate(gamesDb, game.id, packGame(game.name, game.description, game.filename, game.type, game.enabled))
+    return dbUpdate(gamesHandle(), game.id, packGame(game.name, game.description, game.filename, game.type, game.enabled))
 }
 
 // The type byte as a member; a value no member owns (a newer app wrote
@@ -140,7 +155,7 @@ func gameTypeFromByte(b: int): GameType {
 
 // Load game `id` into the global `game`.
 func loadGame(id: int): bool {
-    var rec: text = dbFind(gamesDb, id)
+    var rec: text = dbFind(gamesHandle(), id)
     if rec.length != gameRecordSize { return false }
     game.id = id
     game.name = dbExtractString(rec, gOffName)

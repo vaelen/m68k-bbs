@@ -511,16 +511,13 @@ func compactStep() {
             if not dbIsOpen(mailDb) { mailOpen() }
         }
         case 1 {
-            wallDb = compactNamed(wallDb, "Wall")
-            if not dbIsOpen(wallDb) { wallOpen() }
+            wallDb = compactNamed(wallHandle(), "Wall")
         }
         case 2 {
-            areasDb = compactNamed(areasDb, "Areas")
-            if not dbIsOpen(areasDb) { areasOpen() }
+            areasDb = compactNamed(areasHandle(), "Areas")
         }
         case 3 {
-            networksDb = compactNamed(networksDb, "Networks")
-            if not dbIsOpen(networksDb) { networksOpen() }
+            networksDb = compactNamed(networksHandle(), "Networks")
         }
         case 4 {
             boardsDb = compactNamed(boardsDb, "Boards")
