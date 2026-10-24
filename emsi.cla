@@ -100,7 +100,7 @@ func ftnPollAll() {
 // Start the next queued poll when nothing is on the line.
 func ftnNext() {
     var id: int
-    if not ftnEnabled or ftnPolling or isConnected or maintaining or tossing or ftnQueue.count == 0 { return }
+    if not ftnEnabled or ftnPolling or isConnected or ringCount > 0 or maintaining or tossing or ftnQueue.count == 0 { return }
     id = ftnQueue.shift()
     ftnPollStart(id)
 }

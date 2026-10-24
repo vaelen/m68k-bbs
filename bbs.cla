@@ -132,6 +132,9 @@ menu Maintenance {
 
 var modem: connection
 var isConnected: bool = false
+var ringCount: int = 0       // RINGs of the call now ringing (0 = none); polls and maintenance wait
+var ringHalfSecs: int = 0    // 30-tick firings since the last RING, or since ATA
+var ringAnswered: bool = false   // ATA sent, CONNECT not yet in
 
 // Set when a hotkey was just echoed: the caller's cursor sits after
 // the key, so the next caller-facing output starts a fresh line. The
@@ -1315,11 +1318,21 @@ every 30 ticks {
     if ftnSchedMinutes >= 120 {      // once a minute: clock resync, the maintenance window, then interval polls
         ftnSchedMinutes = 0
         ReadDateTime(timeBox)        // resync Time with the hardware clock (toolbox/osutils.cla)
-        if not maintaining and not isConnected and not ftnPolling and not tossing and maintDueNow() { maintStart() }
+        if not maintaining and not isConnected and ringCount == 0 and not ftnPolling and not tossing and maintDueNow() { maintStart() }
         ftnSchedule()
         if ftnPolling { log("FTN: session in progress.") }
     }
     if user.screen == "xfer" { xferTick() }
+    if ringCount > 0 {
+        // rings come every ~6 s; a modem answering gets S7's 50 s
+        ringHalfSecs = ringHalfSecs + 1
+        if (not ringAnswered and ringHalfSecs >= 20) or ringHalfSecs >= 120 {
+            log("Caller gone before the answer.")
+            ringCount = 0
+            ringAnswered = false
+            ftnNext()
+        }
+    }
     // before login (terminal pick, username, password, signup) bots
     // tend to sit idle, so the limit is a minute even with idle off
     if not user.authenticated and (idleLimit == 0 or idleLimit > 60) { idleLimit = 60 }
@@ -1375,9 +1388,28 @@ every 30 ticks {
     }
 }
 
-// Called by scanner.cla's feedChar on a full "\r\nCONNECT <n>\r\n".
+// Called by scanner.cla's feedChar on a full "\r\nRING\r\n". Counts
+// the rings and answers on config.answerRings, unless the init string
+// has the modem auto-answering (S0 > 0), which a CONNECT then reports.
+// Ignored mid-call, during a poll, and while closed for maintenance.
+func ring() {
+    if isConnected or ftnPolling or rejectCallers { return }
+    ringCount = ringCount + 1
+    ringHalfSecs = 0
+    log("Ring " + intStr(ringCount) + ".")
+    if ringCount == config.answerRings and not modemAutoAnswer() {
+        log("Answering: ATA")
+        modem.send("ATA\x0D")
+        ringAnswered = true
+    }
+}
+
+// Called by scanner.cla's feedChar on a full "\r\nCONNECT <n>\r\n" --
+// after our ATA, the modem's auto-answer, or a dial.
 func connected() {
     isConnected = true
+    ringCount = 0
+    ringAnswered = false
     user = new User          // fresh session: login screen
     terminal = new Terminal  // fresh session: 80x24 ASCII, no color
     telnetReset()
@@ -1416,6 +1448,13 @@ func connected() {
 
 // Called by scanner.cla's feedChar on a full "\r\nNO CARRIER\r\n".
 func disconnected() {
+    ringCount = 0
+    ringAnswered = false
+    if not isConnected and not ftnPolling {
+        log("No carrier.")      // the caller left between RING and our ATA
+        ftnNext()
+        return
+    }
     isConnected = false
     hangupPhase = 0
     telnetProbe = 0

@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 // Modem result-code scanner/filter: a char-at-a-time state machine that
-// finds "\r\nCONNECT <digits>\r\n" and "\r\nNO CARRIER\r\n" in the
-// received stream. State lives in globals, so a result code split
+// finds "\r\nCONNECT <digits>\r\n", "\r\nNO CARRIER\r\n" and
+// "\r\nRING\r\n" in the received stream. State lives in globals, so a result code split
 // across received() chunks still matches.
 //
 // The scanner is also the data path: every byte that is not part of a
 // matched result code is released to `dataChar(c)`. Bytes that might be
-// a result-code body (from the 'C'/'N' after a CRLF onward) are held in
+// a result-code body (from the 'C'/'N'/'R' after a CRLF onward) are held in
 // `pending`; a completed match discards them, a mismatch replays them
 // to dataChar as ordinary data. CR/LF are always released immediately —
 // holding them would delay line processing by a keystroke — so the one
@@ -16,7 +16,7 @@
 // disconnected() fires.
 //
 // The including program must define `connected()`, `disconnected()`,
-// and `dataChar(c: char)`. Note: in Clarus source, \n is CR (13); LF
+// `ring()` and `dataChar(c: char)`. Note: in Clarus source, \n is CR (13); LF
 // is \x0A.
 
 const CR: char = '\x0D'
@@ -24,15 +24,17 @@ const LF: char = '\x0A'
 
 const connectLit:   string = "CONNECT "
 const noCarrierLit: string = "NO CARRIER\x0D\x0A"
+const ringLit:      string = "RING\x0D\x0A"
 
 const sIdle:    int = 0    // scanning for CR
 const sCr:      int = 1    // seen CR, want LF
-const sLead:    int = 2    // seen CRLF, want 'C' or 'N'
+const sLead:    int = 2    // seen CRLF, want 'C', 'N' or 'R'
 const sConn:    int = 3    // matching "CONNECT " (connectLit[matchIdx])
 const sDig1:    int = 4    // want first baud digit
 const sDigMore: int = 5    // more digits, or CR to end
 const sConnEnd: int = 6    // seen CR after digits, want LF
 const sNoCarr:  int = 7    // matching "NO CARRIER\r\n" (noCarrierLit[matchIdx])
+const sRing:    int = 8    // matching "RING\r\n" (ringLit[matchIdx])
 
 var matchState: int = 0
 var matchIdx: int = 0
@@ -84,6 +86,10 @@ func feedChar(c: char) {
             matchState = sNoCarr
             matchIdx = 1
             pending = "N"
+        } else if c == 'R' {
+            matchState = sRing
+            matchIdx = 1
+            pending = "R"
         } else {
             dataChar(c)
             if c == CR {
@@ -139,6 +145,19 @@ func feedChar(c: char) {
                 pending = ""
                 matchState = sLead
                 disconnected()
+            }
+        } else {
+            scanMismatch(c)
+        }
+    }
+    case sRing {
+        if c == ringLit[matchIdx] {
+            pending = pending + c
+            matchIdx = matchIdx + 1
+            if matchIdx == ringLit.length {
+                pending = ""
+                matchState = sLead
+                ring()
             }
         } else {
             scanMismatch(c)

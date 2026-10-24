@@ -9,6 +9,7 @@ python3 - <<'PY'
 import socket, subprocess, time, sys, os, tempfile
 
 CONNECT = b"\r\nCONNECT 57600\r\n"
+RING = b"\r\nRING\r\n"
 NOCARRIER = b"\r\nNO CARRIER\r\n"
 OK = b"\r\nOK\r\n"
 ERROR = b"\r\nERROR\r\n"
@@ -29,6 +30,11 @@ def rd_until(s, want, t=3):
 def call():
     return socket.create_connection(("127.0.0.1", 2324))
 
+def answer(local):                              # S0=0: RING, then ATA -> CONNECT
+    c = call(); assert rd(local) == RING
+    local.sendall(b"ATA\r"); assert rd(local) == CONNECT
+    return c
+
 def listener(port):
     l = socket.socket(); l.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     l.bind(("127.0.0.1", port)); l.listen(1); l.settimeout(3)
@@ -46,7 +52,7 @@ m = subprocess.Popen(["./modem", "2324", "1235", conf.name], stderr=subprocess.D
 try:
     local, _ = ser.accept()                     # the modem is on the line from the start
     # 1. inbound call: CONNECT, data both ways
-    caller = call(); assert rd(local) == CONNECT
+    caller = answer(local)
     caller.sendall(b"hello"); assert rd(local) == b"hello"
     local.sendall(b"world"); assert rd(caller) == b"world"
     # 2. "+++" without guard time is plain data
@@ -63,14 +69,14 @@ try:
     local.sendall(b"AT\r"); assert rd(local) == OK
     local.sendall(b"ATH\r"); assert rd(local) == OK      # on-hook already
     # 5. caller hangs up -> NO CARRIER; line still answers commands
-    caller = call(); assert rd(local) == CONNECT
+    caller = answer(local)
     caller.close(); assert rd(local) == NOCARRIER
     local.sendall(b"AT\r"); assert rd(local) == OK
     # 6. serial port closes mid-call -> caller dropped; modem reconnects (~10 s)
-    caller = call(); assert rd(local) == CONNECT
+    caller = answer(local)
     local.close(); assert rd(caller) == b""; caller.close()
     ser.settimeout(12); local, _ = ser.accept()
-    caller = call(); assert rd(local) == CONNECT
+    caller = answer(local)
     caller.close(); assert rd(local) == NOCARRIER
     # 8. ATDT host:port with no dial.conf -> CONNECT, bridged both ways
     peer_l = listener(1236)
@@ -127,12 +133,32 @@ try:
     local.sendall(b"AT E0 V1 &C1;+GCI=FF;S0=0 X4 %C1\r"); assert rd(local) == OK
     local.sendall(b"AT+BAN\r"); assert rd(local) == ERROR   # nobody on the line
     # 18. AT+BAN;H bans the caller and hangs up; the next call is refused
-    caller = call(); assert rd(local) == CONNECT
+    caller = answer(local)
     time.sleep(1.1); local.sendall(b"+++"); assert rd(local) == OK
     local.sendall(b"AT+BAN;H\r"); assert rd(local) == NOCARRIER; caller.close()
     c = call(); assert rd(local, t=1) == b""; c.close()      # banned: no CONNECT
     local.sendall(b"AT+BAN=0\r"); assert rd(local) == OK     # clear the ban list
-    caller = call(); assert rd(local) == CONNECT
+    caller = answer(local)
+    caller.close(); assert rd(local) == NOCARRIER
+    # 19. rings repeat until ATA; ATA with nobody ringing is NO CARRIER
+    local.sendall(b"ATA\r"); assert rd(local) == NOCARRIER
+    caller = call(); assert rd(local) == RING
+    assert rd(local, t=7) == RING                       # ~6 s cadence
+    local.sendall(b"ATA\r"); assert rd(local) == CONNECT
+    caller.close(); assert rd(local) == NOCARRIER
+    # 20. a caller giving up while ringing: the ringing just stops
+    caller = call(); assert rd(local) == RING; caller.close()
+    assert rd(local, t=7) == b""
+    # 21. ATD while ringing drops the ringing caller (BUSY) and dials
+    peer_l = listener(1236)
+    caller = call(); assert rd(local) == RING
+    local.sendall(b"ATDT127.0.0.1:1236\r"); peer, _ = peer_l.accept()
+    assert rd(local) == CONNECT; assert rd(caller) == BUSY; caller.close()
+    time.sleep(1.1); local.sendall(b"+++"); assert rd(local) == OK
+    local.sendall(b"ATH\r"); assert rd(local) == NOCARRIER; peer.close(); peer_l.close()
+    # 22. S0=1 auto-answers on the first ring
+    local.sendall(b"ATS0=1\r"); assert rd(local) == OK
+    caller = call(); assert rd_until(local, CONNECT) == RING + CONNECT
     caller.close(); assert rd(local) == NOCARRIER
     # 7. serial port down -> caller rejected with NO ANSWER
     ser.close(); local.close(); time.sleep(0.3)

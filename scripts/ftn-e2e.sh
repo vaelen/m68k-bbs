@@ -23,6 +23,7 @@ include "$REPO/emsi.cla"
 var modem: connection
 var isConnected: bool = false
 var maintaining: bool = false     // bbs.cla's maintenance run; never here
+var ringCount: int = 0           // bbs.cla's unanswered RINGs; never here
 var hangupPhase: int = 0
 var hungUp: bool = false
 var failures: int = 0
@@ -35,6 +36,7 @@ func xferDone(ok: bool) { emsiXferDone(ok) }
 func xferReceived(name: string, bytes: int) { emsiFileReceived(name, bytes) }
 func xferAcceptName(name: string): bool { return emsiAcceptName(name) }
 func inputChar(c: char) { emsiChar(c) }
+func ring() { }
 
 func expect(cond: bool, name: string) {
     if cond {

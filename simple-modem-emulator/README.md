@@ -38,13 +38,16 @@ calls placed, answered (with the caller's IP) and ended, and bans.
 
 ## Inbound calls
 
-A telnet client connecting to `listen_port` is answered at once: the
-serial side gets `\r\nCONNECT 57600\r\n` and traffic is bridged unchanged
-both ways. When the caller disconnects the serial side gets
-`\r\nNO CARRIER\r\n`. One call at a time: further callers get
-`BUSY, PLEASE TRY AGAIN LATER\r\n`; callers while the serial port is down
-get `NO ANSWER, PLEASE TRY AGAIN LATER\r\n`. No `RING`, no auto-answer
-register — the line just answers.
+A telnet client connecting to `listen_port` rings: the serial side gets
+`\r\nRING\r\n` at once and every 6 s after. `ATA` answers; so does the
+modem itself on ring `S0` when `S0` is non-zero (`S0=0`, the default,
+waits for `ATA`). Answering sends `\r\nCONNECT 57600\r\n` and traffic is
+then bridged unchanged both ways. A caller who leaves while ringing just
+stops the rings; a call that was answered ends with
+`\r\nNO CARRIER\r\n`. One call at a time: further callers (ringing
+included) get `BUSY, PLEASE TRY AGAIN LATER\r\n`; callers while the
+serial port is down get `NO ANSWER, PLEASE TRY AGAIN LATER\r\n`. An `ATD`
+while a caller is ringing drops that caller (`BUSY`) and dials.
 
 ## Dialing out
 
@@ -72,21 +75,23 @@ computer aborts it (`NO CARRIER`), as does a 60 s ceiling.
 | Input (from serial port) | On-hook | Online after `+++` |
 |---|---|---|
 | `+++` (0.5 s of silence before/after) | — | enters command mode, `OK`; not forwarded |
+| `ATA` | answers a ringing caller (`CONNECT 57600`); nobody ringing: `NO CARRIER` | `OK` |
 | `ATD…` | dials (above) | `ERROR` |
 | `ATH` / `ATH0` | `OK` | hang up: `NO CARRIER`, remote closed |
 | `ATO` | `OK` | back to data mode, `CONNECT 57600` |
 | `AT+BAN` | `ERROR` | ban the caller's IP (below), `OK` |
 | `AT+BAN=0` | clear the ban list, `OK` | same |
+| `ATS0=n` | rings before auto-answer, 0 = never, `OK` | same |
 | any other `AT…` | `OK` | `OK` |
 
 The command line is parsed as real Hayes syntax — basic commands
 (`E0V1X4`), S registers (`S0=0`, `S11?`), `&`/`%`/`\` sets, extended
 `+NAME[=value][?]` commands, optional spaces and semicolons — so chains
 like `AT+BAN;H` work; everything unrecognized parses cleanly and is
-ignored (`OK`).
+ignored (`OK`). `S0` is the one register kept; `&F`/`Z` don't reset it.
 
 Result codes use the Hayes verbose (`ATV1`) framing, `<CR><LF>text<CR><LF>`.
-No command echo, numeric result codes or `RING`. The guard
+No command echo or numeric result codes. The guard
 time is 0.5 s, half the Hayes default (`GUARD_MS` in `modem.c`). Data from
 the remote side that arrives in command mode is discarded. Output to the
 serial side is queued and never blocks the modem: a remote streaming

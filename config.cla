@@ -19,6 +19,7 @@ record Config {
     maintenanceHour: int = 4               // Hour (0-23, Mac local time) the daily maintenance window opens
     systemName: string = "68kBBS"          // The board's name: FTN Origin lines and EMSI IDENT
     modemInit: string = "AT&FE1Q0V1X4&C1&D2S0=0"   // Sent at startup and Modem > Initialize Modem; empty = none
+    answerRings: int = 1                   // Send ATA on this RING, unless modemInit sets S0 (the modem auto-answers); no menu
     modemSpeed: int = 57600                // Serial port bps; a Modem-menu value (cosmetic under Snow; a real SE may drop upload bytes above 19200)
     modemPort: string = "modem"            // "modem" or "printer" -- which serial port the BBS answers
     idleSeconds: int = 300                 // Hang up a caller idle this many seconds; 0 = never
@@ -36,6 +37,23 @@ func modemSpeedValid(n: int): bool {
 
 var config: Config
 
+// True when modemInit sets S0 non-zero: the modem answers by itself,
+// so the BBS must not send ATA (one arriving mid-answer aborts it).
+func modemAutoAnswer(): bool {
+    var s: string = config.modemInit
+    var i: int = 0
+    var j: int
+    while i + 2 < s.length {
+        if (s[i] == 'S' or s[i] == 's') and s[i + 1] == '0' and s[i + 2] == '=' {
+            j = i + 3
+            while j < s.length and s[j] >= '0' and s[j] <= '9' { j = j + 1 }
+            return configInt(s[i + 3, j - i - 3]) > 0
+        }
+        i = i + 1
+    }
+    return false
+}
+
 func configSave(): bool {
     var f: filehandle = file.create(configFileName, "TEXT", "ttxt")
     var data: text
@@ -46,6 +64,7 @@ func configSave(): bool {
     data.append("maintenanceHour=" + string(config.maintenanceHour) + "\n")
     data.append("systemName=" + config.systemName + "\n")
     data.append("modemInit=" + config.modemInit + "\n")
+    data.append("answerRings=" + string(config.answerRings) + "\n")
     data.append("modemSpeed=" + string(config.modemSpeed) + "\n")
     data.append("modemPort=" + config.modemPort + "\n")
     data.append("idleSeconds=" + string(config.idleSeconds) + "\n")
@@ -104,6 +123,10 @@ func configApply(line: string) {
     }
     case "modemInit" {
         config.modemInit = val         // explicit empty = no init string
+    }
+    case "answerRings" {
+        n = configInt(val)
+        if n >= 1 and n <= 255 { config.answerRings = n }
     }
     case "modemSpeed" {
         n = configInt(val)

@@ -29,6 +29,8 @@ var mode: char = 'X'
 var recv: bool = false
 var telnet: bool = false
 
+func ring() { }
+
 func connected() {
     log("connected")
     telnetReset()

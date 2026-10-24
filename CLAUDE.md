@@ -80,7 +80,7 @@ For host-side serial testing, the host lane maps the modem port via env:
 (System 7) from `snow/hdd0.img` (SCSI 0) with the emulated **modem port
 bridged to TCP port 1235** (`--serial-bridge-a tcp:1235`). This is the
 **test instance**; the production BBS runs from `~/bbs/` on port 1234
-with its modem emulator on 2323, and both can run at once. Connect a
+(no longer behind the modem emulator), and both can run at once. Connect a
 test client with `nc localhost 1235` while the emulator runs.
 
 The workspace is `snow/MacII.snoww` (plain JSON; SCSI ID 1 is free for a
@@ -99,13 +99,13 @@ fails with "===== not found" — quote it).
 
 `simple-modem-emulator/` is a tiny C program that sits on the emulated
 serial port and behaves like a Hayes modem
-(`telnet → :2324 → modem → :1235 → Snow` for the test instance; production
-is `:2323 → :1234`). Andrew usually has the production one running on
-port 2323. It connects to Snow's serial bridge at start and reconnects
-every 10 s (quietly) if Snow goes away. Inbound telnet callers are
-answered at once: `\r\nCONNECT 57600\r\n` to the serial side, then
+(`telnet → :2324 → modem → :1235 → Snow`). It is for testing only: the
+production BBS no longer uses it. It connects to Snow's serial bridge at start and reconnects
+every 10 s (quietly) if Snow goes away. Inbound telnet callers ring
+(`\r\nRING\r\n` every 6 s) until `ATA`, or auto-answer on ring `S0` when
+the init string sets it non-zero; then `\r\nCONNECT 57600\r\n`, and
 `\r\nNO CARRIER\r\n` when they leave — exactly what `scanner.cla` watches
-for. Output toward the Mac is queued (never blocks; a fast remote is paused
+for. `ATD` while a caller rings drops them (`BUSY`). Output toward the Mac is queued (never blocks; a fast remote is paused
 past a 64 KB backlog), so `+++` timing holds under a streaming peer.
 From the Mac side it honors `+++`/`ATH` (hang up), `ATO`, `AT+BAN`
 (strike the caller's IP: 5 min, then 1 h, then 24 h; chain as
@@ -170,14 +170,19 @@ The received-byte path is:
 inputChar (bbs.cla) → processInput`.
 
 - `scanner.cla` — a state machine that watches the raw stream for the
-  Hayes result codes `\r\nCONNECT <digits>\r\n` / `\r\nNO CARRIER\r\n`
-  (state persists across chunks). It is also a *filter*: bytes it
+  Hayes result codes `\r\nCONNECT <digits>\r\n` / `\r\nNO CARRIER\r\n` /
+  `\r\nRING\r\n` (state persists across chunks). It is also a *filter*: bytes it
   releases as ordinary data go to `dataChar`; candidate result-code
   bytes are held and either discarded (match → calls `connected()` /
-  `disconnected()`) or replayed (mismatch). CR/LF always pass through
+  `disconnected()` / `ring()`) or replayed (mismatch). bbs.cla's `ring()`
+  counts rings (`ringCount`; ignored mid-call, polling or
+  `rejectCallers`) and sends `ATA` on `config.answerRings` unless
+  `modemAutoAnswer()` (the init string's `S0` > 0); a non-zero
+  `ringCount` holds off `ftnNext` and maintenance until CONNECT, NO
+  CARRIER, or the 30-tick timer's 10 s (60 s after ATA) timeout. CR/LF always pass through
   immediately, so the one hang-up artifact is a single empty line just
   before disconnect. The including program defines `connected`,
-  `disconnected`, and `dataChar`.
+  `disconnected`, `ring`, and `dataChar`.
 - `telnet.cla` — telnet option processor between the scanner and the
   app: consumes/answers IAC sequences (WILL TERMINAL-TYPE/SPEED → SB
   SEND; the probe also offers WILL ECHO and WILL/DO SGA, so telnet

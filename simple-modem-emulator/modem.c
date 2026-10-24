@@ -27,6 +27,8 @@
 #define LQ_MAX 65536            // serial-side backlog that pauses the remote
 #define RECONNECT_MS 10000      // serial port reconnect interval
 #define DIAL_MS 60000           // dial ceiling (Hayes S7 is 50 s)
+#define RING_MS 6000            // ring cadence: 2 s on, 4 s off
+#define RING_MSG "\r\nRING\r\n"
 #define CONNECT_MSG "\r\nCONNECT 57600\r\n"
 #define NO_CARRIER_MSG "\r\nNO CARRIER\r\n"
 #define BUSY_MSG "BUSY, PLEASE TRY AGAIN LATER\r\n"
@@ -34,7 +36,7 @@
 #define OK_MSG "\r\nOK\r\n"
 #define ERROR_MSG "\r\nERROR\r\n"
 
-enum { IDLE, DIALING, ONLINE, ONLINE_CMD };   // on-hook, dial in progress, data mode, after +++
+enum { IDLE, RINGING, DIALING, ONLINE, ONLINE_CMD };   // on-hook, caller waiting, dial in progress, data mode, after +++
 static int state = IDLE;
 static int local = -1;                  // the "serial port"
 static const char *chost = "localhost"; // its TCP host
@@ -43,6 +45,9 @@ static long local_retry_ms = 0;         // when to try connecting it again
 static int rin = -1, rout = -1;         // the remote: one socket for now
 static pid_t child = 0;                 // an exec: target's pid, 0 for a socket
 static long dial_ms = 0;                // when the current dial started
+static int s0 = 0;                      // S0: answer on this ring, 0 = wait for ATA
+static int rings = 0;                   // RINGs sent for the current caller
+static long ring_ms = 0;                // when the next RING is due
 static const char *dialconf = NULL;     // address book, or NULL
 static char held[3];                    // '+' bytes held back pending guard time
 static int nheld = 0;
@@ -256,6 +261,17 @@ static void go_online(void) {
     local_send(CONNECT_MSG, sizeof CONNECT_MSG - 1);
 }
 
+// A caller is waiting: RING every RING_MS until ATA, or until ring S0.
+static void ring(void) {
+    rings++;
+    ring_ms = now_ms() + RING_MS;
+    local_send(RING_MSG, sizeof RING_MSG - 1);
+    if (s0 > 0 && rings >= s0) {
+        go_online();
+        logts("call answered (S0=%d) from %s", s0, caller_ip_str);
+    }
+}
+
 // Start a non-blocking TCP connect to host:port; the loop finishes it.
 static void dial_tcp(const char *host, const char *port) {
     struct addrinfo hints, *ai;
@@ -381,15 +397,17 @@ static void accept_caller(int lsock) {
     rin = rout = fd;
     caller_ip = a.sin_addr.s_addr;
     snprintf(caller_ip_str, sizeof caller_ip_str, "%s", ip);
-    go_online();
-    logts("call connected from %s", ip);
+    state = RINGING;
+    rings = 0;
+    logts("ringing: call from %s", ip);
+    ring();
 }
 
 // Handle one complete command line typed in command mode: a Hayes
 // tokenizer over the whole line — basic commands (letter + digits),
 // S registers (Sn=v / Sn?), prefixed sets (&X / %X / \X), extended
 // commands (+NAME[=value][?]), optional semicolon separators. Only
-// D, H, O and +BAN act; everything else parses and is ignored.
+// A, D, H, O, S0 and +BAN act; everything else parses and is ignored.
 static void do_command(void) {
     int i, err = 0;
     for (i = 0; i < ncmd; i++) cmd[i] = (char)toupper((unsigned char)cmd[i]);
@@ -400,6 +418,12 @@ static void do_command(void) {
         char c = cmd[i];
         if (c == ' ' || c == ';') { i++; continue; }
         if (c == 'D') {                 // dial: consumes the rest of the line
+            if (state == RINGING) {     // dialing out drops a caller still ringing
+                send_all(rout, BUSY_MSG, sizeof BUSY_MSG - 1);
+                remote_close();
+                state = IDLE;
+                logts("ringing caller dropped: dialing out");
+            }
             if (state != IDLE) { local_send(ERROR_MSG, sizeof ERROR_MSG - 1); return; }
             i++;
             if (i < ncmd && (cmd[i] == 'T' || cmd[i] == 'P')) i++;
@@ -436,13 +460,15 @@ static void do_command(void) {
             while (i < ncmd && isdigit((unsigned char)cmd[i])) i++;
             continue;
         }
-        if (c == 'S') {                 // Sn=v / Sn?: ignored
+        if (c == 'S') {                 // Sn=v / Sn?: only S0 is kept
+            int reg = 0, val = 0;
             i++;
-            while (i < ncmd && isdigit((unsigned char)cmd[i])) i++;
+            while (i < ncmd && isdigit((unsigned char)cmd[i])) reg = reg * 10 + cmd[i++] - '0';
             if (i < ncmd && cmd[i] == '?') i++;
             else if (i < ncmd && cmd[i] == '=') {
                 i++;
-                while (i < ncmd && isdigit((unsigned char)cmd[i])) i++;
+                while (i < ncmd && isdigit((unsigned char)cmd[i])) val = val * 10 + cmd[i++] - '0';
+                if (reg == 0) s0 = val > 255 ? 255 : val;
             }
             continue;
         }
@@ -451,6 +477,12 @@ static void do_command(void) {
             while (i < ncmd && isdigit((unsigned char)cmd[i])) i++;
             if (c == 'H' && state == ONLINE_CMD) { hangup("call ended"); return; }
             if (c == 'O' && state == ONLINE_CMD) { go_online(); return; }
+            if (c == 'A' && state == RINGING) {
+                go_online();
+                logts("call answered from %s", caller_ip_str);
+                return;
+            }
+            if (c == 'A' && state == IDLE) { local_send(NO_CARRIER_MSG, sizeof NO_CARRIER_MSG - 1); return; }
             continue;
         }
         i++;                            // junk: skip a byte, keep parsing
@@ -565,6 +597,7 @@ int main(int argc, char **argv) {
         check_guard();
         if (local >= 0 && FD_ISSET(local, &w)) local_flush();
         if (state == DIALING && now_ms() - dial_ms >= DIAL_MS) hangup("dial timed out");
+        if (state == RINGING && now_ms() >= ring_ms) ring();
 
         if (FD_ISSET(lsock, &r)) accept_caller(lsock);
         if (rin >= 0 && FD_ISSET(rin, &w)) {            // connect finished
@@ -581,7 +614,11 @@ int main(int argc, char **argv) {
         }
         if (rin >= 0 && FD_ISSET(rin, &r)) {
             n = (int)read(rin, buf, sizeof buf);
-            if (n <= 0) {
+            if (n <= 0 && state == RINGING) {   // gave up before the answer: the ringing just stops
+                remote_close();
+                state = IDLE;
+                logts("caller hung up while ringing");
+            } else if (n <= 0) {
                 hangup(state == DIALING ? "no answer" : "call ended");
             } else {
                 if (state == DIALING) {         // exec: target's first byte
