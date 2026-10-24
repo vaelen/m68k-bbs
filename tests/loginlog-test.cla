@@ -18,24 +18,46 @@ func expect(cond: bool, name: string) {
     }
 }
 
+// n records in the pre-terminal 65-byte format, user1..userN (user3 new).
+func writeOld(n: int, t: int): bool {
+    var f: filehandle = file.create(loginLogName, "TEXT", "ttxt")
+    var data: text
+    var rec: string
+    var i: int = 1
+    var ok: bool
+    if f == nil { return false }
+    while i <= n {
+        rec = loginRecord(i == 3, "user" + string(i), t + i, i, "")
+        data.append(rec[0, loginOldRecSize - 1] + "\n")
+        i = i + 1
+    }
+    ok = f.writeAt(0, data)
+    f.close()
+    return ok
+}
+
 on App.startCLI(args: list of string) {
     var recs: list of string
     var rec: string
     var i: int = 1
     var t: int = now()
 
-    rec = loginRecord(true, "andrew", t, 3725)
+    rec = loginRecord(true, "andrew", t, 3725, "VT100 Mono")
     expect(rec.length == loginRecSize, "record is fixed width")
     expect(rec[0] == '*' and rec[1] == '\x09' and rec[rec.length - 1] == '\n', "flag, tab, CR framing")
     expect(loginField(rec, loginNameAt, loginNameWidth) == pad("andrew", loginNameWidth), "name field padded")
     expect(loginField(rec, loginTimeAt, loginTimeWidth) == dateTimeStr(t), "timestamp field")
     expect(loginField(rec, loginDurAt, loginDurWidth) == pad("1h 2m 5s", loginDurWidth), "duration field")
+    expect(loginField(rec, loginTermAt, loginTermWidth) == "VT100 Mono", "terminal field")
 
     loginLogRecent(20, recs)
     expect(recs.count == 0, "missing log reads as empty")
 
+    // a log from before the terminal field: 65-byte records, then new ones after
+    expect(writeOld(5, t), "write 5 old-format records")
+    i = 6
     while i <= 25 {
-        expect(loginLogAppend(i == 3, "user" + string(i), t + i, i), "append " + string(i))
+        expect(loginLogAppend(i == 7, "user" + string(i), t + i, i, "ANSI"), "append " + string(i))
         i = i + 1
     }
     loginLogRecent(20, recs)
@@ -43,9 +65,15 @@ on App.startCLI(args: list of string) {
     expect(loginField(recs[0], loginNameAt, loginNameWidth) == pad("user25", loginNameWidth), "newest first")
     expect(loginField(recs[19], loginNameAt, loginNameWidth) == pad("user6", loginNameWidth), "oldest of the 20")
     expect(recs[0][loginNewAt] == ' ', "existing account flag blank")
+    expect(loginField(recs[0], loginTermAt, loginTermWidth) == pad("ANSI", loginTermWidth), "new record's terminal")
     loginLogRecent(30, recs)
     expect(recs.count == 25, "asking for more than exist returns all")
-    expect(recs[22][loginNewAt] == '*', "new-account flag preserved")
+    expect(recs[18][loginNewAt] == '*', "new-account flag preserved")
+    expect(recs[20].length == loginRecSize, "old record widened")
+    expect(loginField(recs[20], loginNameAt, loginNameWidth) == pad("user5", loginNameWidth), "old record's name")
+    expect(loginField(recs[22], loginNewAt, 1) == "*", "old record's new flag")
+    expect(loginField(recs[24], loginDurAt, loginDurWidth) == pad(durationStr(1), loginDurWidth), "old record's duration")
+    expect(loginField(recs[24], loginTermAt, loginTermWidth) == pad("", loginTermWidth), "old record's terminal blank")
 
     if failures > 0 {
         log("loginlog-test: FAILED")

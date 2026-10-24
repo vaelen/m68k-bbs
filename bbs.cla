@@ -1470,7 +1470,7 @@ func disconnected() {
     }
     postsClose()
     if sessionName != "" {
-        if not loginLogAppend(sessionNew, sessionName, sessionStart, now() - sessionStart) {
+        if not loginLogAppend(sessionNew, sessionName, sessionStart, now() - sessionStart, termShortName()) {
             log("Login log write failed: " + lastError.message)
         }
         sessionName = ""

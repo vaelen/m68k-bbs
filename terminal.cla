@@ -45,6 +45,22 @@ func termTypeName(t: TerminalType): string {
     return ""
 }
 
+// The current terminal as the terminal menu named it, at most 10
+// characters (the login log's field): "ANSI", "VT100 Mono", "C64 40"...
+func termShortName(): string {
+    var cols: string = "80"
+    if terminal.columns < minimumWideTerminalWidth { cols = "40" }
+    switch terminal.type {
+    case ANSI, VT100 {
+        if terminal.color { return termTypeName(terminal.type) }
+        return termTypeName(terminal.type) + " Mono"
+    }
+    case PETSCII { return "C64 " + cols }
+    }
+    if terminal.ansi { return "VT52" }
+    return "ASCII " + cols
+}
+
 // The physical screen size, as the caller or NAWS reports it.
 func setColumns(actual: int) {
     terminal.columns = actual - 1

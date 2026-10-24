@@ -716,11 +716,13 @@ inputChar (bbs.cla) → processInput`.
   (`runProgram(src, inputs)` harness; `tests/fixtures/sst.bas` is the
   Star Trek acceptance run).
 - `loginlog.cla` — the login log, `Logins.txt` (TEXT/ttxt): one
-  65-byte fixed-width, tab-delimited text line per session — new flag
+  76-byte fixed-width, tab-delimited text line per session — new flag
   (`*`/space), name padded to 31, `dateTimeStr` of the login, padded
-  `durationStr` — appended on disconnect; `loginLogRecent(n, out)`
-  reads the newest n in one positioned read, newest first; field
-  offsets are the `login*At` consts.
+  `durationStr`, `termShortName()` padded to 10 — appended on
+  disconnect; `loginLogRecent(n, out)` reads the newest n in one
+  positioned read, newest first, walking back from the end so older
+  65-byte records (no terminal field) come back widened with a blank
+  one; field offsets are the `login*At` consts.
 - `editor.cla` — WWIV-style line editor for new posts, replies,
   private mail, file long descriptions, and the MOTD (`editTarget`
   picks the save target; `'F'` routes /S and /A to files.cla's
