@@ -278,9 +278,11 @@ func rtUiTeWidestLine(te: ptr): int {
     // heap-layout change (filesystem-api phase, 2026-08-26; the loop
     // below already re-derived teMp for the same hazard).
     savedPort = rtUiGetPortSaved()
+    rtUiFontScratchGet() // allocates once: before teMp, same rule
     teMp = UiHandleDeref(te)
     n = peekw(teMp + rtUiTeNLines)
     UiSetPort(ptr(peekl(teMp + 82))) // (*te)->inPort
+    rtUiFontSave()
     UiTextFont(peekw(teMp + 74))
     UiTextSize(peekw(teMp + 80))
     UiTextFace(peekb(teMp + 76))
@@ -318,6 +320,7 @@ func rtUiTeWidestLine(te: ptr): int {
         i = i + 1
     }
     UiHSetState(hText, state)
+    rtUiFontRestore() // the TE's font must not stay in its window's port
     UiSetPort(savedPort)
     return widest
 }
@@ -570,6 +573,13 @@ func rtUiTeRelayout(inst: ptr, i: int) {
     flags = uidWidgetFlags(winIdx, i)
     widthIsFill = uidWidgetWidthIsFill(winIdx, i)
     fillBoth = uidWidgetFillBoth(winIdx, i)
+    if rtUiPlacedAt(w, i) {
+        // Code-placed (setBounds, ui-widgets Task 6): the rect is exactly
+        // what code asked for -- the blob's fill flags no longer apply, so
+        // no flush-to-frame scrollbar adjustment.
+        widthIsFill = false
+        fillBoth = false
+    }
 
     // Same flushR/flushB tests as rtUiLayout (kept in sync there).
     flushR = false
@@ -689,7 +699,10 @@ func rtUiTeRelayout(inst: ptr, i: int) {
 // rt_ui_te_set_focus (rt_ui.c:1961-1976) -> rtUiTeSetFocus. Click-to-focus
 // ("one focused TE per window"): TEDeactivate's the previously focused TE
 // (if any) and TEActivate's the new one. A no-op when the click lands on
-// the already-focused TE.
+// the already-focused TE. newIdx may also be a logpanel (ui-widgets spec
+// 4.6): it has no TE (its tes slot stays nil), so the nil checks below
+// are the focused-kind check -- the old TE is deactivated, nothing is
+// activated.
 func rtUiTeSetFocus(inst: ptr, newIdx: int) {
     var w: RtUiWinst
     var te: ptr
