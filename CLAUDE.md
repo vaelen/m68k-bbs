@@ -155,11 +155,10 @@ else: the runtime keeps no log file unless the app opts in with
 `app.writeLog(name)` (plus `app.flushLog()` from a coarse timer;
 `app.trace(true)` adds the UI trace), and the BBS doesn't -- the old
 always-on `out` capture wrote and flushed the volume on every timer
-fire, so the disk light never went out. The log window is a buffered canvas
-tailing a 100-line ring (`logLines`/`logRedraw`; appends set
-`logDirty`, the 2-tick timer redraws) -- no scrollbar, no selection;
-TextEdit re-wrapped the whole content per line, ~1 s on the SE.
-History past the window is Sysop menu `L` (the same ring). If a log
+fire, so the disk light never went out. The log is the main window's
+bottom pane, a `logpanel` holding the last 100 lines (scrollable,
+selectable, Copy works); Sysop menu `L` pages the same lines
+(`logCount`/`logLine`). If a log
 file is turned on, read it after quitting Snow cleanly with
 `HOME=scratch hmount snow/hdd2.img && hcopy -t :<name> ./log.txt && humount`.
 
@@ -333,7 +332,13 @@ inputChar (bbs.cla) → processInput`.
   `center` — see `docs/tables.md`).
   `termio.cla` — connection-facing send wrappers over those (take a
   `connection` parameter, gated on `terminal.color`).
-- `bbs.cla` — app/UI declarations, session flow. `inputChar` assembles
+- `bbs.cla` — app/UI declarations, session flow. The main window
+  (`Main`) is three panes laid out by `layoutMain` from `opened`/
+  `resized`: line status labels top left (`statusSync` from the
+  30-tick timer: `lineStatus` — Idle/FTN - <net>/Connected/Ringing/
+  Maintenance/Waiting — the user, and `screenGroup(user.screen)`;
+  a new screen needs a case there or it shows as "Sysop"), the Callers
+  table top right, the `Log` logpanel below. `inputChar` assembles
   input (`terminal.linemode` on — text prompts, editor lines and the
   number prompts: buffer until CR, BS/DEL rubs out; off — menus, Y/N,
   pagers, list screens: each key acts at once, Enter arrives as "",
@@ -412,9 +417,9 @@ inputChar (bbs.cla) → processInput`.
   held the first write forever; `Modem > Initialize Modem`) runs that hang-up
   then sends `config.modemInit` (`modemInitPhase`); `Modem >
   Hang Up` (Cmd-H) is the hang-up alone; modem commands are logged as
-  sent. The Modem menu (flat -- Clarus menus have no submenus or
-  checkmarks, so the active choice is dimmed via `modemMenuSync`) also
-  picks the port speed (300..57600) and port (modem/printer), saved as
+  sent. The Modem menu's Speed and Port submenus (`ModemSpeed`/
+  `ModemPort`, the active ones checked by `modemMenuSync`) pick the
+  port speed (300..57600) and port (modem/printer), saved as
   `modemSpeed`/`modemPort` in Config.txt; a change closes and reopens
   the port (`modemReopen`, dropping any caller). The micro-benchmarks
   live in their own app, `bench.cla` (below).
@@ -623,8 +628,7 @@ inputChar (bbs.cla) → processInput`.
   everything, `compacting` set alongside `maintaining`. Also the window
   rule (`maintDueNow`, `config.maintenanceHour`), and the
   `rejectCallers`/`maintaining` flags `connected()` and `ftnSchedule`
-  honour; the Mac `Maintenance` menu toggles/runs it (menu captions must not contain
-  `(` -- the Menu Manager dims such an item). A `FileInfo` temp is too big for
+  honour; the Mac `Maintenance` menu toggles/runs it. A `FileInfo` temp is too big for
   the 68k backend — assign `file.info(p)` to a local, never
   `file.info(p).size`. `docs/maintenance.md`.
 - `gamesdb.cla` — the "Games" vDB (256-byte records: name/
@@ -722,7 +726,10 @@ inputChar (bbs.cla) → processInput`.
   disconnect; `loginLogRecent(n, out)` reads the newest n in one
   positioned read, newest first, walking back from the end so older
   65-byte records (no terminal field) come back widened with a blank
-  one; field offsets are the `login*At` consts.
+  one; field offsets are the `login*At` consts. `recentCallers` (≤50
+  `RecentCaller`s, newest first; `recentSeed` at launch, `recentPut`
+  per logged-in session in `disconnected()`) is the main window's
+  Callers table.
 - `editor.cla` — WWIV-style line editor for new posts, replies,
   private mail, file long descriptions, and the MOTD (`editTarget`
   picks the save target; `'F'` routes /S and /A to files.cla's

@@ -50,6 +50,7 @@ var emWireName: string(31)
 var ftnPolling: bool = false
 var ftnEnabled: bool = true      // the sysop's switch: off keeps requests queued
 var ftnNetId: int = 0
+var ftnNetName: string(31)      // the polled network's name, for the Mac status pane
 var ftnQueue: list of int
 var ftnSchedMinutes: int = 0
 
@@ -132,6 +133,7 @@ func ftnPollStart(netId: int) {
     ftnNetId = netId
     emHadFile = scanNetwork(netId) > 0
     loadNetwork(netId)
+    ftnNetName = network.name
     emWireName = hex8(now()) + ".pkt"
     emFiles = 0
     emSendOk = false

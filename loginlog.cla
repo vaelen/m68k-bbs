@@ -91,3 +91,55 @@ func loginLogRecent(max: int, out: list of string) {
 func loginField(rec: string, at: int, width: int): string {
     return rec[at, width]
 }
+
+// --- Recent callers ----------------------------------------------------
+// The Mac window's Callers table: the newest recentKeep sessions, newest
+// first, held in memory (70 bytes each) and seeded from the log at
+// launch. Only logged-in sessions reach the log, so bots that never get
+// past the login prompt never show up here.
+
+record RecentCaller {
+    name: string(31)
+    when: string(11)     // "mm-dd HH:MM"
+    term: string(10)
+    time: string(12)     // durationStr
+}
+
+const recentKeep: int = 50
+var recentCallers: list of RecentCaller
+
+// A record string's field, trailing pad spaces dropped.
+func loginTrim(rec: string, at: int, width: int): string {
+    var n: int = width
+    while n > 0 and rec[at + n - 1] == ' ' { n = n - 1 }
+    return rec[at, n]
+}
+
+// Add one session (a loginRecord string), at the front for a new call
+// or at the back while seeding; the oldest beyond recentKeep drop off.
+func recentPut(rec: string, front: bool) {
+    var c: RecentCaller
+    var t: string = rec[loginTimeAt, loginTimeWidth]
+    c.name = loginTrim(rec, loginNameAt, loginNameWidth)
+    c.when = t[0, 5] + " " + t[9, 5]
+    c.term = loginTrim(rec, loginTermAt, loginTermWidth)
+    c.time = loginTrim(rec, loginDurAt, loginDurWidth)
+    if front {
+        recentCallers.unshift(c)
+    } else {
+        recentCallers.add(c)
+    }
+    while recentCallers.count > recentKeep { recentCallers.pop() }
+}
+
+func recentSeed() {
+    var recs: list of string
+    var i: int = 0
+    recentCallers.clear()
+    recentCallers.reserve(recentKeep + 1)
+    loginLogRecent(recentKeep, recs)
+    while i < recs.count {
+        recentPut(recs[i], false)
+        i = i + 1
+    }
+}

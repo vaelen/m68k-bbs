@@ -75,6 +75,22 @@ on App.startCLI(args: list of string) {
     expect(loginField(recs[24], loginDurAt, loginDurWidth) == pad(durationStr(1), loginDurWidth), "old record's duration")
     expect(loginField(recs[24], loginTermAt, loginTermWidth) == pad("", loginTermWidth), "old record's terminal blank")
 
+    // the Callers table's list: seeded newest first, new calls in front, capped
+    recentSeed()
+    expect(recentCallers.count == 25, "seed takes the whole short log")
+    expect(recentCallers[0].name == "user25" and recentCallers[0].term == "ANSI", "seed newest first, trimmed")
+    expect(recentCallers[0].time == "25s", "duration trimmed")
+    expect(recentCallers[0].when == dateTimeStr(t + 25)[0, 5] + " " + dateTimeStr(t + 25)[9, 5], "when is mm-dd HH:MM")
+    expect(recentCallers[24].name == "user1" and recentCallers[24].term == "", "old record: blank terminal")
+    i = 0
+    while i < 30 {
+        recentPut(loginRecord(false, "new" + string(i), t, 60, "C64 40"), true)
+        i = i + 1
+    }
+    expect(recentCallers.count == recentKeep, "capped at recentKeep")
+    expect(recentCallers[0].name == "new29" and recentCallers[0].time == "1m 0s", "new call in front")
+    expect(recentCallers[recentKeep - 1].name == "user6", "oldest dropped off the end")
+
     if failures > 0 {
         log("loginlog-test: FAILED")
         quit 1

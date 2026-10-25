@@ -84,12 +84,32 @@ app BBS {
     id: "68BB"
 }
 
+// Top left the line's status, top right the recent callers, the log
+// below; layoutMain places the resizable parts (half the height each).
 window Main {
-    title: "68kBBS Log"
+    title: "68kBBS"
     size: 480, 300
-    resizable: min(300, 150)
+    resizable: min(360, 200)
 
-    canvas LogView { fill: both; buffered }
+    label LineHead     { at: 5, 0; width: 150; height: 16; text: "Line"; font: "Geneva", 9; style: bold }
+    divider HeadRule   { at: 0, 16; width: 160; height: 1 }
+    label StatusCap    { at: 5, 22; width: 45; height: 14; text: "Status:"; font: "Geneva", 9 }
+    label StatusVal    { at: 52, 22; width: 106; height: 14; text: "Idle"; font: "Geneva", 9; style: bold }
+    label UserCap      { at: 5, 38; width: 45; height: 14; text: "User:"; font: "Geneva", 9 }
+    label UserVal      { at: 52, 38; width: 106; height: 14; text: "N/A"; font: "Geneva", 9; style: bold }
+    label ScreenCap    { at: 5, 54; width: 45; height: 14; text: "Screen:"; font: "Geneva", 9 }
+    label ScreenVal    { at: 52, 54; width: 106; height: 14; text: "N/A"; font: "Geneva", 9; style: bold }
+    divider SideRule   { }
+    table Callers {
+        rows: recentCallers
+        font: "Geneva", 9
+        column "User" shows name width 85
+        column "Connected" shows when width 70
+        column "Terminal" shows term width 65
+        column "Time" shows time width fill align right
+    }
+    divider MidRule    { style: double }
+    logpanel Log       { maxLines: 100; font: "Monaco", 9; scrollbar: both }
 }
 
 menu File {
@@ -98,14 +118,8 @@ menu File {
 
 menu Edit { standard edit }
 
-// Menu captions: a "(" anywhere in the item text is the Menu Manager's
-// "disabled item" metacharacter, so no parentheses here. Clarus menus
-// are flat -- no submenus, no checkmarks -- so the speed and port
-// choices are items, with the ACTIVE one dimmed (modemMenuSync).
-menu Modem {
-    item HangUp "Hang Up" key "H"
-    item InitModem "Initialize Modem"
-    separator
+// The Modem menu's submenus; modemMenuSync checks the active choices.
+menu ModemSpeed {
     item Speed300 "300 bps"
     item Speed1200 "1200 bps"
     item Speed2400 "2400 bps"
@@ -113,9 +127,19 @@ menu Modem {
     item Speed9600 "9600 bps"
     item Speed19200 "19200 bps"
     item Speed57600 "57600 bps"
-    separator
+}
+
+menu ModemPort {
     item PortModem "Modem Port"
     item PortPrinter "Printer Port"
+}
+
+menu Modem {
+    item HangUp "Hang Up" key "H"
+    item InitModem "Initialize Modem"
+    separator
+    item SpeedMenu "Speed" submenu ModemSpeed
+    item PortMenu "Port" submenu ModemPort
 }
 
 menu FidoNet {
@@ -1234,18 +1258,17 @@ func modemOpen() {
     modem.open(serial spec)
 }
 
-// Dim the ACTIVE speed and port items -- flat-menu stand-in for
-// checkmarks; you can't select what's already in effect.
+// Check the active speed and port.
 func modemMenuSync() {
-    Modem.Speed300.enabled = config.modemSpeed != 300
-    Modem.Speed1200.enabled = config.modemSpeed != 1200
-    Modem.Speed2400.enabled = config.modemSpeed != 2400
-    Modem.Speed4800.enabled = config.modemSpeed != 4800
-    Modem.Speed9600.enabled = config.modemSpeed != 9600
-    Modem.Speed19200.enabled = config.modemSpeed != 19200
-    Modem.Speed57600.enabled = config.modemSpeed != 57600
-    Modem.PortModem.enabled = config.modemPort != "modem"
-    Modem.PortPrinter.enabled = config.modemPort != "printer"
+    ModemSpeed.Speed300.checked = config.modemSpeed == 300
+    ModemSpeed.Speed1200.checked = config.modemSpeed == 1200
+    ModemSpeed.Speed2400.checked = config.modemSpeed == 2400
+    ModemSpeed.Speed4800.checked = config.modemSpeed == 4800
+    ModemSpeed.Speed9600.checked = config.modemSpeed == 9600
+    ModemSpeed.Speed19200.checked = config.modemSpeed == 19200
+    ModemSpeed.Speed57600.checked = config.modemSpeed == 57600
+    ModemPort.PortModem.checked = config.modemPort == "modem"
+    ModemPort.PortPrinter.checked = config.modemPort == "printer"
 }
 
 // A Modem-menu change: persist it, close and reopen the port.
@@ -1253,6 +1276,7 @@ func modemMenuSync() {
 // initialized; a caller on the line is dropped without ceremony.
 func modemReopen() {
     if isConnected { log("Modem change with a caller online; the call is dropped.") }
+    modemIsOpen = false
     modem.close()
     modemOpen()
     modemMenuSync()
@@ -1300,7 +1324,6 @@ func logoff() {
 every 2 ticks {
     if basicActive and (basicState == BRunning or basicState == BSleeping) { basicPump() }
     if maintaining { maintTick() }
-    if logDirty { logRedraw() }
 }
 
 every 30 ticks {
@@ -1354,10 +1377,7 @@ every 30 ticks {
             hangupPhase = 1
         }
     }
-    if Main.front != nil {
-        // a resized or freshly exposed window redraws even when clean
-        if Main.front.LogView.width != logLastW or Main.front.LogView.height != logLastH { logRedraw() }
-    }
+    statusSync()
     if telnetProbe > 0 {
         telnetProbe = telnetProbe - 1
         if telnetProbe == 0 { telnetProbeDone() }
@@ -1473,78 +1493,93 @@ func disconnected() {
         if not loginLogAppend(sessionNew, sessionName, sessionStart, now() - sessionStart, termShortName()) {
             log("Login log write failed: " + lastError.message)
         }
+        recentPut(loginRecord(sessionNew, sessionName, sessionStart, now() - sessionStart, termShortName()), true)
         sessionName = ""
     }
     log("Caller disconnected.")
     ftnNext()                   // a poll the sysop queued runs now
 }
 
-// The log window is a buffered canvas showing the tail of a ring of
-// the last logKeep lines (TextEdit re-wrapped and redrew the whole
-// content on every append -- about a second per line on the SE; a
-// QuickDraw redraw of the visible tail is a few ms). No scrollbar: the
-// window is a live tail, history lives in the `out` exit log; a taller
-// window shows more lines. Appends only push to the ring and set
-// logDirty -- the 2-tick timer redraws, so bursts of log lines cost
-// one redraw.
-const logKeep: int = 100
-const logLineH: int = 12          // Geneva 9-ish line height, baseline offset below
-var logLines: list of string
-var logDirty: bool = false
-var logLastW: int = 0
-var logLastH: int = 0
-
-func appendLog(chunk: text) {
-    var line: text
-    var i: int = 0
-    var c: char
-    while i < chunk.length {
-        c = chunk[i]
-        if c == '\x0D' or i == chunk.length - 1 {
-            if c != '\x0D' and c != '\x0A' { line.append(c) }
-            if line.length > 0 {
-                if line.length > 250 {
-                    logLines.add(line[0, 250])
-                } else {
-                    logLines.add(line[0, line.length])
-                }
-                line.clear()
-            }
-        } else if c != '\x0A' {
-            line.append(c)
-        }
-        i = i + 1
-    }
-    while logLines.count > logKeep {
-        logLines.shift()
-    }
-    logDirty = true
+// The log pane (Main's logpanel) holds the last 100 lines; Sysop menu
+// L pages the same lines through logCount/logLine.
+func logCount(): int {
+    var m: Main = Main.front
+    if m == nil { return 0 }
+    return m.Log.lineCount
 }
 
-// Redraw the visible tail of the ring; runs from the timer, never
-// from appendLog itself.
-func logRedraw() {
-    var m: Main = Main.front
-    var rows: int
-    var first: int
-    var y: int
-    var i: int
-    logDirty = false
-    if m == nil { return }
-    logLastW = m.LogView.width
-    logLastH = m.LogView.height
-    rows = (logLastH - 4) / logLineH
-    if rows < 1 { return }
-    first = logLines.count - rows
-    if first < 0 { first = 0 }
-    m.LogView.clear()
-    y = logLineH
-    i = first
-    while i < logLines.count {
-        m.LogView.drawText(3, y, logLines[i])
-        y = y + logLineH
-        i = i + 1
+func logLine(i: int): string {
+    var s: string = Main.front.Log.line(i)     // 68k: line() can't be returned directly
+    return s
+}
+
+// --- Status pane -------------------------------------------------------
+
+var modemIsOpen: bool = false
+var statusScreen: string = "N/A"
+
+func lineStatus(): string {
+    if not modemIsOpen { return "Idle" }
+    if ftnPolling { return "FTN - " + ftnNetName }
+    if isConnected { return "Connected" }
+    if ringCount > 0 { return "Ringing" }
+    if rejectCallers or maintaining { return "Maintenance" }
+    return "Waiting"
+}
+
+// The caller's screen as a menu-level name; "" for screens that pass
+// through (probe, pause, logoff) so the pane keeps the last one.
+func screenGroup(s: string): string {
+    switch s {
+    case "terminal" { return "Terminal" }
+    case "login", "password" { return "Login" }
+    case "newname", "newpass", "newpass2", "newemail" { return "Signup" }
+    case "wall", "wallask", "wallentry", "wallmore" { return "Wall" }
+    case "main", "counts" { return "Main" }
+    case "mail", "mailview", "mailto", "mailaddr", "mailnum", "delmailconfirm" { return "Mail" }
+    case "boards", "boardnum", "posts", "postnum", "postview", "delpostconfirm", "delpostnum" { return "Boards" }
+    case "areas", "areanum", "files", "filenum", "fileview", "delfileconfirm", "delfilenum",
+         "editfiledesc", "xferproto", "upproto", "upname", "updesc" { return "Files" }
+    case "games", "gamenum", "wordsguess", "wordsboards", "basic", "basicline" { return "Games" }
+    case "editsubject", "editbody" { return "Editor" }
+    case "xfer" {
+        if xferDir == 'U' { return "Uploading" }
+        return "Downloading"
     }
+    case "probe", "pause", "logoff", "ftn" { return "" }
+    }
+    return "Sysop"      // every other screen is in the sysop menu tree
+}
+
+// From the 30-tick timer; a label assigned its current text does nothing.
+func statusSync() {
+    var m: Main = Main.front
+    var g: string
+    if m == nil { return }
+    m.StatusVal.text = lineStatus()
+    if isConnected and not ftnPolling {
+        g = screenGroup(user.screen)
+        if g != "" {
+            statusScreen = g
+        } else if statusScreen == "N/A" {
+            statusScreen = "Terminal"     // the connect-time probe
+        }
+        if user.authenticated { m.UserVal.text = user.name } else { m.UserVal.text = "N/A" }
+    } else {
+        statusScreen = "N/A"
+        m.UserVal.text = "N/A"
+    }
+    m.ScreenVal.text = statusScreen
+}
+
+func layoutMain(m: Main) {
+    var w: int = m.contentWidth
+    var h: int = m.contentHeight
+    var top: int = h / 2
+    m.SideRule.setBounds(160, 0, 1, top)
+    m.Callers.setBounds(161, 0, w - 161, top)
+    m.MidRule.setBounds(0, top, w, 3)
+    m.Log.setBounds(0, top + 3, w, h - top - 3)
 }
 
 // Every log(...) call lands here (after reaching the diagnostic stream)
@@ -1556,12 +1591,14 @@ func memStr(): string {
 }
 
 on App.log(line: string) {
-    appendLog(timestamp() + line + memStr() + "\n")
+    var m: Main = Main.front
+    if m != nil { m.Log.appendLine(timestamp() + line + memStr()) }
 }
 
 on App.launch {
     open Main
     log("68kBBS starting up.")
+    recentSeed()
     if bannedLoad() {
         log("Banned names loaded (" + intStr(bannedNames.count) + ").")
     } else {
@@ -1648,6 +1685,7 @@ func modemNoHandshake() {
 
 on modem.opened {
     log("Modem port open.")
+    modemIsOpen = true
     modemNoHandshake()
     modemReset()             // hang up any stale call, then the init string
 }
@@ -1661,6 +1699,7 @@ on modem.received(data: text) {
 }
 
 on modem.failed(err: error) {
+    modemIsOpen = false
     log("Modem error: " + err.message)
 }
 
@@ -1705,6 +1744,9 @@ extend Modem {
     on InitModem.select {
         modemReset()
     }
+}
+
+extend ModemSpeed {
     on Speed300.select { setModemSpeed(300) }
     on Speed1200.select { setModemSpeed(1200) }
     on Speed2400.select { setModemSpeed(2400) }
@@ -1712,6 +1754,9 @@ extend Modem {
     on Speed9600.select { setModemSpeed(9600) }
     on Speed19200.select { setModemSpeed(19200) }
     on Speed57600.select { setModemSpeed(57600) }
+}
+
+extend ModemPort {
     on PortModem.select { setModemPort("modem") }
     on PortPrinter.select { setModemPort("printer") }
 }
@@ -1742,6 +1787,8 @@ extend Maintenance {
 }
 
 extend Main {
+    on opened { layoutMain(window) }
+    on resized { layoutMain(window) }
     on closed {              // closing the log window exits the app
         usersClose()
         boardsClose()

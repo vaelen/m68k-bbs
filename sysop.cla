@@ -239,15 +239,15 @@ func sysopChoice(input: string) {
 }
 
 // --- Log viewer --------------------------------------------------------
-// The log ring (bbs.cla's logLines, the same lines as the Mac-side log
-// window), newest first, a page at a time. Long lines are sent whole
-// and wrap on the caller's terminal.
+// The Mac log pane's lines (bbs.cla's logCount/logLine), newest
+// first, a page at a time. Long lines are sent whole and wrap on the
+// caller's terminal.
 
-var logViewFrom: int = 0    // ring index of the next (older) line to show
+var logViewFrom: int = 0    // pane line index of the next (older) line to show
 
 func startLogView() {
     user.screen = "sysoplog"
-    logViewFrom = logLines.count - 1
+    logViewFrom = logCount() - 1
     drawLogPage()
 }
 
@@ -265,9 +265,9 @@ func drawLogPage() {
     var shown: int = 0
     sendTitleBox("Sysop - Log")
     sendLine("")
-    if logLines.count == 0 { sendLine("The log is empty.") }
+    if logCount() == 0 { sendLine("The log is empty.") }
     while logViewFrom >= 0 and shown < pageRows {
-        sendLine(logLines[logViewFrom])
+        sendLine(logLine(logViewFrom))
         logViewFrom = logViewFrom - 1
         shown = shown + 1
     }
