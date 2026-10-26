@@ -15,7 +15,7 @@ include "toolbox/events.cla"
 
 app BBSBench {
     name: "68kBBS Bench"
-    version: "0.5b"
+    version: "0.6b"
     author: "Andrew C. Young"
     about: "Micro-benchmarks for 68kBBS."
     id: "68BK"

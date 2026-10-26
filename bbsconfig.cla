@@ -12,7 +12,7 @@ include "config.cla"
 
 app BBSConfig {
     name: "68kBBS Config"
-    version: "0.5b"
+    version: "0.6b"
     author: "Andrew C. Young"
     about: "Edits the 68kBBS settings while the BBS is not running."
     id: "68BC"
