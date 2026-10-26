@@ -569,7 +569,7 @@ inputChar (bbs.cla) → processInput`.
   resync of the Time global `now()` reads, `connected()`/
   `disconnected()` branch on `ftnPolling`, and the `FidoNet > Poll
   All Networks` menu polls from the Mac; `ftnEnabled` (`ftnSetEnabled`;
-  `FidoNet > Toggle FTN Polling`, Sysop > Networks `P`, status line
+  `FidoNet > FTN Polling`, checked when on, Sysop > Networks `P`, status line
   before that prompt) gates `ftnNext` so nothing dials while off and
   queued requests run when it returns; the remote sysop's `P` on the
   network card queues one for after logoff. Local posts on a

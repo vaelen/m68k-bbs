@@ -144,12 +144,12 @@ menu Modem {
 
 menu FidoNet {
     item PollAll "Poll All Networks"
-    item TogglePolling "Toggle FTN Polling"
+    item TogglePolling "FTN Polling"
     item TossNow "Toss Inbound Packets"
 }
 
 menu Maintenance {
-    item ToggleClosed "Toggle Closed to Callers"
+    item ToggleClosed "Closed to Callers"
     item RunNow "Run Database Maintenance"
     item CompactNow "Compact Databases"
 }
@@ -1555,6 +1555,8 @@ func screenGroup(s: string): string {
 func statusSync() {
     var m: Main = Main.front
     var g: string
+    FidoNet.TogglePolling.checked = ftnEnabled      // also changed by Sysop > Networks P
+    Maintenance.ToggleClosed.checked = rejectCallers   // and by the maintenance run
     if m == nil { return }
     m.StatusVal.text = lineStatus()
     if isConnected and not ftnPolling {
@@ -1659,6 +1661,7 @@ on App.launch {
         log("FTN folders unavailable: " + lastError.message)
     }
     modemMenuSync()
+    statusSync()
     modemOpen()
 }
 
@@ -1724,7 +1727,10 @@ extend FidoNet {
         }
         ftnPollAll()
     }
-    on TogglePolling.select { ftnSetEnabled(not ftnEnabled) }
+    on TogglePolling.select {
+        ftnSetEnabled(not ftnEnabled)
+        statusSync()
+    }
     on TossNow.select {
         if tossing {
             log("Toss: already running.")
@@ -1764,6 +1770,7 @@ extend ModemPort {
 extend Maintenance {
     on ToggleClosed.select {
         rejectCallers = not rejectCallers
+        statusSync()
         if rejectCallers {
             log("Closed to callers.")
         } else {

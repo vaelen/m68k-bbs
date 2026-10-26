@@ -271,7 +271,7 @@ Runs before dialing, per network:
   a toss run over `:FTN:In` by hand (packets dropped in from outside,
   or leftovers) — it ticks once the line is idle.
 - **Polling switch** (`ftnEnabled`, on at launch, not persisted):
-  `FidoNet > Toggle FTN Polling` on the Mac, or `P` on the
+  `FidoNet > FTN Polling` on the Mac (checked when on), or `P` on the
   Sysop > Networks menu, whose prompt is preceded by `FTN polling is
   ON/OFF.` Off, nothing dials — scheduler and requests queue as usual
   and run when it goes back on (`ftnSetEnabled`). A poll already in
