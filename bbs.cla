@@ -347,6 +347,19 @@ func echoBuffer() {
 func inputChar(raw: char) {
     var single: string(1)
     var c: char = raw
+    if hangupPhase > 0 or hangupAth {   // watch for the modem's OK to +++ / ATH
+        if raw == '\x0D' and hangupTail == "OK" {
+            hangupOk = true
+            if hangupAth and isConnected {
+                // a modem whose call already dropped answers ATH with OK only
+                log("Modem OK after hang-up.")
+                disconnected()
+                return
+            }
+        }
+        hangupTail = hangupTail + raw
+        if hangupTail.length > 2 { hangupTail = hangupTail[1, 2] }
+    }
     if not isConnected { return }
     idleHalfSecs = 0
     if user.screen == "ftn" {
@@ -1236,11 +1249,15 @@ func mainChoice(input: string) {
 }
 
 // --- Logoff / hang-up -------------------------------------------------
-// The bridge hangs up on "+++" then "ATH", each needing ~1s of line
-// silence around it (Hayes guard time), so the sequence is paced by the
-// once-a-second timer below.
+// Hayes escape: >= 1s of silence, "+++" alone, >= 1s of silence, wait
+// for OK, then ATH (NO CARRIER ends the call). Paced by the half-second
+// timer below; hangupPhase counts its firings from 1.
 
 var hangupPhase: int = 0
+var hangupTail: string(2)     // last two bytes seen while hanging up
+var hangupOk: bool = false    // the modem answered +++ with OK
+var hangupCmd: string(8)
+var hangupAth: bool = false   // ATH sent: OK ends the call like NO CARRIER
 var idleHalfSecs: int = 0     // half-seconds since the caller's last byte (config.idleSeconds)
 var banCaller: bool = false   // hang up with AT+BAN;H: strike the caller's IP
 var modemInitPhase: int = 0   // countdown to sending config.modemInit, once the line is idle
@@ -1386,17 +1403,23 @@ every 30 ticks {
     }
     if hangupPhase > 0 {
         hangupPhase = hangupPhase + 1
-        if hangupPhase == 3 { modem.send("+++") }       // ~1s of silence first
-        if hangupPhase == 5 {                            // ~1s after +++
-            // the leading CR flushes the modem's command buffer: with no
-            // call up the +++ was no escape, just bytes on a command line
-            if banCaller {
-                log("Hanging Up: AT+BAN;H")
-                modem.send("\x0DAT+BAN;H\x0D")
-            } else {
-                log("Hanging Up: ATH")
-                modem.send("\x0DATH\x0D")
-            }
+        // phase 5 is >= 1.5s after it was set (set mid-firing, it can
+        // advance in the same one), so the goodbye text has drained
+        if hangupPhase == 5 {
+            hangupOk = false
+            hangupTail = ""
+            modem.send("+++")
+        }
+        // >= 1s after +++ with OK, else give up waiting at ~2s
+        if (hangupPhase >= 7 and hangupOk) or hangupPhase == 9 {
+            // no OK: the leading CR flushes the command buffer in case
+            // there was no call and the +++ just sat on a command line
+            if banCaller { hangupCmd = "AT+BAN;H" } else { hangupCmd = "ATH" }
+            log("Hanging Up: " + hangupCmd)
+            if not hangupOk { modem.send("\x0D") }
+            modem.send(hangupCmd + "\x0D")
+            hangupTail = ""
+            hangupAth = true
             banCaller = false
             hangupPhase = 0
         }
@@ -1437,6 +1460,7 @@ func connected() {
     telnetReset()
     telnetIntercept = true   // watch for negotiation during the probe
     hangupPhase = 0
+    hangupAth = false
     idleHalfSecs = 0
     banCaller = false
     pendingId = 0
@@ -1479,6 +1503,7 @@ func disconnected() {
     }
     isConnected = false
     hangupPhase = 0
+    hangupAth = false
     telnetProbe = 0
     telnetIntercept = false
     if ftnPolling {
