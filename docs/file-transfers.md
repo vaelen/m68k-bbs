@@ -337,7 +337,7 @@ and a sysop's login banner counts pending files across all areas
   cannot run on the host: window/menu/`every` declarations make it a
   UI program and the host runtime has no UI lane. Needs `socat`,
   `lrzsz` (Homebrew) and `python3`.
-- **Snow:** reset the image to the baseline (CLAUDE.md), `hcopy -r` a
+- **Snow:** reset the image to the baseline (AGENTS.md), `hcopy -r` a
   host-built `Users.*`/`Areas.*`/`ARE01.*` seed plus the sample file
   next to the app, `scripts/deploy.sh`, double-click 68kBBS, then
   with the modem emulator on :2323:

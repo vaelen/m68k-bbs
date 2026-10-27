@@ -10,7 +10,7 @@ database.
 The UI over this storage lives in `boards.cla` (caller-facing
 reader), `editor.cla` (post composer, shared with private mail and file long
 descriptions), and `sysop.cla` (board
-management); see CLAUDE.md's architecture notes.
+management); see AGENTS.md's architecture notes.
 
 ## Shape
 

@@ -8,82 +8,53 @@ ANSI, VT100) as clients.
 
 ![68kBBS running on a Macintosh SE](screenshot.png)
 
-## Status
+## Features
 
-Early development. Working today:
-
-- Log window with timestamped diagnostics; File > Quit
-- Hayes modem handling: detects `CONNECT`/`NO CARRIER` result codes
-  in-band (filtered out of the input stream), hangs up with `+++`/`ATH`
-- Telnet-aware sessions: a connect-time negotiation probe detects
-  telnet clients and puts them in character-at-a-time mode with local
-  echo off, tracks window size (NAWS), terminal type and speed, and
-  escapes IAC on the way out; plain modem callers are untouched
-  (`docs/telnet-negotiation-reference.md`)
-- Remote echo with hidden password entry, backspace editing that
-  survives wrapped lines, single-key menus (text prompts and editor
-  lines still buffer until Enter), and a `T` option to change the
-  terminal type mid-session
-- Accounts in a [vDB](https://github.com/vaelen/libvdb)-format user
+- **Mac app**: a main window with line status, a recent-callers table
+  and a scrolling log; Modem, FidoNet and Maintenance menus. Runs on
+  System 6 and 7. Two companion apps: 68kBBS Config (edit settings
+  while the BBS is down) and 68kBBS Bench (micro-benchmarks).
+- **Modem handling**: Hayes `RING`/`CONNECT`/`NO CARRIER` detection
+  filtered out of the input stream, answer on N rings, configurable
+  init string, port and speed (300-57600), paced `+++`/`ATH` hang-up,
+  idle timeout.
+- **Telnet-aware sessions**: a connect-time probe puts telnet clients
+  in character mode with local echo off, tracks window size (NAWS),
+  terminal type and speed, negotiates BINARY for transfers; plain
+  modem callers are untouched (`docs/telnet-negotiation-reference.md`).
+- **Terminals**: ANSI (CP437), VT100 (DEC Special Graphics), ASCII,
+  VT52, Apple II and C64 PETSCII, color or mono, 40 or 80 columns;
+  box-drawn tables and paged views (`docs/tables.md`), plus
+  per-terminal welcome screens under `:Screens:`.
+- **Accounts**: a [vDB](https://github.com/vaelen/libvdb)-format user
   database (pure-Clarus engine: `btree.cla`/`vdb.cla`, journaled with
-  crash recovery and secondary indexes): signup (`NEW`),
-  case-insensitive login, last-seen tracking; the first account
-  created becomes the sysop
-- Bulletin boards: board picker, paged post lists (newest first),
-  framed post reader with paged bodies and next/previous-post
-  navigation, and a line editor for new posts and replies that
-  flows like a modern editor -- typing past the end of a row starts
-  the next numbered row without a newline, Enter inserts one, and
-  backspace at the start of a row rejoins the previous one -- plus
-  the classic `/S /A /L /D /E /I /R` commands; flat threading in the message
-  base, per-board header databases plus an append-only body heap
-  (`docs/boards.md`)
-- Private mail: one recipient-indexed Mail database plus a body heap
-  (`docs/mail.md`); inbox with unread markers, framed reader, reply,
-  delete; `To:` must be a local user (netmail addressing later)
-- File areas: an Areas database plus per-area file-entry databases
-  with a filename index and long-description heap; the files
-  themselves live in an ordinary Finder folder per area
-  (`docs/files.md`). Sysop area management and a caller-facing
-  browser (area picker → paged file list → framed file view, with
-  sysop-only areas and pending files hidden from ordinary callers)
-  are in, plus XMODEM / XMODEM-1K / YMODEM / ZMODEM downloads and uploads
-  (uploads land pending sysop approval; ZMODEM resumes an interrupted
-  transfer either way and takes multi-file batches —
-  `docs/file-transfers.md`); Kermit comes next.
-- Sysop area: paged user/board/file-area lists, detail cards,
-  lettered-field editors, deletion with confirmation, board and file-
-  area creation, post deletion; safety rails so the system always
-  keeps a sysop
-- Login log: a plain-text `Logins.txt` (fixed-width, tab-delimited
-  lines: new-account flag, name, timestamp, duration) appended when a
-  caller disconnects, with an `L) Recent Logins` main-menu table of
-  the last 20
-- Banned usernames (`Banned.txt`, sysop-editable): signup refuses
-  them and a banned name at the login prompt hangs up straight away
-  (`docs/banned.md`)
-- The Wall: a graffiti wall of short (120-character) messages shown
-  newest-first as a paged table after login and from `W) Wall`, with
-  a one-line "Sign the wall?" prompt (`docs/wall.md`)
-- Message of the Day: a sysop-edited text (Sysop menu `M`, using the
-  line editor) shown after the wall at login and from `D) Message of
-  the Day` (`docs/motd.md`)
-- A post-login chain: welcome banner → the wall → the MOTD → new
-  mail and pending-upload counts → the main menu, each pausing for a
-  key
-- Games: a GW-BASIC-flavored BASIC interpreter written in Clarus
-  (`basic/`); `G) Games` runs the `.BAS` programs the sysop drops in a
-  `BASIC` folder (Super Star Trek ships as the sample), and sysops get
-  the classic `Ok` prompt with `LOAD`/`SAVE`/`FILES` in a folder of
-  their own (`docs/basic.md`, `basic/langref.md`)
-- Terminal-aware rendering at 40 or 80 columns (never writing the
-  last column, so SyncTERM/DOS auto-wrap and Unix terminals agree) for ASCII, ANSI
-  (cp437), and VT100 (DEC Special Graphics) callers: box-drawn
-  tables, paged views, color helpers (`docs/tables.md`)
+  crash recovery and secondary indexes); signup, case-insensitive
+  login, per-user access flags (`docs/access.md`), banned usernames
+  (`docs/banned.md`). The first account becomes the sysop.
+- **Message boards**: board picker, paged post lists, framed reader,
+  threaded replies, and a WWIV-style line editor with the classic
+  `/S /A /L /D /E /I /R` commands (`docs/boards.md`).
+- **Private mail and FidoNet**: local mail and netmail, echomail
+  boards, and EMSI/ZMODEM polls of an uplink with toss and scan
+  (`docs/mail.md`, `docs/fidonet.md`).
+- **File areas**: per-area file databases over ordinary Finder
+  folders; XMODEM, XMODEM-1K, YMODEM and ZMODEM (with resume and
+  multi-file uploads) downloads and uploads, uploads held for sysop
+  approval (`docs/files.md`, `docs/file-transfers.md`).
+- **Games**: a GW-BASIC-flavored BASIC interpreter running the sysop's
+  `.BAS` programs (Super Star Trek ships as the sample) and an `Ok`
+  prompt for sysops (`docs/basic.md`, `basic/langref.md`); Daily Word,
+  a built-in daily word puzzle with leaderboards (`docs/daily-word.md`).
+- **Community**: the Wall (`docs/wall.md`), a Message of the Day
+  (`docs/motd.md`), and a recent-logins list.
+- **Sysop menu**: users, boards, file areas, networks, games, banned
+  names, configuration, MOTD and the log, all from a caller's terminal.
+- **Maintenance**: a nightly run that expires old posts and compacts
+  message heaps, plus a manual database compaction
+  (`docs/maintenance.md`).
 
-Planned: Hermes externals, message search, and full-screen ANSI niceties.
-Fidonet-style echomail and netmail are in (`docs/fidonet.md`) and wait
-on the host-side bridge.
+Not done yet: Kermit, tag-and-download batches, Z-code and Hermes
+externals, and message search (`TODO.md`).
 
 ## Building
 
@@ -94,25 +65,6 @@ known-good `clarusc` build) with matching runtime/toolbox sources in
 ```sh
 scripts/build.sh    # 68k Mac app -> build/68kBBS.bin (MacBinary)
 scripts/test.sh     # host-lane test suites (tests/*.cla)
-```
-
-## Running under emulation
-
-The `snow/` directory holds a [Snow](https://snowemu.com) Mac II setup
-whose modem port is bridged to TCP port 1234, and `snow/BBSHD.hda` is a
-persistent disk image the app is deployed to (requires `hfsutils`):
-
-```sh
-scripts/deploy.sh   # build + refresh the disk image + restart Snow
-```
-
-To call the BBS like a real caller, run the bundled
-[simple-modem-emulator](simple-modem-emulator/) (a TCP bridge that
-plays the part of a Hayes modem) and connect with telnet:
-
-```sh
-cd simple-modem-emulator && make && ./modem &   # listens on 2323
-telnet localhost 2323
 ```
 
 ## License

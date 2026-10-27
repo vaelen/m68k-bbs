@@ -300,6 +300,6 @@ finished board and the leaderboards; that is the only way to see them.
    `userNameById`.
 5. The screens (`games/words.cla`). `bbs.cla` can't be built on the
    host lane, so they're checked by the 68k build.
-6. Deploy to Snow, clean databases per CLAUDE.md, set `wordsDayOne`
+6. Deploy to Snow, clean databases per AGENTS.md, set `wordsDayOne`
    to a past date, and play a few days by moving the Mac clock
    forward (the streak and day rollover are the parts worth watching).

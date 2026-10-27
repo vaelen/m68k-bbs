@@ -8,7 +8,7 @@ change freely, always starting from a clean database.
 
 The UI over this storage (main-menu `M - Mail`: inbox list, message
 view, composer reusing `editor.cla`) lives in `mail.cla`; see
-CLAUDE.md's architecture notes.
+AGENTS.md's architecture notes.
 
 ## Shape
 
