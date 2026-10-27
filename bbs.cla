@@ -37,7 +37,7 @@ include "zmodem.cla"
 include "ftntoss.cla"
 include "emsi.cla"
 include "maint.cla"
-include "toolbox/osutils.cla"   // DateTimeRec / SecondsToDate (via --rtdir)
+include "toolbox/osutils.cla"   // DateTimeRec / SecondsToDate (installed toolbox/)
 include "toolbox/memory.cla"    // FreeMem, for the heap figures on log lines
 include "toolbox/devices.cla"   // PBControlSync: serial handshake off (modemNoHandshake)
 external func MaxBlock(): int = trap 0xA061 reg   // largest free block, no compaction

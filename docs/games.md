@@ -247,7 +247,7 @@ setting can override.
    `callback func` parameter/return types (`bool`/`word`/`int`/`ptr`)
    already cover all 18 procs. Host lane: stubs; 68k code can't run
    there anyway.
-2. **`vendor/toolbox/resources.cla`:** `OpenResFile`, `UseResFile`,
+2. **`toolbox/resources.cla` (Clarus):** `OpenResFile`, `UseResFile`,
    `CloseResFile`, `Get1Resource`, `SetResLoad` (trivial traps).
    `file.info` already gives the `XHRM` type check.
 3. **`hermes.cla` (~600-900 lines):** offset constants *generated*

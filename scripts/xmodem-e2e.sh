@@ -116,8 +116,7 @@ if grep -n 'sendLine("Start your\|sendLine("Send your' files.cla | grep -q 'C[a-
     exit 1
 fi
 
-bin/clarusc emit --rtdir vendor/runtime/clarus/ -o "$WORK/harness.c" "$WORK/harness.cla"
-cc -O1 -I vendor/runtime/host -o "$WORK/harness" "$WORK/harness.c" vendor/runtime/host/rt.c
+clarusc build -o "$WORK/harness" "$WORK/harness.cla"
 head -c 3000 /dev/urandom > "$WORK/sample.bin"   # 2 x 1K + a 952-byte tail
 # The byte pairs a telnet NVT link mangles: CR NUL, a lone CR, CR LF,
 # 0xFF (IAC) and CR IAC. Planted so every run exercises them.

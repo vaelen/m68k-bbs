@@ -135,8 +135,7 @@ on modem.failed(err: error) {
 }
 EOF
 
-bin/clarusc emit --rtdir vendor/runtime/clarus/ -o "$WORK/harness.c" "$WORK/harness.cla"
-cc -O1 -I vendor/runtime/host -o "$WORK/harness" "$WORK/harness.c" vendor/runtime/host/rt.c
+clarusc build -o "$WORK/harness" "$WORK/harness.cla"
 
 python3 scripts/emsi-peer.py --port "$PORT" --inbound "$WORK/peer-in" --outbound "$WORK/peer-out" > "$WORK/peer.log" 2>&1 &
 PEER=$!

@@ -1,6 +1,5 @@
 #!/bin/sh
-# Run every tests/*.cla on the host with the PINNED toolchain
-# (bin/clarusc emits C, cc compiles it against vendor/runtime/host).
+# Run every tests/*.cla on the host with the installed clarusc.
 # Exits nonzero on the first failing suite.
 set -e
 cd "$(dirname "$0")/.."
@@ -13,8 +12,7 @@ for t in tests/*.cla; do
     D="$WORK/$(basename "$t" .cla)"
     mkdir -p "$D"
     cp tests/fixtures/* "$D"/
-    bin/clarusc emit --rtdir vendor/runtime/clarus/ -o "$D/main.c" "$t"
-    cc -O1 -I vendor/runtime/host -o "$D/prog" "$D/main.c" vendor/runtime/host/rt.c
+    clarusc build -o "$D/prog" "$t"
     (cd "$D" && ./prog)
 done
 echo "all test suites passed"

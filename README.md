@@ -58,9 +58,13 @@ externals, and message search (`TODO.md`).
 
 ## Building
 
-Requirements: the pinned Clarus compiler at `bin/clarusc` (a copy of a
-known-good `clarusc` build) with matching runtime/toolbox sources in
-`vendor/` — both in this repo — plus `cc` for the host-lane tests.
+Requirements:
+
+- `clarusc`, the [Clarus](https://github.com/vaelen/clarus) compiler,
+  installed and on `PATH` (see that repo's README for how to install it)
+- `cc`, for the host-lane tests
+- optional: `lrzsz`, `socat` and `python3`, for the file-transfer and
+  FidoNet end-to-end tests (`scripts/xmodem-e2e.sh`, `scripts/ftn-e2e.sh`)
 
 ```sh
 scripts/build.sh    # 68k Mac app -> build/68kBBS.bin (MacBinary)

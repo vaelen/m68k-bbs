@@ -392,7 +392,7 @@ through a wrapper: `fnmailer --once` → `fnemsi --answer` →
 ## Language features required
 
 All shipped in the Clarus filesystem-api phase (2026-08-26) and in the
-pinned toolchain; the as-shipped shapes and what the design does about
+installed toolchain; the as-shipped shapes and what the design does about
 them:
 
 - `file.makeDir(path): bool` — one level, parent must exist, existing

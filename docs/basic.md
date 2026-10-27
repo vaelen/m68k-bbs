@@ -218,7 +218,7 @@ scripts/basic-host.sh [file.bas]          # serve on $PORT (2345); nc localhost 
 `nc` in the foreground (retrying until the listener is up — no port
 probe, since the runtime accepts exactly one connection). Files a
 program opens live in the current directory, so `_scores.dat` is just a
-file there. To write games on a machine without the pinned compiler
+file there. To write games on a machine without Clarus installed
 (Linux, another Mac): `scripts/basic-host.sh --export DIR` writes
 `main.c`, the C runtime and `basic.sh` to `DIR`; there `./basic.sh`
 compiles `main.c` with `cc` on first use and runs the same way.

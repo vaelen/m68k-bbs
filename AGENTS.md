@@ -6,9 +6,10 @@ callers over the Mac's modem serial port.
 ## Language: Clarus
 
 Clarus is a small, compiled, event-driven language for native System 6/7
-Mac apps. The normative spec is `docs/clarus-language-reference.md`, a pinned
-copy of the compiler repo's (`../clarus`) matching
-the pinned toolchain below.
+Mac apps. The normative spec is `docs/clarus-language-reference.md`, a symlink
+to the installed copy (`/usr/local/share/doc/clarus/`, alongside the
+changelog and `clarus-toolbox-cookbook.md`), so it always matches the
+installed compiler.
 
 Key points:
 
@@ -40,36 +41,28 @@ Key points:
 
 ## Compiler
 
-The compiler is `clarusc` (self-hosted, in `../clarus/clarusc/`). This
-project uses a **fully pinned toolchain**, so work here continues even
-while the compiler repo is mid-change:
-
-- `bin/clarusc` — pinned copy of a known-good compiler build
-- `vendor/runtime/`, `vendor/toolbox/` — matching snapshot of the
-  runtime `.cla` sources, host C runtime, and toolbox catalog
-
-Refresh the pin deliberately (all pieces together — a pinned binary with
-a newer runtime can mismatch). `build-run/clarusc` is a cached bootstrap
-that can lag `clarusc/clarusc.c` (symptom: `undefined: rt...` in a
-vendored runtime file), so rebuild it first:
-`(cd ../clarus && cc -O1 -Iruntime/host -o build-run/clarusc clarusc/clarusc.c runtime/host/rt.c) && cp ../clarus/build-run/clarusc bin/clarusc && cp ../clarus/runtime/clarus/*.cla vendor/runtime/clarus/ && cp ../clarus/runtime/host/rt* vendor/runtime/host/ && cp ../clarus/toolbox/*.cla vendor/toolbox/ && cp ../clarus/docs/clarus-language-reference.md ../clarus/docs/clarus-language-changelog.md docs/`
+The compiler is the installed `clarusc` (on `PATH`; it finds its own
+runtime and `toolbox/` catalog). Install it from `~/repos/clarus` with
+`make install-bin && sudo make install`; upgrade by pulling there and
+reinstalling. There is no per-project pin: upgrading Clarus upgrades
+the BBS's compiler too. `man clarusc` documents every option.
 
 ```sh
-bin/clarusc --rtdir vendor/runtime/clarus/ bbs.cla   # check only
+clarusc check bbs.cla # check only
 scripts/build.sh      # 68k Mac app -> build/68kBBS.bin (MacBinary)
 scripts/test.sh       # run every tests/*.cla on the host lane
 scripts/deploy.sh     # build + refresh snow/hdd2.img + restart Snow
 ```
 
-Always pass `--rtdir vendor/runtime/clarus/` (the scripts do): the
-pinned binary can't find the runtime on its own from this repo, and
-`include "toolbox/..."` resolves against the rtdir's `../../toolbox/`
-sibling — i.e. `vendor/toolbox/`. The live-repo wrapper scripts
-(`../clarus/scripts/build-68k.sh`, `clarus-run.sh`) still work but
-bootstrap the live compiler — only reach for them when testing new
-compiler features. (The old `./clarus` symlink to the frozen Go host
-compiler was removed — it predates `app` sections and `App.log`; don't
-resurrect it.)
+To try an uninstalled Clarus tree (a feature branch), point at its
+runtime: `CLARUS_DATADIR=~/repos/clarus-branch scripts/build.sh`, or
+`--rtdir <tree>/runtime/clarus/` on a direct call. The runtime must
+match the compiler binary (a mismatch shows as `undefined: rt...`), so
+to test compiler changes use that tree's own
+`build-run/clarusc-current --rtdir <tree>/runtime/clarus/` or its
+`scripts/clarus-run.sh`. (The old `./clarus` symlink to the frozen Go
+host compiler was removed — it predates `app` sections and `App.log`;
+don't resurrect it.)
 
 For host-side serial testing, the host lane maps the modem port via env:
 `CLARUS_SERIAL_MODEM=listen:PORT` (or `connect:HOST:PORT`).
@@ -760,7 +753,7 @@ None block current features: every gap this project filed for the
 message-base and mail work (positioned file I/O via `filehandle`,
 `crc16`, LE/word `text` accessors and `set*At` writers, `string(n)`,
 toolbox include resolution via rtdir, connection-typed parameters, the
-68k string-temp cap) shipped and is in the pinned toolchain. vDB
+68k string-temp cap) shipped and is in the installed toolchain. vDB
 (`~/repos/libvdb/db.md`) is implementable in pure Clarus.
 
 The filesystem API the file-area follow-ups needed — `file.list`,
@@ -830,8 +823,8 @@ and never mention Claude or AI co-authorship (no Co-Authored-By trailers).
   `boardtool.cla`: expire/compact/pack one board's copied files on the
   host, docs/maintenance.md), `ftn-e2e.sh` (a poll
   against `emsi-peer.py`), `basic.sh`/`basic-host.sh` (BASIC in the terminal / over TCP / exported)
-- `bin/`, `vendor/` — pinned compiler + runtime/toolbox snapshot
-- `docs/` — language reference + Snow how-to (symlinks),
+- `docs/` — language reference/changelog/toolbox cookbook (symlinks
+  into the installed Clarus docs) + Snow how-to (symlink),
   telnet-negotiation-reference.md and vt100.codes.txt (protocol notes)
 - `snow/` — emulator, ROM, boot disk, workspace, hdd2.img (untracked)
 - `simple-modem-emulator/` — Hayes modem bridge (tracked in this repo)
