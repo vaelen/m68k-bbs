@@ -6,6 +6,8 @@ Mac's modem serial port. The goal is a period-authentic BBS that runs
 on real hardware and supports a wide range of retro terminals (ASCII,
 ANSI, VT100) as clients.
 
+![68kBBS running on a Macintosh SE](screenshot.png)
+
 ## Status
 
 Early development. Working today:
