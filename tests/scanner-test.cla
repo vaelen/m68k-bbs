@@ -26,6 +26,7 @@ func feedString(s: string) {
         feedChar(s[i])
         i = i + 1
     }
+    scanEndChunk()
 }
 
 func expect(cond: bool, name: string) {
@@ -49,14 +50,14 @@ on App.startCLI(args: list of string) {
     expect(not isConnected, "no fire before final CRLF")
     feedString("00\x0D\x0A")
     expect(isConnected, "CONNECT split across chunks")
-    expectReleased("\x0D\x0A", "CONNECT body suppressed, lead CRLF released")
+    expectReleased("", "CONNECT suppressed, lead CRLF too")
 
     // 2. NO CARRIER split across chunks; body (incl. trailing CRLF) suppressed
     feedString("some session data\x0D\x0ANO CAR")
     expect(isConnected, "still connected mid-match")
     feedString("RIER\x0D\x0A")
     expect(not isConnected, "NO CARRIER split across chunks")
-    expectReleased("some session data\x0D\x0A", "NO CARRIER fully suppressed")
+    expectReleased("some session data", "NO CARRIER fully suppressed")
 
     // 3. CONNECT with no digits: no fire, all bytes replayed as data
     feedString("\x0D\x0ACONNECT\x0D\x0A")
@@ -74,12 +75,12 @@ on App.startCLI(args: list of string) {
     expect(isConnected, "NO CARRIER then CONNECT chained")
     feedString("NO CARRIER\x0D\x0A")
     expect(not isConnected, "chained NO CARRIER")
-    expectReleased("\x0D\x0A", "chained codes all suppressed")
+    expectReleased("", "chained codes all suppressed")
 
     // 6. false start then real match
     feedString("\x0D\x0ACONNE\x0D\x0ACONNECT 300\x0D\x0A")
     expect(isConnected, "partial CONNECT then real one")
-    expectReleased("\x0D\x0ACONNE\x0D\x0A", "false start replayed, real match suppressed")
+    expectReleased("\x0D\x0ACONNE", "false start replayed, real match suppressed")
 
     // 7. a caller line starting with 'N' is held then fully replayed
     feedString("\x0D\x0ANo thanks\x0D\x0A")
@@ -95,12 +96,18 @@ on App.startCLI(args: list of string) {
     feedString("\x0D\x0ARI")
     feedString("NG\x0D\x0ARING\x0D\x0A")
     expect(rings == 2, "RING split, then chained RING")
-    expectReleased("\x0D\x0A", "RING bodies suppressed")
+    expectReleased("", "RING bodies suppressed")
 
     // 10. a caller line starting with 'R' is replayed, no ring
     feedString("\x0D\x0ARINGO\x0D\x0A")
     expect(rings == 2, "R-line does not ring")
     expectReleased("\x0D\x0ARINGO\x0D\x0A", "R-line fully replayed")
+
+    // 11. a caller's Enter is released at the end of its chunk
+    feedString("hello\x0D")
+    expectReleased("hello\x0D", "bare CR released at chunk end")
+    feedString("\x0D\x0A")
+    expectReleased("\x0D\x0A", "CRLF released at chunk end")
 
     if failures > 0 {
         log("scanner-test: FAILED")

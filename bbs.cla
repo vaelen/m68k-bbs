@@ -359,6 +359,7 @@ func inputChar(raw: char) {
         }
         hangupTail = hangupTail + raw
         if hangupTail.length > 2 { hangupTail = hangupTail[1, 2] }
+        return                // the modem's replies are not caller input
     }
     if not isConnected { return }
     idleHalfSecs = 0
@@ -1254,7 +1255,7 @@ func mainChoice(input: string) {
 // timer below; hangupPhase counts its firings from 1.
 
 var hangupPhase: int = 0
-var hangupTail: string(2)     // last two bytes seen while hanging up
+var hangupTail: string(3)     // last two bytes seen while hanging up (+1 for the append)
 var hangupOk: bool = false    // the modem answered +++ with OK
 var hangupCmd: string(8)
 var hangupAth: bool = false   // ATH sent: OK ends the call like NO CARRIER
@@ -1728,6 +1729,7 @@ on modem.received(data: text) {
         feedChar(data[i])
         i = i + 1
     }
+    scanEndChunk()
 }
 
 on modem.failed(err: error) {

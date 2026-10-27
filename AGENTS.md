@@ -171,9 +171,12 @@ inputChar (bbs.cla) → processInput`.
   `rejectCallers`) and sends `ATA` on `config.answerRings` unless
   `modemAutoAnswer()` (the init string's `S0` > 0); a non-zero
   `ringCount` holds off `ftnNext` and maintenance until CONNECT, NO
-  CARRIER, or the 30-tick timer's 10 s (60 s after ATA) timeout. CR/LF always pass through
-  immediately, so the one hang-up artifact is a single empty line just
-  before disconnect. The including program defines `connected`,
+  CARRIER, or the 30-tick timer's 10 s (60 s after ATA) timeout. The CRLF lead-in is held
+  until the end of the received chunk (`scanEndChunk()`, called from
+  `modem.received`), so a result code never leaks its CR to the screen
+  as an Enter while a caller's Enter still goes through at once. During
+  a hang-up `inputChar` swallows input and watches for the modem's `OK`
+  (after `+++`, and after `ATH` — where it ends the call like NO CARRIER). The including program defines `connected`,
   `disconnected`, `ring`, and `dataChar`.
 - `telnet.cla` — telnet option processor between the scanner and the
   app: consumes/answers IAC sequences (WILL TERMINAL-TYPE/SPEED → SB

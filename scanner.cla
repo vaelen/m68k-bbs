@@ -10,13 +10,15 @@
 // matched result code is released to `dataChar(c)`. Bytes that might be
 // a result-code body (from the 'C'/'N'/'R' after a CRLF onward) are held in
 // `pending`; a completed match discards them, a mismatch replays them
-// to dataChar as ordinary data. CR/LF are always released immediately —
-// holding them would delay line processing by a keystroke — so the one
-// artifact of an in-band hang-up is a single empty line just before
-// disconnected() fires.
+// to dataChar as ordinary data. The CRLF lead-in is held too, but only
+// until the end of the received chunk (`scanEndChunk`), so a caller's
+// Enter is never delayed while a modem's result code, which arrives in
+// one burst, never leaks its CR to the screen as an Enter (the screen's
+// reply would then go to a modem in command mode).
 //
 // The including program must define `connected()`, `disconnected()`,
-// `ring()` and `dataChar(c: char)`. Note: in Clarus source, \n is CR (13); LF
+// `ring()` and `dataChar(c: char)`, and call `scanEndChunk()` after
+// feeding each received chunk. Note: in Clarus source, \n is CR (13); LF
 // is \x0A.
 
 const CR: char = '\x0D'
@@ -55,48 +57,56 @@ func flushPending() {
 // restart -- c itself may begin a new CRLF lead-in.
 func scanMismatch(c: char) {
     flushPending()
-    dataChar(c)
     if c == CR {
+        pending = "\x0D"
         matchState = sCr
     } else {
+        dataChar(c)
         matchState = sIdle
     }
+}
+
+// End of a received chunk: release a held CRLF lead-in. A result-code
+// body already under way stays held across chunks.
+// ponytail: a code split right after its CRLF still leaks that CR; buffer
+// with a short timeout if a modem turns out to do that.
+func scanEndChunk() {
+    if matchState == sCr or matchState == sLead { flushPending() }
 }
 
 func feedChar(c: char) {
     switch matchState {
     case sIdle {
-        dataChar(c)
-        if c == CR { matchState = sCr }
+        if c == CR {
+            pending = "\x0D"
+            matchState = sCr
+        } else {
+            dataChar(c)
+        }
     }
     case sCr {
-        dataChar(c)
         if c == LF {
+            pending = pending + c
             matchState = sLead
-        } else if c != CR {       // another CR stays in sCr
-            matchState = sIdle
+        } else {
+            scanMismatch(c)       // another CR starts a new lead-in
         }
     }
     case sLead {
         if c == 'C' {
             matchState = sConn
             matchIdx = 1
-            pending = "C"
+            pending = pending + c
         } else if c == 'N' {
             matchState = sNoCarr
             matchIdx = 1
-            pending = "N"
+            pending = pending + c
         } else if c == 'R' {
             matchState = sRing
             matchIdx = 1
-            pending = "R"
+            pending = pending + c
         } else {
-            dataChar(c)
-            if c == CR {
-                matchState = sCr
-            } else {
-                matchState = sIdle
-            }
+            scanMismatch(c)
         }
     }
     case sConn {
