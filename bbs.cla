@@ -78,7 +78,7 @@ extern record SerShkPB {
 
 app BBS {
     name: "68kBBS"
-    version: "0.6b"     // literal required here; keep equal to bbsVersion (user.cla)
+    version: "0.7b"     // literal required here; keep equal to bbsVersion (user.cla)
     author: "Andrew C. Young"
     about: "A simple BBS for classic Macs."
     id: "68BB"
@@ -97,8 +97,10 @@ window Main {
     label StatusVal    { at: 52, 22; width: 106; height: 14; text: "Idle"; font: "Geneva", 9; style: bold }
     label UserCap      { at: 5, 38; width: 45; height: 14; text: "User:"; font: "Geneva", 9 }
     label UserVal      { at: 52, 38; width: 106; height: 14; text: "N/A"; font: "Geneva", 9; style: bold }
-    label ScreenCap    { at: 5, 54; width: 45; height: 14; text: "Screen:"; font: "Geneva", 9 }
-    label ScreenVal    { at: 52, 54; width: 106; height: 14; text: "N/A"; font: "Geneva", 9; style: bold }
+    label TermCap      { at: 5, 54; width: 45; height: 14; text: "Terminal:"; font: "Geneva", 9 }
+    label TermVal      { at: 52, 54; width: 106; height: 14; text: "N/A"; font: "Geneva", 9; style: bold }
+    label ScreenCap    { at: 5, 70; width: 45; height: 14; text: "Screen:"; font: "Geneva", 9 }
+    label ScreenVal    { at: 52, 70; width: 106; height: 14; text: "N/A"; font: "Geneva", 9; style: bold }
     divider SideRule   { }
     table Callers {
         rows: recentCallers
@@ -1509,8 +1511,7 @@ func logCount(): int {
 }
 
 func logLine(i: int): string {
-    var s: string = Main.front.Log.line(i)     // 68k: line() can't be returned directly
-    return s
+    return Main.front.Log.line(i)
 }
 
 // --- Status pane -------------------------------------------------------
@@ -1567,9 +1568,12 @@ func statusSync() {
             statusScreen = "Terminal"     // the connect-time probe
         }
         if user.authenticated { m.UserVal.text = user.name } else { m.UserVal.text = "N/A" }
+        // the type isn't settled while the caller is picking it
+        if statusScreen == "Terminal" { m.TermVal.text = "N/A" } else { m.TermVal.text = termShortName() }
     } else {
         statusScreen = "N/A"
         m.UserVal.text = "N/A"
+        m.TermVal.text = "N/A"
     }
     m.ScreenVal.text = statusScreen
 }
